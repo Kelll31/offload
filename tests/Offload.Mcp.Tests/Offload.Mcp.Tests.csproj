@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <NoWarn>$(NoWarn);MCP9005</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Offload.Mcp\Offload.Mcp.csproj" />
+    <ProjectReference Include="..\..\src\Offload.Core\Offload.Core.csproj" />
+    <ProjectReference Include="..\..\src\Offload.Llama\Offload.Llama.csproj" />
+    <ProjectReference Include="..\..\src\Offload.OpenCode\Offload.OpenCode.csproj" />
+  </ItemGroup>
+</Project>

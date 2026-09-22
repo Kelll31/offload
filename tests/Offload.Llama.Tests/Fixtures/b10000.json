@@ -1,0 +1,210 @@
+{
+ "tag_name": "b10000",
+ "name": "b10000",
+ "draft": false,
+ "prerelease": false,
+ "created_at": "2026-07-14T10:13:13Z",
+ "published_at": "2026-07-14T12:06:19Z",
+ "assets": [
+  {
+   "name": "cudart-llama-bin-win-cuda-12.4-x64.zip",
+   "state": "uploaded",
+   "size": 391443627,
+   "digest": "sha256:8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6",
+   "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b10000/cudart-llama-bin-win-cuda-12.4-x64.zip",
+   "content_type": "application/json; charset=utf-8"
+  },
+  {
+   "name": "cudart-llama-bin-win-cuda-13.3-x64.zip",
+   "state": "uploaded",
+   "size": 390970417,
+   "digest": "sha256:1462a050eb4c684921ba51dcc4cc488a036674c3e73e9945ee705b854808d03e",
+   "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b10000/cudart-llama-bin-win-cuda-13.3-x64.zip",
+   "content_type": "application/json; charset=utf-8"
+  },
+  {
+   "name": "llama-b10000-bin-android-arm64.tar.gz",
+   "state": "uploaded",
+   "size": 74620806,
+   "digest": "sha256:d625829d47a2e6ea4fcf67305f5471d41cff17ab59caa175b879be29a30ffaff",
+   "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b10000/llama-b10000-bin-android-arm64.tar.gz",
+   "content_type": "application/json; charset=utf-8"
+  },
+  {
+   "name": "llama-b10000-bin-macos-arm64.tar.gz",
+   "state": "uploaded",
+   "size": 10753581,
+   "digest": "sha256:8d7591f21e97840f4f6453c1fea9162afa0d7bf19761034ec77ba75ecf361dc7",
+   "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b10000/llama-b10000-bin-macos-arm64.tar.gz",
+   "content_type": "application/json; charset=utf-8"
+  },
+  {
+   "name": "llama-b10000-bin-macos-x64.tar.gz",
+   "state": "uploaded",
+   "size": 11030229,
+   "digest": "sha256:09c292d995de9fb09c60cb37e563b79d4605d41b78f3de4cb39eb84e2fecb1e8",
+   "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b10000/llama-b10000-bin-macos-x64.tar.gz",
+   "content_type": "application/json; charset=utf-8"
+  },
+  {
+   "name": "llama-b10000-bin-ubuntu-arm64.tar.gz",
+   "state": "uploaded",
+   "size": 12793655,
+   "digest": "sha256:8e19380ff8c3e49f0bf22764bf32b15a154599a7b61f9a74ab6f78e42c904a6c",
+   "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b10000/llama-b10000-bin-ubuntu-arm64.tar.gz",
+   "content_type": "application/json; charset=utf-8"
+  },
+  {
+   "name": "llama-b10000-bin-ubuntu-openvino-2026.2.1-x64.tar.gz",
+   "state": "uploaded",
+   "size": 101180323,
+   "digest": "sha256:5fc4534ac58b34757fa07df031dfa401020dae9360efcb7e71ae9af23751b1cd",
+   "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b10000/llama-b10000-bin-ubuntu-openvino-2026.2.1-x64.tar.gz",
+   "content_type": "application/json; charset=utf-8"
+  },
+  {
+   "name": "llama-b10000-bin-ubuntu-rocm-7.2-x64.tar.gz",
+   "state": "uploaded",
+   "size": 123260585,
+   "digest": "sha256:a7d759aacbc407dfcd2e917d74d5631fdf7a9c0f3e0966ae6ca61479a721d052",
+   "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b10000/llama-b10000-bin-ubuntu-rocm-7.2-x64.tar.gz",
+   "content_type": "application/json; charset=utf-8"
+  },
+  {
+   "name": "llama-b10000-bin-ubuntu-s390x.tar.gz",
+   "state": "uploaded",
+   "size": 15000743,
+   "digest": "sha256:42ca55d6ec50bab8f38081557e914520d0dca59574dbea69a5eb23e5f9cb5c8a",
+   "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b10000/llama-b10000-bin-ubuntu-s390x.tar.gz",
+   "content_type": "application/json; charset=utf-8"
+  },
+  {
+   "name": "llama-b10000-bin-ubuntu-sycl-fp16-x64.tar.gz",
+   "state": "uploaded",
+   "size": 52406380,
+   "digest": "sha256:5b820924fc334b4abe83ae3178be7b907d7e4c03aa1834754ef8e58478f2202b",
+   "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b10000/llama-b10000-bin-ubuntu-sycl-fp16-x64.tar.gz",
+   "content_type": "application/json; charset=utf-8"
+  },
+  {
+   "name": "llama-b10000-bin-ubuntu-sycl-fp32-x64.tar.gz",
+   "state": "uploaded",
+   "size": 52151419,
+   "digest": "sha256:1a29fab427f9cc2f84909df46ab47f5bb243434302fe9015de1b014ea3111ba5",
+   "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b10000/llama-b10000-bin-ubuntu-sycl-fp32-x64.tar.gz",
+   "content_type": "application/json; charset=utf-8"
+  },
+  {
+   "name": "llama-b10000-bin-ubuntu-vulkan-arm64.tar.gz",
+   "state": "uploaded",
+   "size": 25427673,
+   "digest": "sha256:b25b772372bdc3f1d4eeeb14c64ab0af92fb90ec6406c237f5b1659e6b3bba43",
+   "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b10000/llama-b10000-bin-ubuntu-vulkan-arm64.tar.gz",
+   "content_type": "application/json; charset=utf-8"
+  },
+  {
+   "name": "llama-b10000-bin-ubuntu-vulkan-x64.tar.gz",
+   "state": "uploaded",
+   "size": 31192724,
+   "digest": "sha256:128fc40f85ac7d36bf7382d4120c0d2b7b349eac276044ca36ad6886301e1250",
+   "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b10000/llama-b10000-bin-ubuntu-vulkan-x64.tar.gz",
+   "content_type": "application/json; charset=utf-8"
+  },
+  {
+   "name": "llama-b10000-bin-ubuntu-x64.tar.gz",
+   "state": "uploaded",
+   "size": 15855212,
+   "digest": "sha256:80faa4e10350436aeb09f01c3f299f6ebeaf3000f21cdf2b0ec4d2299b056274",
+   "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b10000/llama-b10000-bin-ubuntu-x64.tar.gz",
+   "content_type": "application/json; charset=utf-8"
+  },
+  {
+   "name": "llama-b10000-bin-win-cpu-arm64.zip",
+   "state": "uploaded",
+   "size": 12158307,
+   "digest": "sha256:9c19138c5963294b476c0d70f983cdcc3d09ccf35ee5f0b3126e26d6f9dc8e36",
+   "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b10000/llama-b10000-bin-win-cpu-arm64.zip",
+   "content_type": "application/json; charset=utf-8"
+  },
+  {
+   "name": "llama-b10000-bin-win-cpu-x64.zip",
+   "state": "uploaded",
+   "size": 18252828,
+   "digest": "sha256:1398427465fe3634cc29778b82b8ba990e47a442ef8453ae9d2d114ec2ad6563",
+   "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b10000/llama-b10000-bin-win-cpu-x64.zip",
+   "content_type": "application/json; charset=utf-8"
+  },
+  {
+   "name": "llama-b10000-bin-win-cuda-12.4-x64.zip",
+   "state": "uploaded",
+   "size": 248830723,
+   "digest": "sha256:ae8c050b403b16c31569e35efd30abee5aea0e4ad2b847fb2106c6d6407398e5",
+   "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b10000/llama-b10000-bin-win-cuda-12.4-x64.zip",
+   "content_type": "application/json; charset=utf-8"
+  },
+  {
+   "name": "llama-b10000-bin-win-cuda-13.3-x64.zip",
+   "state": "uploaded",
+   "size": 145609300,
+   "digest": "sha256:52612eb890cac41d4bdf35e56b82a45467af74986aff9a5b118f0c63b921ce59",
+   "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b10000/llama-b10000-bin-win-cuda-13.3-x64.zip",
+   "content_type": "application/json; charset=utf-8"
+  },
+  {
+   "name": "llama-b10000-bin-win-hip-radeon-x64.zip",
+   "state": "uploaded",
+   "size": 319391220,
+   "digest": "sha256:5f814ac6b8a62ad00cc92b715dc9861e99f952665c5663df952d63f39a861946",
+   "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b10000/llama-b10000-bin-win-hip-radeon-x64.zip",
+   "content_type": "application/json; charset=utf-8"
+  },
+  {
+   "name": "llama-b10000-bin-win-opencl-adreno-arm64.zip",
+   "state": "uploaded",
+   "size": 12851059,
+   "digest": "sha256:287ab878bacad4d542dcb3abeb22f4c3ceb0c2978dfdd1ef759b801a12dc76f8",
+   "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b10000/llama-b10000-bin-win-opencl-adreno-arm64.zip",
+   "content_type": "application/json; charset=utf-8"
+  },
+  {
+   "name": "llama-b10000-bin-win-openvino-2026.2.1-x64.zip",
+   "state": "uploaded",
+   "size": 80560378,
+   "digest": "sha256:7949448f33c87900bbb2a39eff413b63b0b9a02f47b070aa5a1cf1e10fef7cfc",
+   "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b10000/llama-b10000-bin-win-openvino-2026.2.1-x64.zip",
+   "content_type": "application/json; charset=utf-8"
+  },
+  {
+   "name": "llama-b10000-bin-win-sycl-x64.zip",
+   "state": "uploaded",
+   "size": 119698088,
+   "digest": "sha256:b78b786b709b47d6010565e1f62ea6623645f62570bdaeac7de949d6a96a4138",
+   "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b10000/llama-b10000-bin-win-sycl-x64.zip",
+   "content_type": "application/json; charset=utf-8"
+  },
+  {
+   "name": "llama-b10000-bin-win-vulkan-x64.zip",
+   "state": "uploaded",
+   "size": 32949905,
+   "digest": "sha256:912609dc57a19c497bf98fd7d8537ae4f756fe430b560ee0533d7142f96a4cc8",
+   "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b10000/llama-b10000-bin-win-vulkan-x64.zip",
+   "content_type": "application/json; charset=utf-8"
+  },
+  {
+   "name": "llama-b10000-ui.tar.gz",
+   "state": "uploaded",
+   "size": 2738808,
+   "digest": "sha256:dbd183a05e12c431020c2b577d82634361ba9694890546946442db86201e205b",
+   "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b10000/llama-b10000-ui.tar.gz",
+   "content_type": "application/json; charset=utf-8"
+  },
+  {
+   "name": "llama-b10000-xcframework.zip",
+   "state": "uploaded",
+   "size": 258616572,
+   "digest": "sha256:325b862774bfbb19d3002449d895b174f6f4c9a681bbd689d2c74c0c0b73d0bb",
+   "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b10000/llama-b10000-xcframework.zip",
+   "content_type": "application/json; charset=utf-8"
+  }
+ ]
+}

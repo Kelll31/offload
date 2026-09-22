@@ -1,0 +1,28 @@
+# Сборка .NET
+bin/
+obj/
+publish/
+dist/
+*.user
+*.suo
+.vs/
+TestResults/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# ОС
+.DS_Store
+Thumbs.db
+ehthumbs.db
+
+# Логи и временные файлы
+*.log
+*.tmp
+*.temp
+
+# Секреты и локальные данные
+.env
+*.gguf

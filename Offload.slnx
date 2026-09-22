@@ -1,0 +1,19 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Offload.App/Offload.App.csproj" />
+    <Project Path="src/Offload.Core/Offload.Core.csproj" />
+    <Project Path="src/Offload.Integrations/Offload.Integrations.csproj" />
+    <Project Path="src/Offload.Llama/Offload.Llama.csproj" />
+    <Project Path="src/Offload.Mcp/Offload.Mcp.csproj" />
+    <Project Path="src/Offload.Models/Offload.Models.csproj" />
+    <Project Path="src/Offload.OpenCode/Offload.OpenCode.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Offload.Core.Tests/Offload.Core.Tests.csproj" />
+    <Project Path="tests/Offload.Integrations.Tests/Offload.Integrations.Tests.csproj" />
+    <Project Path="tests/Offload.Llama.Tests/Offload.Llama.Tests.csproj" />
+    <Project Path="tests/Offload.Mcp.Tests/Offload.Mcp.Tests.csproj" />
+    <Project Path="tests/Offload.Models.Tests/Offload.Models.Tests.csproj" />
+    <Project Path="tests/Offload.OpenCode.Tests/Offload.OpenCode.Tests.csproj" />
+  </Folder>
+</Solution>

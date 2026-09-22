@@ -1,0 +1,6 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Offload.Integrations\Offload.Integrations.csproj" />
+    <ProjectReference Include="..\..\src\Offload.Core\Offload.Core.csproj" />
+  </ItemGroup>
+</Project>

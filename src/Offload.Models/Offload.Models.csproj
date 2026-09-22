@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <ItemGroup>
+    <ProjectReference Include="..\Offload.Core\Offload.Core.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="catalog.json" LogicalName="Offload.Models.catalog.json" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Offload.Models.Tests" />
+  </ItemGroup>
+</Project>

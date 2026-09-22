@@ -1,0 +1,114 @@
+{
+ "tag_name": "b6500",
+ "name": "b6500",
+ "draft": false,
+ "prerelease": false,
+ "created_at": "2025-09-17T17:29:13Z",
+ "published_at": "2025-09-17T18:15:33Z",
+ "assets": [
+  {
+   "name": "cudart-llama-bin-win-cuda-12.4-x64.zip",
+   "state": "uploaded",
+   "size": 391443627,
+   "digest": "sha256:8c79a9b226de4b3cacfd1f83d24f962d0773be79f1e7b75c6af4ded7e32ae1d6",
+   "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b6500/cudart-llama-bin-win-cuda-12.4-x64.zip",
+   "content_type": "application/json; charset=utf-8"
+  },
+  {
+   "name": "llama-b6500-bin-macos-arm64.zip",
+   "state": "uploaded",
+   "size": 10699243,
+   "digest": "sha256:4f34ae19823ee22e8036d6da91f083ca62ab926c2a0a4a5ce9df34897360087b",
+   "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b6500/llama-b6500-bin-macos-arm64.zip",
+   "content_type": "application/json; charset=utf-8"
+  },
+  {
+   "name": "llama-b6500-bin-macos-x64.zip",
+   "state": "uploaded",
+   "size": 29665445,
+   "digest": "sha256:6ff7ba3d9f8150735bae762bc3040cced6fd5a6de8997bf6af2fc840a3b27327",
+   "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b6500/llama-b6500-bin-macos-x64.zip",
+   "content_type": "application/json; charset=utf-8"
+  },
+  {
+   "name": "llama-b6500-bin-ubuntu-vulkan-x64.zip",
+   "state": "uploaded",
+   "size": 26288687,
+   "digest": "sha256:ee15538d98808f15d13a474d2554bc708a475e35bf560e1d0d21b9e96bc5f8ea",
+   "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b6500/llama-b6500-bin-ubuntu-vulkan-x64.zip",
+   "content_type": "application/json; charset=utf-8"
+  },
+  {
+   "name": "llama-b6500-bin-ubuntu-x64.zip",
+   "state": "uploaded",
+   "size": 12754315,
+   "digest": "sha256:716803084e565fe779bc2d01ea576c418be141f8fabac97509bc6d7c3cd786b2",
+   "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b6500/llama-b6500-bin-ubuntu-x64.zip",
+   "content_type": "application/json; charset=utf-8"
+  },
+  {
+   "name": "llama-b6500-bin-win-cpu-arm64.zip",
+   "state": "uploaded",
+   "size": 10853656,
+   "digest": "sha256:179b2f1202ce84d813437f158ea8d12c6b6835741d38f05678564e23cac3ab70",
+   "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b6500/llama-b6500-bin-win-cpu-arm64.zip",
+   "content_type": "application/json; charset=utf-8"
+  },
+  {
+   "name": "llama-b6500-bin-win-cpu-x64.zip",
+   "state": "uploaded",
+   "size": 13992302,
+   "digest": "sha256:73e00267e852e666a6fce2c3fb7a2603dd1934a37259f3f45c2c1b6983fa605a",
+   "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b6500/llama-b6500-bin-win-cpu-x64.zip",
+   "content_type": "application/json; charset=utf-8"
+  },
+  {
+   "name": "llama-b6500-bin-win-cuda-12.4-x64.zip",
+   "state": "uploaded",
+   "size": 152875111,
+   "digest": "sha256:332db710437eda65f4b98e487126be314e9ecbe7ec1ec8394feb6f5af34a16bb",
+   "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b6500/llama-b6500-bin-win-cuda-12.4-x64.zip",
+   "content_type": "application/json; charset=utf-8"
+  },
+  {
+   "name": "llama-b6500-bin-win-hip-radeon-x64.zip",
+   "state": "uploaded",
+   "size": 333805907,
+   "digest": "sha256:e1d61c91b3efdf3af7599016fd9dc2f2e4626cd8c9a98ea65b8dcd89478ac175",
+   "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b6500/llama-b6500-bin-win-hip-radeon-x64.zip",
+   "content_type": "application/json; charset=utf-8"
+  },
+  {
+   "name": "llama-b6500-bin-win-opencl-adreno-arm64.zip",
+   "state": "uploaded",
+   "size": 11280308,
+   "digest": "sha256:aeab8bc599c514732aee7334ae6dc7a05acd154a40b19ab8a0dbae37fbdbc25e",
+   "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b6500/llama-b6500-bin-win-opencl-adreno-arm64.zip",
+   "content_type": "application/json; charset=utf-8"
+  },
+  {
+   "name": "llama-b6500-bin-win-sycl-x64.zip",
+   "state": "uploaded",
+   "size": 98810406,
+   "digest": "sha256:1824d582398f59ad9ec7855591cff5bb778b60efb364f70ffa5db01987c99c45",
+   "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b6500/llama-b6500-bin-win-sycl-x64.zip",
+   "content_type": "application/json; charset=utf-8"
+  },
+  {
+   "name": "llama-b6500-bin-win-vulkan-x64.zip",
+   "state": "uploaded",
+   "size": 27031148,
+   "digest": "sha256:d485ce9cdda9967d2b27a054bb7e16b57a56a332a4b54b2f02964b95ee591548",
+   "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b6500/llama-b6500-bin-win-vulkan-x64.zip",
+   "content_type": "application/json; charset=utf-8"
+  },
+  {
+   "name": "llama-b6500-xcframework.zip",
+   "state": "uploaded",
+   "size": 89621007,
+   "digest": "sha256:00e8636fdb02a2cbfec5612d8835b1cc33a1a23242195db331933ce7d4514975",
+   "browser_download_url": "https://github.com/ggml-org/llama.cpp/releases/download/b6500/llama-b6500-xcframework.zip",
+   "content_type": "application/json; charset=utf-8"
+  }
+ ]
+}

@@ -1,0 +1,206 @@
+[
+ {
+  "type": "directory",
+  "oid": "7572a52f357dfbe57202446d328c64a9b8350109",
+  "size": 0,
+  "path": "BF16"
+ },
+ {
+  "type": "directory",
+  "oid": "923d8cf03a64f06ce97ba5485f312d6ed70ff1f8",
+  "size": 0,
+  "path": "Q5_K_M"
+ },
+ {
+  "type": "directory",
+  "oid": "2d66bc1790401a56fa632be10ad43ecefe036588",
+  "size": 0,
+  "path": "Q8_0"
+ },
+ {
+  "type": "directory",
+  "oid": "866641661cede39f2e18f982f8d69a86acc27aa0",
+  "size": 0,
+  "path": "UD-Q5_K_M"
+ },
+ {
+  "type": "file",
+  "oid": "0a8a25edb7b4ad56ae891ff4a89d98e9c4aaac1e",
+  "size": 8015,
+  "path": ".gitattributes"
+ },
+ {
+  "type": "file",
+  "oid": "043e11c9ebb1ad2f1fce6a1b7bda8a58a7de1ca5",
+  "size": 5936320,
+  "lfs": {
+   "oid": "183e233cc93de594cf343d914bb2ba21f7ae252ac4699b52b83c1200327f4b11",
+   "size": 5936320,
+   "pointerSize": 132
+  },
+  "xetHash": "9633608dc2565257e478917797551eac8fd7053123d307caed1542b2df0851bb",
+  "path": "Q5_K_M/Qwen3-Coder-Next-Q5_K_M-00001-of-00003.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "382739bd8c7527c1cd006de2529681a1f1b58cfe",
+  "size": 49604927264,
+  "lfs": {
+   "oid": "bcfc3c900a2b6ed0d7d5c51397edd55261a0562a1ce64b62204c4576c3ecafd0",
+   "size": 49604927264,
+   "pointerSize": 136
+  },
+  "xetHash": "e20fb4af01150b5674d85fea77f66c808e3712ef69cb32186c336beb53b069f8",
+  "path": "Q5_K_M/Qwen3-Coder-Next-Q5_K_M-00002-of-00003.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "1963b83e0b9df74a2e5ecf56c899b95a5bd2a250",
+  "size": 7237023104,
+  "lfs": {
+   "oid": "9b49c5c452924ca3b0864c6a32b3e5ebd14d6a063c5a89c976947347ed9a802c",
+   "size": 7237023104,
+   "pointerSize": 135
+  },
+  "xetHash": "1613fc9eb1ec9d183d6f724310ca751d19ba5e00d6a1c6f3c8df091c1bb5f5ac",
+  "path": "Q5_K_M/Qwen3-Coder-Next-Q5_K_M-00003-of-00003.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "8e28c89ba4c2c74419638ae899a0cb497d45434b",
+  "size": 5936288,
+  "lfs": {
+   "oid": "8fceb6409e609f9d4d92658fc926c7fb1dc045d229cf509ef5bbae352867ba41",
+   "size": 5936288,
+   "pointerSize": 132
+  },
+  "xetHash": "a0f48ddf237a7e05fbeee89c72a998712f72fb84fcbfef7ee2cdfdebc1c68afb",
+  "path": "Q8_0/Qwen3-Coder-Next-Q8_0-00001-of-00003.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "29d094038d01febc9412fa09a2689497f22607f9",
+  "size": 49772613984,
+  "lfs": {
+   "oid": "491753e1ed8f20a5b898ae2f47ca58bed2707b56c00a3ec7c0b681b46d953ff8",
+   "size": 49772613984,
+   "pointerSize": 136
+  },
+  "xetHash": "c7b86ecaefa713adaeb97384acbcac4cb4d32d4f5292a96d0facf6677c849d10",
+  "path": "Q8_0/Qwen3-Coder-Next-Q8_0-00002-of-00003.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "b1c45113c624fa0828ceb3b46d9a5ee52cfa244d",
+  "size": 35033705312,
+  "lfs": {
+   "oid": "4dced2b07a817f1e0c085fcc332b76c6e32bbab5e0c43311e0224f6249e03366",
+   "size": 35033705312,
+   "pointerSize": 136
+  },
+  "xetHash": "e361ebd3b6380e38736458c420b86165b7f42adb7db85561d0bce5f5a5621d40",
+  "path": "Q8_0/Qwen3-Coder-Next-Q8_0-00003-of-00003.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "ae984e028c34e15ab7b324a92d2874d5d4b38e85",
+  "size": 42676135968,
+  "lfs": {
+   "oid": "9039c9ebc67360f8760f32c8c72f800a74454b17c3fa287c0e2f34a55794e463",
+   "size": 42676135968,
+   "pointerSize": 136
+  },
+  "xetHash": "b6a05b10d789cdea9a19d807b2edfdb67709dbac6d7b279244d2c84836993752",
+  "path": "Qwen3-Coder-Next-IQ4_XS.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "7915a593af90eb5bee87d75a9c90ef28fa6e9f35",
+  "size": 48033779712,
+  "lfs": {
+   "oid": "bf0d98f2100bae4de7f6fda5a3b215a23fcfa241de218a449b67db7330cfe2a8",
+   "size": 48033779712,
+   "pointerSize": 136
+  },
+  "xetHash": "d02701d039ade073a08fa93e8b31de979c282b0a0b1a5bdd1c7c9d7f19a0f77d",
+  "path": "Qwen3-Coder-Next-MXFP4_MOE.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "dfde9171e4197c91ef689a1b5fc6818a982c1cb3",
+  "size": 48528320544,
+  "lfs": {
+   "oid": "9e6032d2f3b50a60f17ce8bf5a1d85c71af9b53b89c7978020ae7c660f29b090",
+   "size": 48528320544,
+   "pointerSize": 136
+  },
+  "xetHash": "06c32efd8671a9866612e0ecc30ae37bf5b53ab4500aaedd9da837a1e06c07e9",
+  "path": "Qwen3-Coder-Next-Q4_K_M.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "0ecca21eee561f225dd977abcfafe0502753d292",
+  "size": 49301055488,
+  "lfs": {
+   "oid": "3a47167ad1bf9e9a79f233f799588d54f85bc65644e72c19251165823e7ae612",
+   "size": 49301055488,
+   "pointerSize": 136
+  },
+  "xetHash": "47768ba5edd1dbe082b1cf90f93d7dcd8f5a4b73e85aaf2b985c9f2319d75fd0",
+  "path": "Qwen3-Coder-Next-UD-Q4_K_M.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "abc9b96a9395a6db007e4ac4f31def87d43325ee",
+  "size": 49608478720,
+  "lfs": {
+   "oid": "4bb93f0a0221ef4ff963ca9094df629c8dfdfabc3b4fdd85c1a2e4c0624fce36",
+   "size": 49608478720,
+   "pointerSize": 136
+  },
+  "xetHash": "c03e91a6be257efe0d3b64267dc1b13d4ce031e4c3b46e657cc59ebd604ec60d",
+  "path": "Qwen3-Coder-Next-UD-Q4_K_XL.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "2e7bfb6666be14d602b92f87edeac17054d9e0fb",
+  "size": 9711,
+  "path": "README.md"
+ },
+ {
+  "type": "file",
+  "oid": "19711ff7aa6ae7607f6c464d12de74d354aa9d7e",
+  "size": 5936288,
+  "lfs": {
+   "oid": "cc49a0fde9c28ea8ce9bd4bdf053ca96a25c8c1fe4993a33b5db543a8eaf92eb",
+   "size": 5936288,
+   "pointerSize": 132
+  },
+  "xetHash": "99a28f5da8091bc674238f8b0847e15382ed06fe6c681bb073d9673506b9314b",
+  "path": "UD-Q5_K_M/Qwen3-Coder-Next-UD-Q5_K_M-00001-of-00003.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "d8bae94eeb6c04ebe38d4699a8f79ee2ef0bf19b",
+  "size": 49941862624,
+  "lfs": {
+   "oid": "9e86604dd42bc56b9f36dfbc0c114bf2b98978d3be58d7347d385eff90bf18a8",
+   "size": 49941862624,
+   "pointerSize": 136
+  },
+  "xetHash": "37e6ea7e05ab58826a2e722511929130eaa0df80d426da2422b867d48d840d85",
+  "path": "UD-Q5_K_M/Qwen3-Coder-Next-UD-Q5_K_M-00002-of-00003.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "00f592c1d32d3678f1af21fde5a1bd205c39e827",
+  "size": 9294210016,
+  "lfs": {
+   "oid": "aa71e21d3eb34d70e725df65ae84341f2c62e2f0cd19c3222c3b78b6629ff5c2",
+   "size": 9294210016,
+   "pointerSize": 135
+  },
+  "xetHash": "403aeeb0a916cc738458172b3177d9a4d9338290691a5a3d9377796d002995d3",
+  "path": "UD-Q5_K_M/Qwen3-Coder-Next-UD-Q5_K_M-00003-of-00003.gguf"
+ }
+]

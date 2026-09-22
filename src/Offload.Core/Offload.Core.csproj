@@ -1,0 +1,8 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Offload.Core</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Presets\*.md" LogicalName="Offload.Core.Presets.%(Filename).md" />
+  </ItemGroup>
+</Project>

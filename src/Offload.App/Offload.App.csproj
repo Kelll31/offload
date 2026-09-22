@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>Offload</AssemblyName>
+    <RootNamespace>Offload.App</RootNamespace>
+    <ApplicationIcon>Assets\app.ico</ApplicationIcon>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+    <ApplicationVisualStyles>true</ApplicationVisualStyles>
+    <ApplicationDefaultFont>Segoe UI, 9pt</ApplicationDefaultFont>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <Description>Offload — локальная модель-помощник для Claude Code и других IDE</Description>
+    <NoWarn>$(NoWarn);WFO5001;WFO5002;WFO1000</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="Assets\app.ico" LogicalName="Offload.App.app.ico" />
+    <EmbeddedResource Include="Assets\app-64.png" LogicalName="Offload.App.app-64.png" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Offload.Core\Offload.Core.csproj" />
+    <ProjectReference Include="..\Offload.Llama\Offload.Llama.csproj" />
+    <ProjectReference Include="..\Offload.Models\Offload.Models.csproj" />
+    <ProjectReference Include="..\Offload.OpenCode\Offload.OpenCode.csproj" />
+    <ProjectReference Include="..\Offload.Integrations\Offload.Integrations.csproj" />
+    <ProjectReference Include="..\Offload.Mcp\Offload.Mcp.csproj" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <RootNamespace>Offload.Mcp</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="ModelContextProtocol" Version="2.2.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.12" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Offload.Core\Offload.Core.csproj" />
+    <ProjectReference Include="..\Offload.Llama\Offload.Llama.csproj" />
+    <ProjectReference Include="..\Offload.OpenCode\Offload.OpenCode.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Offload.Mcp.Tests" />
+  </ItemGroup>
+</Project>
