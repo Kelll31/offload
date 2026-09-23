@@ -66,14 +66,14 @@ internal static class LocalServer
             {
                 Log.Warn("opencode", $"llama-server недоступен ({baseUrl}): {ex.Message}");
                 return new ServerProbe(false, null,
-                    $"Локальный сервер модели не отвечает ({baseUrl}). Запустите сервер в Offload и повторите попытку.");
+                    L.F("Локальный сервер модели не отвечает ({0}). Запустите сервер в Offload и повторите попытку.", baseUrl));
             }
 
             if (code != HttpStatusCode.ServiceUnavailable || sw.Elapsed >= maxLoadingWait) break;
             // 503 — модель ещё загружается.
             if (sw.Elapsed - lastReport >= TimeSpan.FromSeconds(10))
             {
-                report?.Invoke($"ожидание загрузки модели… {(int)sw.Elapsed.TotalSeconds} с");
+                report?.Invoke(L.F("ожидание загрузки модели… {0} с", (int)sw.Elapsed.TotalSeconds));
                 lastReport = sw.Elapsed;
             }
             await Task.Delay(TimeSpan.FromSeconds(2), ct);

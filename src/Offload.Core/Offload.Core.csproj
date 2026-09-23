@@ -4,5 +4,6 @@
   </PropertyGroup>
   <ItemGroup>
     <EmbeddedResource Include="Presets\*.md" LogicalName="Offload.Core.Presets.%(Filename).md" />
+    <EmbeddedResource Include="Localization\en\*.json" LogicalName="Offload.Core.Localization.en.%(Filename).json" />
   </ItemGroup>
 </Project>

@@ -12,6 +12,7 @@ TestResults/
 .vscode/
 .idea/
 *.swp
+.claude/
 
 # ОС
 .DS_Store

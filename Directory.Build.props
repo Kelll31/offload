@@ -14,4 +14,8 @@
     <Deterministic>true</Deterministic>
     <NoWarn>$(NoWarn);CA1416</NoWarn>
   </PropertyGroup>
+  <!-- Локализация интерфейса (L.T / L.F / L.Plural) доступна во всех проектах без using. -->
+  <ItemGroup>
+    <Using Include="Offload.Core.Localization" />
+  </ItemGroup>
 </Project>

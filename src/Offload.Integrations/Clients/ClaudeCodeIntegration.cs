@@ -69,7 +69,7 @@ internal static partial class ClaudeCli
 internal sealed class ClaudeCodeIntegration : JsonIntegration
 {
     public ClaudeCodeIntegration()
-        : base("claude-code", "Claude Code", "Перезапустите Claude Code или выполните команду /mcp в открытой сессии.")
+        : base("claude-code", "Claude Code", "Перезапустите Claude Code или выполните команду /mcp в открытой сессии.") // l10n-key
     {
     }
 
@@ -114,7 +114,7 @@ internal sealed class ClaudeCodeIntegration : JsonIntegration
                 var after = Probe(FilePath, spec, spec.Name);
                 if (r.Success && after.ToStatus(spec) == IntegrationStatus.Registered)
                 {
-                    var msg = MsgRegistered(FilePath) + " Использован claude CLI.";
+                    var msg = MsgRegistered(FilePath) + " " + L.T("Использован claude CLI.");
                     if (probe.State == ProbeState.Foreign) msg += " " + MsgReplacedForeign(probe.Entry?.Command);
                     return new IntegrationResult(true, msg, backup);
                 }
@@ -155,7 +155,7 @@ internal sealed class ClaudeCodeIntegration : JsonIntegration
                 var r = await ClaudeCli.RunAsync(cli, ["mcp", "remove", ServerName, "--scope", "user"], ct);
                 var after = Probe(FilePath, null, ServerName);
                 if (r.Success && after.State is ProbeState.Absent or ProbeState.FileMissing)
-                    return new IntegrationResult(true, MsgUnregistered(FilePath) + " Использован claude CLI.", backup);
+                    return new IntegrationResult(true, MsgUnregistered(FilePath) + " " + L.T("Использован claude CLI."), backup);
                 Log.Warn("Integrations", $"claude mcp remove не сработал (код {r.ExitCode}): {Trim(r.StdErr + r.StdOut)} — правим файл напрямую");
             }
             catch (OperationCanceledException)
@@ -181,7 +181,7 @@ internal sealed class ClaudeCodeIntegration : JsonIntegration
 internal sealed class QoderIntegration : JsonIntegration
 {
     public QoderIntegration()
-        : base("qoder", "Qoder", "Перезапустите Qoder; в Qoder CLI можно выполнить /mcp reload.")
+        : base("qoder", "Qoder", "Перезапустите Qoder; в Qoder CLI можно выполнить /mcp reload.") // l10n-key
     {
     }
 
@@ -226,7 +226,7 @@ internal sealed class QoderIntegration : JsonIntegration
                     await ClaudeCli.RunAsync(cli, ["mcp", "remove", "-s", "user", spec.Name], ct);
                 var r = await ClaudeCli.RunAsync(cli, ["mcp", "add", "-s", "user", spec.Name, "--", spec.Command, .. spec.Args], ct);
                 if (r.Success && Probe(FilePath, spec, spec.Name).ToStatus(spec) == IntegrationStatus.Registered)
-                    return new IntegrationResult(true, MsgRegistered(FilePath) + " Использован qoder CLI.", backup);
+                    return new IntegrationResult(true, MsgRegistered(FilePath) + " " + L.T("Использован qoder CLI."), backup);
                 Log.Warn("Integrations", $"qoder mcp add: код {r.ExitCode} — правим файл напрямую");
             }
             catch (OperationCanceledException)
@@ -250,7 +250,7 @@ internal sealed class QoderIntegration : JsonIntegration
             {
                 var r = await ClaudeCli.RunAsync(cli, ["mcp", "remove", "-s", "user", ServerName], ct);
                 if (r.Success && Probe(FilePath, null, ServerName).State is ProbeState.Absent or ProbeState.FileMissing)
-                    return new IntegrationResult(true, MsgUnregistered(FilePath) + " Использован qoder CLI.");
+                    return new IntegrationResult(true, MsgUnregistered(FilePath) + " " + L.T("Использован qoder CLI."));
             }
             catch (OperationCanceledException)
             {

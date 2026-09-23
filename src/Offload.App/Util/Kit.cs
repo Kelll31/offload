@@ -270,7 +270,8 @@ internal static class Kit
             Dock = DockStyle.Fill,
             Margin = new Padding(0, 3, 0, 6),
             Font = mono ? Theme.Mono(9f) : Theme.Regular(9f),
-            BackColor = readOnly ? Theme.Surface : SystemColors.Window,
+            BackColor = Theme.Input,
+            ForeColor = Theme.TextPrimary,
         };
     }
 

@@ -12,6 +12,7 @@ internal static class Tabs
     public const string OpenCode = "opencode";
     public const string Prompt = "prompt";
     public const string Log = "log";
+    public const string Settings = "settings";
     public const string About = "about";
 }
 
@@ -44,6 +45,15 @@ internal interface IAppShell
 
     /// <summary>Включить/выключить автозапуск с Windows (реестр + Ui.StartWithWindows).</summary>
     void SetAutostart(bool enabled, IWin32Window? owner = null);
+
+    /// <summary>Сменить тему (system / light / dark): сохранить, применить и пересоздать окно панели.</summary>
+    void ApplyTheme(string mode);
+
+    /// <summary>Применить внешний вид и язык из настроек (схема, свой акцент, язык): окно пересоздаётся, меню трея переводится.</summary>
+    void ApplyAppearance();
+
+    /// <summary>Главное окно будет пересоздано: спросить о несохранённых правках на его страницах. false — пользователь отказался.</summary>
+    bool ConfirmWindowRecreate(IWin32Window? owner);
 
     Task ExitAsync();
 }

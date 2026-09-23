@@ -195,7 +195,7 @@ public sealed class LlamaClient
         }
         catch (Exception ex) when (ex is HttpRequestException or IOException)
         {
-            throw new LlamaApiException($"Нет связи с llama-server ({BaseUrl}): {ex.Message}", null, ex);
+            throw new LlamaApiException(L.F("Нет связи с llama-server ({0}): {1}", BaseUrl, ex.Message), null, ex);
         }
 
         using (resp)
@@ -230,12 +230,12 @@ public sealed class LlamaClient
             catch (Exception ex) when (ex is IOException or HttpRequestException)
             {
                 throw new LlamaApiException(
-                    "Соединение с llama-server прервалось во время генерации (сервер перезапущен или завершился с ошибкой).", null, ex);
+                    L.T("Соединение с llama-server прервалось во время генерации (сервер перезапущен или завершился с ошибкой)."), null, ex);
             }
 
             if (!parser.Done && parser.FinishReason is null)
                 throw new LlamaApiException(
-                    "Ответ llama-server оборвался до завершения генерации (сервер перезапущен или завершился с ошибкой).");
+                    L.T("Ответ llama-server оборвался до завершения генерации (сервер перезапущен или завершился с ошибкой)."));
             return parser.ToResult(sw.Elapsed);
         }
     }

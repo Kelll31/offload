@@ -112,16 +112,16 @@ internal static class GitHubReleases
         }
 
         if (error is null)
-            throw new LlamaBuildNotFoundException($"В последних релизах llama.cpp нет сборки «{what}» для Windows.");
-        throw new InvalidOperationException($"Не удалось получить сведения о релизах llama.cpp: {Describe(error)}", error);
+            throw new LlamaBuildNotFoundException(L.F("В последних релизах llama.cpp нет сборки «{0}» для Windows.", what));
+        throw new InvalidOperationException(L.F("Не удалось получить сведения о релизах llama.cpp: {0}", Describe(error)), error);
     }
 
     private static string Describe(Exception ex) => ex switch
     {
         GitHubRateLimitException => ex.Message,
-        HttpRequestException { StatusCode: null } => "нет подключения к GitHub. Проверьте интернет и повторите попытку.",
-        HttpRequestException h => $"GitHub ответил ошибкой {(int)h.StatusCode!}.",
-        TaskCanceledException => "GitHub не ответил вовремя. Повторите попытку позже.",
+        HttpRequestException { StatusCode: null } => L.T("нет подключения к GitHub. Проверьте интернет и повторите попытку."),
+        HttpRequestException h => L.F("GitHub ответил ошибкой {0}.", (int)h.StatusCode!),
+        TaskCanceledException => L.T("GitHub не ответил вовремя. Повторите попытку позже."),
         _ => ex.Message,
     };
 
@@ -181,8 +181,8 @@ internal static class GitHubReleases
                 ? DateTimeOffset.FromUnixTimeSeconds(unix).ToLocalTime()
                 : (DateTimeOffset?)null;
             throw new GitHubRateLimitException(reset is null
-                ? "превышен лимит запросов к GitHub API (60 в час). Повторите попытку позже."
-                : $"превышен лимит запросов к GitHub API (60 в час). Повторите попытку после {reset:HH:mm}.");
+                ? L.T("превышен лимит запросов к GitHub API (60 в час). Повторите попытку позже.")
+                : L.F("превышен лимит запросов к GitHub API (60 в час). Повторите попытку после {0:HH:mm}.", reset));
         }
         resp.EnsureSuccessStatusCode();
         return await resp.Content.ReadAsStringAsync(ct);
@@ -334,7 +334,7 @@ internal static class AssetSelector
                 return rt is null ? null : new LlamaBuildSelection(backend, release, main.Value.Asset, rt);
             }
             default:
-                throw new ArgumentException("Сборку «Автоматически» нужно сначала разрешить через Recommend().", nameof(backend));
+                throw new ArgumentException(L.T("Сборку «Автоматически» нужно сначала разрешить через Recommend()."), nameof(backend));
         }
     }
 

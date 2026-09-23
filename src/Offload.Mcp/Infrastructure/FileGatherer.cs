@@ -198,7 +198,37 @@ internal static class FileGatherer
         return candidates;
     }
 
-    /// <summary>Проверка одного файла перед чтением: секреты, .git, ссылки наружу, двоичное расширение.</summary>
+    /// <summary>
+    /// Файлы по путям/папкам/glob, прошедшие те же проверки, что и при чтении (секреты, .git, ссылки наружу, двоичные расширения),
+    /// но без чтения содержимого — для индекса кода и поиска.
+    /// </summary>
+    public static async Task<List<string>> ListFilesAsync(IEnumerable<string> specs, IReadOnlyList<string> roots, GatherOptions options,
+        GatherResult result, CancellationToken ct)
+    {
+        var candidates = await ExpandAsync(specs, roots, options, result, ct).ConfigureAwait(false);
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var dirVerdicts = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        var list = new List<string>();
+        foreach (var (full, isExplicit) in candidates)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (!seen.Add(full)) continue;
+            var reason = CheckFile(full, options, roots, isExplicit) ?? (isExplicit ? null : CheckParentDir(full, roots, dirVerdicts));
+            if (reason is not null)
+            {
+                if (isExplicit) result.Skipped.Add(new(PathGuard.Display(full, roots), reason));
+                continue;
+            }
+            list.Add(full);
+            if (list.Count >= options.MaxFiles)
+            {
+                result.LimitNote = $"more than {options.MaxFiles} files; narrow the paths";
+                break;
+            }
+        }
+        return list;
+    }
+
     /// <summary>
     /// Проверка одного файла перед чтением: секреты, .git, двоичное расширение. Явно указанные файлы и ссылки
     /// проверяются и в канонической форме (junction/symlink, короткие имена 8.3) и с ограничениями вне проекта.

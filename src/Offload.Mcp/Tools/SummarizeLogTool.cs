@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.RegularExpressions;
 using Offload.Mcp.Infrastructure;
 
 namespace Offload.Mcp.Tools;
@@ -9,7 +10,7 @@ internal static class SummarizeLogTool
     /// <summary>Из очень больших логов читаем только конец (ошибки сборки/тестов почти всегда там).</summary>
     public const long MaxScanBytes = 256L * 1024 * 1024;
 
-    public static async Task<string> RunAsync(ToolContext ctx, string? path, string? focus, int tailLines, int maxAnswerTokens)
+    public static async Task<string> RunAsync(ToolContext ctx, string? path, string? focus, int tailLines, int maxAnswerTokens, string? pattern = null)
     {
         var raw = ToolHelpers.RequireText(path, "path", 1024);
         var full = ctx.ResolveRead(raw);
@@ -20,6 +21,7 @@ internal static class SummarizeLogTool
         if (focusText.Length > 500) focusText = focusText[..500];
         var maxAnswer = Math.Clamp(maxAnswerTokens <= 0 ? 600 : maxAnswerTokens, 64, 4096);
         var display = ctx.Display(full);
+        if (!string.IsNullOrWhiteSpace(pattern)) return Grep(full, display, pattern!, tailLines, ctx.Ct);
 
         ctx.Progress.Report($"Scanning {display}…");
         var (digest, bytesScanned, skippedHead) = ReadDigest(full, tailLines, ctx.Ct);
@@ -64,6 +66,65 @@ internal static class SummarizeLogTool
         if (reply.Truncated) text += $"\n[summary cut at max_answer_tokens={maxAnswer}]";
         var stats = $"log: {display} · {digest.TotalLines} lines · {digest.ErrorLines} error-pattern lines";
         return text + "\n\n" + stats;
+    }
+
+    /// <summary>
+    /// Поиск по логу без модели (pattern — regex или текст): совпадения с номерами строк и частоты «похожих» строк
+    /// (цифры/hex/GUID заменены на #) — для поиска событий и корреляции по id запроса/задачи/потока.
+    /// </summary>
+    internal static string Grep(string full, string display, string pattern, int tailLines, CancellationToken ct)
+    {
+        Regex regex;
+        try
+        {
+            regex = new Regex(pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(200));
+        }
+        catch (ArgumentException)
+        {
+            regex = new Regex(Regex.Escape(pattern), RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        }
+        long lineCount = 0;
+        if (tailLines > 0)
+            foreach (var _ in File.ReadLines(full)) lineCount++;
+        var firstLine = tailLines > 0 ? Math.Max(1, lineCount - tailLines + 1) : 1;
+
+        const int MaxShown = 80;
+        var hits = new Queue<(long Line, string Text)>();
+        var shapes = new Dictionary<string, int>(StringComparer.Ordinal);
+        long n = 0, total = 0;
+        var norm = new Regex(@"[0-9a-fA-F]{8}-[0-9a-fA-F-]{27}|0x[0-9a-fA-F]+|\d+", RegexOptions.CultureInvariant);
+        foreach (var raw in File.ReadLines(full))
+        {
+            n++;
+            if ((n & 0xFFF) == 0) ct.ThrowIfCancellationRequested();
+            if (n < firstLine) continue;
+            var line = LogPrefilter.CleanLine(raw, 8000);
+            bool match;
+            try { match = regex.IsMatch(line); }
+            catch (RegexMatchTimeoutException) { throw new ToolException("pattern is too slow (catastrophic backtracking); simplify it or use plain text."); }
+            if (!match) continue;
+            total++;
+            // При tail_lines — последние совпадения, иначе первые.
+            if (hits.Count < MaxShown) hits.Enqueue((n, line.Length > 300 ? line[..300] + "…" : line));
+            else if (tailLines > 0)
+            {
+                hits.Dequeue();
+                hits.Enqueue((n, line.Length > 300 ? line[..300] + "…" : line));
+            }
+            var shape = norm.Replace(line.Length > 200 ? line[..200] : line, "#");
+            if (shapes.Count < 5000 || shapes.ContainsKey(shape)) shapes[shape] = shapes.GetValueOrDefault(shape) + 1;
+        }
+        if (total == 0) return $"No lines in {display} ({n} lines) match \"{pattern}\".";
+        var sb = new StringBuilder($"{total} of {n} lines in {display} match \"{pattern}\"");
+        sb.Append(total > hits.Count ? $" ({(tailLines > 0 ? "last" : "first")} {hits.Count} shown)\n" : "\n");
+        foreach (var (line, text) in hits) sb.Append('L').Append(line).Append(": ").Append(text).Append('\n');
+        var top = shapes.Where(kv => kv.Value > 1).OrderByDescending(kv => kv.Value).Take(8).ToList();
+        if (top.Count > 0)
+        {
+            sb.Append("most frequent shapes (numbers/ids → #):\n");
+            foreach (var (shape, count) in top) sb.Append($"  {count}× {(shape.Length > 160 ? shape[..160] + "…" : shape)}\n");
+        }
+        return sb.ToString().TrimEnd();
     }
 
     /// <summary>Потоковое чтение лога (кодировка по BOM / строгому UTF-8 / cp1251) и фильтрация.</summary>

@@ -20,7 +20,7 @@ internal class JsonIntegration(string id, string displayName, string? hint) : In
 {
     public override string Id => id;
     public override string DisplayName => displayName;
-    public override string? PostRegisterHint => hint;
+    public override string? PostRegisterHint => hint is null ? null : L.T(hint);
 
     /// <summary>Установлен ли клиент.</summary>
     public required Func<bool> Detect { get; init; }
@@ -93,12 +93,12 @@ internal class JsonIntegration(string id, string displayName, string? hint) : In
     private void ValidateStructure(JsoncEditor ed)
     {
         if (ed.IsEmpty) return;
-        if (ed.KindAt([]) != JsoncKind.Object) throw new JsoncEditException("корень файла не является объектом JSON");
+        if (ed.KindAt([]) != JsoncKind.Object) throw new JsoncEditException(L.T("корень файла не является объектом JSON"));
         for (var i = 1; i <= Container.Length; i++)
         {
             var kind = ed.KindAt(Container.Take(i).ToArray());
             if (kind is not null and not JsoncKind.Object and not JsoncKind.Null)
-                throw new JsoncEditException($"«{string.Join('.', Container.Take(i))}» не является объектом");
+                throw new JsoncEditException(L.F("«{0}» не является объектом", string.Join('.', Container.Take(i))));
         }
     }
 

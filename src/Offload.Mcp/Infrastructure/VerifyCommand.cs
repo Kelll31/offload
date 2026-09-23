@@ -60,6 +60,9 @@ internal static class VerifyCommand
         new("--init-script"), new("--testrunner"), new("--globalsetup"), new("--globalteardown"), new("--setupfiles"),
         new("--script"), new("--build-and-test"), new("--build-options"), new("--include-dir"), new("--makefile"),
         new("--file"), new("--directory"),
+        // Линтеры/форматтеры только проверяют: исправление и запись отчётов в файлы — в обход снимков JobStore.
+        new("--fix"), new("--output-file"), new("--write"), new("--rulesdir"), new("--plugin"), new("--resolve-plugins-relative-to"),
+        new("-o", Prefix: false, Tools: NodeTools), new("-w", Prefix: false, Tools: NodeTools),
         new("-Z", CaseSensitive: true, Tools: ["cargo"]),
         new("-I", CaseSensitive: true, Tools: ["gradle", "gradlew", "make"]), new("-P", CaseSensitive: true, Tools: ["gradle", "gradlew"]),
         new("-c", Prefix: false, Tools: NodeTools),
@@ -211,7 +214,9 @@ internal static class VerifyCommand
         ["CLAUDE_PROJECT_DIR"] = null,
     };
 
-    public static async Task<VerifyResult> RunAsync(string validatedCommand, string workDir, TimeSpan timeout, ProgressReporter progress, CancellationToken ct)
+    /// <param name="onLine">Каждая строка вывода (stdout и stderr, из разных потоков) — например, для записи полного лога.</param>
+    public static async Task<VerifyResult> RunAsync(string validatedCommand, string workDir, TimeSpan timeout, ProgressReporter progress, CancellationToken ct,
+        Action<string>? onLine = null)
     {
         var cmd = validatedCommand;
         var tokens = Tokenize(cmd);
@@ -245,6 +250,7 @@ internal static class VerifyCommand
                 MaxLineChars = 1000,
                 OnAnyLine = l =>
                 {
+                    onLine?.Invoke(l);
                     Interlocked.Increment(ref lines);
                     if (l.Trim().Length > 0) last = l.Trim();
                 },

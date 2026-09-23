@@ -65,8 +65,8 @@ internal sealed class InstallStep : WizardStep
 
     public InstallStep(WizardContext ctx) : base(ctx)
     {
-        _retry = Kit.Primary("Повторить", async (_, _) => await RunFromAsync(_failedIndex, retry: true));
-        _skip = Kit.Button("Пропустить", async (_, _) => await SkipAsync());
+        _retry = Kit.Primary(L.T("Повторить"), async (_, _) => await RunFromAsync(_failedIndex, retry: true));
+        _skip = Kit.Button(L.T("Пропустить"), async (_, _) => await SkipAsync());
         _progress.CancelRequested += (_, _) => CancelRunning();
 
         var root = Kit.Table();
@@ -100,11 +100,11 @@ internal sealed class InstallStep : WizardStep
         Disposed += (_, _) => _tip.Dispose();
     }
 
-    public override string Title => "Установка";
+    public override string Title => L.T("Установка");
 
-    public override string Heading => "Установка";
+    public override string Heading => L.T("Установка");
 
-    public override string? Subtitle => _finished ? "Установка завершена." : "Не закрывайте окно — загрузка может занять некоторое время.";
+    public override string? Subtitle => _finished ? L.T("Установка завершена.") : L.T("Не закрывайте окно — загрузка может занять некоторое время.");
 
     public override bool CanGoNext => _finished && !_running;
 
@@ -136,18 +136,18 @@ internal sealed class InstallStep : WizardStep
     {
         var s = State;
         var backendName = Texts.Backend(s.Backend);
-        var modelName = s.Model?.Name ?? "модель";
+        var modelName = s.Model?.Name ?? L.T("модель");
         _tasks =
         [
             new("vcredist", "Microsoft Visual C++ Redistributable", true, RunVcAsync),
             new("llama", $"llama.cpp ({backendName})", false, RunLlamaAsync),
-            new("gpu", "Проверка видеокарты", true, RunGpuCheckAsync),
-            new("model", $"Модель «{modelName}»", false, RunModelAsync),
+            new("gpu", L.T("Проверка видеокарты"), true, RunGpuCheckAsync),
+            new("model", L.F("Модель «{0}»", modelName), false, RunModelAsync),
             new("opencode", "OpenCode", true, RunOpenCodeAsync),
-            new("server", "Запуск сервера", true, RunServerAsync),
-            new("smoke", "Проверка ответа модели", true, RunSmokeAsync),
-            new("opencode-config", "Настройка OpenCode", true, RunOpenCodeConfigAsync),
-            new("ide", "Подключение к IDE и автозапуск", true, RunIdeAsync),
+            new("server", L.T("Запуск сервера"), true, RunServerAsync),
+            new("smoke", L.T("Проверка ответа модели"), true, RunSmokeAsync),
+            new("opencode-config", L.T("Настройка OpenCode"), true, RunOpenCodeConfigAsync),
+            new("ide", L.T("Подключение к IDE и автозапуск"), true, RunIdeAsync),
         ];
         _finished = false;
         _failedIndex = -1;
@@ -177,7 +177,7 @@ internal sealed class InstallStep : WizardStep
                 }
             }
             _finished = true;
-            _progress.Finish("Все этапы выполнены.", _tasks.All(t => t.Status != StageStatus.Failed));
+            _progress.Finish(L.T("Все этапы выполнены."), _tasks.All(t => t.Status != StageStatus.Failed));
             Log.Info("wizard", "Установка завершена");
         }
         finally
@@ -225,7 +225,7 @@ internal sealed class InstallStep : WizardStep
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             t.Status = StageStatus.Failed;
-            t.Detail = "Отменено.";
+            t.Detail = L.T("Отменено.");
             Log.Info("wizard", $"{t.Title}: отменено пользователем");
         }
         catch (Exception ex)
@@ -245,7 +245,7 @@ internal sealed class InstallStep : WizardStep
         var t = _tasks[_failedIndex];
         if (!t.Optional) return;
         t.Status = StageStatus.Skipped;
-        t.Detail = "Пропущено: " + (t.Detail ?? "");
+        t.Detail = L.F("Пропущено: {0}", t.Detail ?? "");
         Render(t);
         var next = _failedIndex + 1;
         _failedIndex = -1;
@@ -268,7 +268,7 @@ internal sealed class InstallStep : WizardStep
             _ => ("○", Theme.Gray),
         };
         line.Title.ForeColor = t.Status == StageStatus.Pending ? Theme.TextMuted : Theme.TextPrimary;
-        line.Detail.Text = t.Status == StageStatus.Running ? "выполняется…" : t.Detail ?? "";
+        line.Detail.Text = t.Status == StageStatus.Running ? L.T("выполняется…") : t.Detail ?? "";
         line.Detail.ForeColor = t.Status switch
         {
             StageStatus.Failed => Theme.ErrorText,
@@ -285,7 +285,7 @@ internal sealed class InstallStep : WizardStep
         var running = _tasks.Any(t => t.Status == StageStatus.Running) ? Math.Clamp(currentFraction ?? 0, 0, 1) : 0;
         var f = (done + running) / _tasks.Count;
         _overall.Value = (int)Math.Round(Math.Clamp(f, 0, 1) * 1000);
-        _overallText.Text = $"{done} из {_tasks.Count}";
+        _overallText.Text = L.F("{0} из {1}", done, _tasks.Count);
     }
 
     private void ShowError(InstallTask? t)
@@ -294,23 +294,24 @@ internal sealed class InstallStep : WizardStep
         _error.Visible = show;
         _errorButtons.Visible = show;
         if (t is null) return;
-        _error.Text = t.Detail == "Отменено."
-            ? $"Установка прервана на этапе «{t.Title}». Нажмите «Повторить», чтобы продолжить."
-            : $"Этап «{t.Title}» не выполнен: {t.Detail}";
+        var canceled = t.Detail == L.T("Отменено.");
+        _error.Text = canceled
+            ? L.F("Установка прервана на этапе «{0}». Нажмите «Повторить», чтобы продолжить.", t.Title)
+            : L.F("Этап «{0}» не выполнен: {1}", t.Title, t.Detail);
         _skip.Visible = t.Optional;
-        _progress.Finish(t.Detail == "Отменено." ? "Установка прервана." : "Установка остановлена из-за ошибки.", false);
+        _progress.Finish(canceled ? L.T("Установка прервана.") : L.T("Установка остановлена из-за ошибки."), false);
     }
 
     // ---------- Этапы ----------
 
     private static async Task<string?> RunVcAsync(InstallTask t, IProgress<StepProgress> p, CancellationToken ct)
     {
-        if (VcRuntime.IsInstalled()) return "уже установлен";
-        p.Report(new StepProgress("Установка Microsoft Visual C++ Redistributable…", null, "Windows попросит подтвердить установку"));
+        if (VcRuntime.IsInstalled()) return L.T("уже установлен");
+        p.Report(new StepProgress(L.T("Установка Microsoft Visual C++ Redistributable…"), null, L.T("Windows попросит подтвердить установку")));
         if (!await VcRuntime.InstallAsync(p, ct))
-            throw new InvalidOperationException("Установка не завершена — возможно, запрос прав администратора был отклонён. " +
-                                                "Без этих библиотек llama.cpp может не запуститься.");
-        return "установлен";
+            throw new InvalidOperationException(L.T(
+                "Установка не завершена — возможно, запрос прав администратора был отклонён. Без этих библиотек llama.cpp может не запуститься."));
+        return L.T("установлен");
     }
 
     private async Task<string?> RunLlamaAsync(InstallTask t, IProgress<StepProgress> p, CancellationToken ct)
@@ -320,7 +321,7 @@ internal sealed class InstallStep : WizardStep
         if (LlamaInstaller.IsInstalled(cfg) && cfg.Llama.InstalledBackend == backend)
         {
             ConfigStore.Update(c => c.Llama.Backend = backend);
-            return $"уже установлена ({cfg.Llama.InstalledTag})";
+            return L.F("уже установлена ({0})", cfg.Llama.InstalledTag);
         }
         var r = await LlamaInstaller.InstallAsync(backend, p, ct);
         ConfigStore.Update(c => c.Llama.Backend = backend);
@@ -329,17 +330,17 @@ internal sealed class InstallStep : WizardStep
 
     private async Task<string?> RunGpuCheckAsync(InstallTask t, IProgress<StepProgress> p, CancellationToken ct)
     {
-        if (State.Backend == LlamaBackend.Cpu) throw new InstallSkipped("не требуется для сборки «Только процессор»");
+        if (State.Backend == LlamaBackend.Cpu) throw new InstallSkipped(L.T("не требуется для сборки «Только процессор»"));
         var devices = await ListGpuDevicesAsync(p, ct);
         if (devices.Count > 0) return devices[0];
 
         var backend = State.Backend;
         if (backend != LlamaBackend.Vulkan &&
             Ui.Confirm(Ctx.Form,
-                $"Сборка llama.cpp «{Texts.Backend(backend)}» не видит видеокарту — модель будет работать только на процессоре (медленно).{Environment.NewLine}{Environment.NewLine}" +
-                "Установить сборку Vulkan? Она работает почти с любой видеокартой.", warning: true))
+                L.F("Сборка llama.cpp «{0}» не видит видеокарту — модель будет работать только на процессоре (медленно).{1}{1}Установить сборку Vulkan? Она работает почти с любой видеокартой.",
+                    Texts.Backend(backend), Environment.NewLine), warning: true))
         {
-            p.Report(new StepProgress("Установка сборки Vulkan…"));
+            p.Report(new StepProgress(L.T("Установка сборки Vulkan…")));
             var r = await LlamaInstaller.InstallAsync(LlamaBackend.Vulkan, p, ct);
             State.Backend = LlamaBackend.Vulkan;
             ConfigStore.Update(c => c.Llama.Backend = LlamaBackend.Vulkan);
@@ -353,14 +354,14 @@ internal sealed class InstallStep : WizardStep
             devices = await ListGpuDevicesAsync(p, ct);
             if (devices.Count > 0) return devices[0];
         }
-        throw new InstallWarning("видеокарта не найдена — модель будет работать на процессоре");
+        throw new InstallWarning(L.T("видеокарта не найдена — модель будет работать на процессоре"));
     }
 
     private static async Task<IReadOnlyList<string>> ListGpuDevicesAsync(IProgress<StepProgress> p, CancellationToken ct)
     {
-        p.Report(new StepProgress("Проверка устройств llama.cpp…"));
+        p.Report(new StepProgress(L.T("Проверка устройств llama.cpp…")));
         var exe = LlamaInstaller.GetServerExePath(ConfigStore.Current)
-                  ?? throw new InvalidOperationException("llama-server.exe не найден.");
+                  ?? throw new InvalidOperationException(L.T("llama-server.exe не найден."));
         IReadOnlyList<string> devices;
         try
         {
@@ -369,14 +370,14 @@ internal sealed class InstallStep : WizardStep
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             if (ex is LlamaVcRuntimeMissingException) throw new InstallWarning(ex.Message);
-            throw new InstallWarning("не удалось получить список устройств: " + Ui.FriendlyError(ex));
+            throw new InstallWarning(L.F("не удалось получить список устройств: {0}", Ui.FriendlyError(ex)));
         }
         return devices.Where(d => !d.TrimStart().StartsWith("CPU", StringComparison.OrdinalIgnoreCase)).ToList();
     }
 
     private async Task<string?> RunModelAsync(InstallTask t, IProgress<StepProgress> p, CancellationToken ct)
     {
-        var row = State.Model ?? throw new InvalidOperationException("Модель не выбрана.");
+        var row = State.Model ?? throw new InvalidOperationException(L.T("Модель не выбрана."));
         var cfg = ConfigStore.Current;
         if (!string.IsNullOrWhiteSpace(State.ModelsDir) &&
             !string.Equals(cfg.Models.ModelsDir, State.ModelsDir, StringComparison.OrdinalIgnoreCase))
@@ -391,11 +392,11 @@ internal sealed class InstallStep : WizardStep
         if (existing is not null && File.Exists(existing.FilePath))
         {
             installed = existing;
-            detail = "уже установлена";
+            detail = L.T("уже установлена");
         }
         else
         {
-            var catalog = row.Catalog ?? throw new InvalidOperationException("Файл модели не найден, а в каталоге её нет — выберите другую модель.");
+            var catalog = row.Catalog ?? throw new InvalidOperationException(L.T("Файл модели не найден, а в каталоге её нет — выберите другую модель."));
             installed = await ModelManager.DownloadAsync(catalog, State.Quant, p, ct);
             detail = $"{installed.Quant ?? State.Quant} · {FileUtil.FormatBytes(installed.SizeBytes)}";
         }
@@ -408,18 +409,18 @@ internal sealed class InstallStep : WizardStep
     {
         var install = State.InstallOpenCode;
         ConfigStore.Update(c => c.OpenCode.Enabled = install);
-        if (!install) throw new InstallSkipped("не выбрано");
+        if (!install) throw new InstallSkipped(L.T("не выбрано"));
         var cfg = ConfigStore.Current;
         if (OpenCodeInstaller.FindExecutable(cfg) is not null)
-            return "уже установлен" + (cfg.OpenCode.InstalledVersion is { } v ? $" ({v})" : "");
+            return L.T("уже установлен") + (cfg.OpenCode.InstalledVersion is { } v ? $" ({v})" : "");
         var r = await OpenCodeInstaller.InstallAsync(p, ct);
-        return $"версия {r.Version}";
+        return L.F("версия {0}", r.Version);
     }
 
     private async Task<string?> RunServerAsync(InstallTask t, IProgress<StepProgress> p, CancellationToken ct)
     {
         var server = Ctx.Shell.Server;
-        p.Report(new StepProgress("Загрузка модели в память…", null, "первый запуск может занять пару минут"));
+        p.Report(new StepProgress(L.T("Загрузка модели в память…"), null, L.T("первый запуск может занять пару минут")));
         if (server.State == ServerState.Running)
         {
             // Модель или сборка могли смениться — перезапускаем с новыми параметрами.
@@ -429,47 +430,47 @@ internal sealed class InstallStep : WizardStep
 
         if (server.LastException is LlamaVcRuntimeMissingException vc)
         {
-            if (!Ui.Confirm(Ctx.Form, vc.Message + Environment.NewLine + Environment.NewLine + "Установить Visual C++ Redistributable сейчас?"))
+            if (!Ui.Confirm(Ctx.Form, vc.Message + Environment.NewLine + Environment.NewLine + L.T("Установить Visual C++ Redistributable сейчас?")))
                 throw new InvalidOperationException(vc.Message);
-            p.Report(new StepProgress("Установка Microsoft Visual C++ Redistributable…"));
+            p.Report(new StepProgress(L.T("Установка Microsoft Visual C++ Redistributable…")));
             if (!await VcRuntime.InstallAsync(p, ct))
-                throw new InvalidOperationException("Visual C++ Redistributable не установлен.");
+                throw new InvalidOperationException(L.T("Visual C++ Redistributable не установлен."));
             var vcTask = _tasks.FirstOrDefault(x => x.Id == "vcredist");
             if (vcTask is not null)
             {
                 vcTask.Status = StageStatus.Done;
-                vcTask.Detail = "установлен";
+                vcTask.Detail = L.T("установлен");
                 Render(vcTask);
             }
-            p.Report(new StepProgress("Загрузка модели в память…"));
+            p.Report(new StepProgress(L.T("Загрузка модели в память…")));
             if (await server.StartAsync(true, ct)) return server.Summary;
         }
-        throw new InvalidOperationException(server.LastError ?? "Сервер не запустился — подробности в журнале llama-server.");
+        throw new InvalidOperationException(server.LastError ?? L.T("Сервер не запустился — подробности в журнале llama-server."));
     }
 
     private async Task<string?> RunSmokeAsync(InstallTask t, IProgress<StepProgress> p, CancellationToken ct)
     {
-        if (Ctx.Shell.Server.State != ServerState.Running) throw new InstallSkipped("сервер не запущен");
-        p.Report(new StepProgress("Тестовый запрос к модели…"));
+        if (Ctx.Shell.Server.State != ServerState.Running) throw new InstallSkipped(L.T("сервер не запущен"));
+        p.Report(new StepProgress(L.T("Тестовый запрос к модели…")));
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(TimeSpan.FromMinutes(3));
         try
         {
             var r = await ModelCheck.RunAsync(ConfigStore.Current, timeout.Token);
             Ctx.Shell.Server.MarkActivity();
-            return r.TokensPerSecond is double tps ? $"модель ответила, {tps:0.0} ток/с" : "модель ответила";
+            return r.TokensPerSecond is double tps ? L.F("модель ответила, {0:0.0} ток/с", tps) : L.T("модель ответила");
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            throw new InvalidOperationException("модель не ответила за 3 минуты");
+            throw new InvalidOperationException(L.T("модель не ответила за 3 минуты"));
         }
     }
 
     private static Task<string?> RunOpenCodeConfigAsync(InstallTask t, IProgress<StepProgress> p, CancellationToken ct)
     {
         var cfg = ConfigStore.Reload();
-        if (!cfg.OpenCode.Enabled) throw new InstallSkipped("OpenCode не используется");
-        if (OpenCodeInstaller.FindExecutable(cfg) is null) throw new InstallSkipped("OpenCode не установлен");
+        if (!cfg.OpenCode.Enabled) throw new InstallSkipped(L.T("OpenCode не используется"));
+        if (OpenCodeInstaller.FindExecutable(cfg) is null) throw new InstallSkipped(L.T("OpenCode не установлен"));
         var path = OpenCodeConfigWriter.WriteManagedConfig(cfg);
         if (cfg.OpenCode.RegisterInGlobalConfig) OpenCodeConfigWriter.RegisterGlobal(cfg);
         return Task.FromResult<string?>(path);
@@ -497,7 +498,7 @@ internal sealed class InstallStep : WizardStep
                 {
                     if (wanted)
                     {
-                        p.Report(new StepProgress($"Подключение: {integration.DisplayName}…"));
+                        p.Report(new StepProgress(L.F("Подключение: {0}…", integration.DisplayName)));
                         var r = await integration.RegisterAsync(spec, ct);
                         if (r.Ok)
                         {
@@ -515,7 +516,7 @@ internal sealed class InstallStep : WizardStep
                     }
                     else if (was)
                     {
-                        p.Report(new StepProgress($"Отключение: {integration.DisplayName}…"));
+                        p.Report(new StepProgress(L.F("Отключение: {0}…", integration.DisplayName)));
                         var r = await integration.UnregisterAsync(ct);
                         if (r.Ok) ConfigStore.Update(c => c.Integrations.Remove(id));
                         else errors.Add($"{integration.DisplayName}: {r.Message}");
@@ -534,18 +535,18 @@ internal sealed class InstallStep : WizardStep
 
             if (s.Ides.Contains("claude-code"))
             {
-                p.Report(new StepProgress("Настройка Claude Code…"));
+                p.Report(new StepProgress(L.T("Настройка Claude Code…")));
                 try
                 {
                     if (s.ClaudeGuidance && !ClaudeCodeExtras.IsGuidanceInstalled())
                     {
                         var r = ClaudeCodeExtras.InstallGuidance();
-                        if (!r.Ok) errors.Add("Инструкции Claude Code: " + r.Message);
+                        if (!r.Ok) errors.Add(L.F("Инструкции Claude Code: {0}", r.Message));
                     }
                     if (s.PreapproveReadTools && !ClaudeCodeExtras.AreToolsPreapproved())
                     {
                         var r = ClaudeCodeExtras.PreapproveTools(includeWriteTools: false);
-                        if (!r.Ok) errors.Add("Разрешения Claude Code: " + r.Message);
+                        if (!r.Ok) errors.Add(L.F("Разрешения Claude Code: {0}", r.Message));
                     }
                 }
                 catch (Exception ex)
@@ -556,7 +557,7 @@ internal sealed class InstallStep : WizardStep
             }
         }
 
-        p.Report(new StepProgress("Автозапуск…"));
+        p.Report(new StepProgress(L.T("Автозапуск…")));
         try
         {
             Autostart.Set(s.Autostart);
@@ -565,12 +566,12 @@ internal sealed class InstallStep : WizardStep
         catch (Exception ex)
         {
             Log.Error("wizard", "Автозапуск", ex);
-            errors.Add("Автозапуск: " + Ui.FriendlyError(ex));
+            errors.Add(L.F("Автозапуск: {0}", Ui.FriendlyError(ex)));
         }
 
         HintsText = hints.Distinct().ToList();
         if (errors.Count > 0) throw new InvalidOperationException(string.Join("; ", errors));
-        return connected.Count == 0 ? "IDE не выбраны" : string.Join(", ", connected);
+        return connected.Count == 0 ? L.T("IDE не выбраны") : string.Join(", ", connected);
     }
 
     /// <summary>Подсказки IDE после подключения («Перезапустите Cursor» и т. п.).</summary>

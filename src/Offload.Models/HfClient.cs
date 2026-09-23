@@ -43,7 +43,7 @@ public static partial class HfClient
 
         for (var page = 0; url is not null; page++)
         {
-            if (page >= MaxPages) throw new ModelException($"Слишком длинный список файлов в репозитории {repo}.");
+            if (page >= MaxPages) throw new ModelException(L.F("Слишком длинный список файлов в репозитории {0}.", repo));
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
             if (Environment.GetEnvironmentVariable("HF_TOKEN") is { Length: > 0 } token)
@@ -56,11 +56,11 @@ public static partial class HfClient
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
-                throw new ModelException("Hugging Face не ответил вовремя. Проверьте подключение к интернету и повторите попытку.");
+                throw new ModelException(L.T("Hugging Face не ответил вовремя. Проверьте подключение к интернету и повторите попытку."));
             }
             catch (HttpRequestException ex)
             {
-                throw new ModelException($"Нет связи с Hugging Face ({Endpoint}): {ex.Message}", ex);
+                throw new ModelException(L.F("Нет связи с Hugging Face ({0}): {1}", Endpoint, ex.Message), ex);
             }
 
             using (response)
@@ -73,7 +73,7 @@ public static partial class HfClient
                 }
                 catch (JsonException ex)
                 {
-                    throw new ModelException($"Hugging Face вернул некорректный список файлов репозитория {repo}.", ex);
+                    throw new ModelException(L.F("Hugging Face вернул некорректный список файлов репозитория {0}.", repo), ex);
                 }
                 url = response.Headers.TryGetValues("Link", out var links) ? NextLink(links, url) : null;
             }
@@ -87,7 +87,7 @@ public static partial class HfClient
     {
         ArgumentNullException.ThrowIfNull(model);
         var q = string.IsNullOrWhiteSpace(quant) ? model.DefaultQuant : quant.Trim();
-        if (string.IsNullOrEmpty(q)) throw new ModelException($"Для модели {model.DisplayName} не указана квантизация.");
+        if (string.IsNullOrEmpty(q)) throw new ModelException(L.F("Для модели {0} не указана квантизация.", model.LocalizedDisplayName));
 
         // Файл из каталога: размеры и SHA-256 уже известны (и закреплены) — сеть не нужна.
         if (model.FindFile(q) is { } known)
@@ -101,7 +101,7 @@ public static partial class HfClient
             foreach (var p in known.ExtraShards)
             {
                 shards.Add(byPath.GetValueOrDefault(p)
-                    ?? throw new ModelException($"В репозитории {model.Repo} нет части модели {p}."));
+                    ?? throw new ModelException(L.F("В репозитории {0} нет части модели {1}.", model.Repo, p)));
             }
             return new ResolvedModel(model, known.Quant, shards);
         }
@@ -112,8 +112,8 @@ public static partial class HfClient
         {
             var available = AvailableQuants(files);
             throw new ModelException(
-                $"В репозитории {model.Repo} не найден файл GGUF с квантизацией {q}." +
-                (available.Count > 0 ? $" Доступные: {string.Join(", ", available)}." : ""));
+                L.F("В репозитории {0} не найден файл GGUF с квантизацией {1}.", model.Repo, q) +
+                (available.Count > 0 ? L.F(" Доступные: {0}.", string.Join(", ", available)) : ""));
         }
         return new ResolvedModel(model, QuantTag(selected[0].Path) ?? q, selected);
     }
@@ -132,7 +132,7 @@ public static partial class HfClient
     {
         using var doc = JsonDocument.Parse(json);
         var list = new List<HfFile>();
-        if (doc.RootElement.ValueKind != JsonValueKind.Array) throw new JsonException("Ожидался массив.");
+        if (doc.RootElement.ValueKind != JsonValueKind.Array) throw new JsonException("Ожидался массив."); // l10n-ignore: внутреннее, заменяется ModelException
         foreach (var e in doc.RootElement.EnumerateArray())
         {
             if (e.ValueKind != JsonValueKind.Object) continue;
@@ -241,16 +241,16 @@ public static partial class HfClient
     private static void ValidateRepo(string repo)
     {
         if (string.IsNullOrWhiteSpace(repo) || !RepoRegex().IsMatch(repo))
-            throw new ModelException($"Неверное имя репозитория Hugging Face: «{repo}» (ожидается «владелец/название»).");
+            throw new ModelException(L.F("Неверное имя репозитория Hugging Face: «{0}» (ожидается «владелец/название»).", repo));
     }
 
     private static ModelException StatusError(HttpStatusCode code, string repo, string rev) => code switch
     {
-        HttpStatusCode.NotFound => new ModelException($"Репозиторий {repo} (ревизия {rev}) не найден на Hugging Face."),
+        HttpStatusCode.NotFound => new ModelException(L.F("Репозиторий {0} (ревизия {1}) не найден на Hugging Face.", repo, rev)),
         HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden =>
-            new ModelException($"Доступ к репозиторию {repo} ограничен: нужен вход на Hugging Face (переменная окружения HF_TOKEN)."),
-        HttpStatusCode.TooManyRequests => new ModelException("Hugging Face временно ограничил число запросов (429). Повторите через несколько минут."),
-        _ => new ModelException($"Hugging Face вернул ошибку {(int)code} при получении списка файлов {repo}."),
+            new ModelException(L.F("Доступ к репозиторию {0} ограничен: нужен вход на Hugging Face (переменная окружения HF_TOKEN).", repo)),
+        HttpStatusCode.TooManyRequests => new ModelException(L.T("Hugging Face временно ограничил число запросов (429). Повторите через несколько минут.")),
+        _ => new ModelException(L.F("Hugging Face вернул ошибку {0} при получении списка файлов {1}.", (int)code, repo)),
     };
 
     [GeneratedRegex("^[0-9a-fA-F]{64}$")]

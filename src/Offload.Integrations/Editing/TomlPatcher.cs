@@ -60,7 +60,7 @@ internal sealed class TomlDocument
         {
             if (_s[k] == '\n') line++;
         }
-        return new TomlPatchException($"{reason} (строка {line})");
+        return new TomlPatchException(L.F("{0} (строка {1})", reason, line));
     }
 
     private bool Eof => _i >= _s.Length;
@@ -93,7 +93,7 @@ internal sealed class TomlDocument
         SkipSpaces();
         SkipComment();
         if (Eof) return;
-        if (!AtLineBreak()) throw Error("ожидался конец строки");
+        if (!AtLineBreak()) throw Error(L.T("ожидался конец строки"));
         ConsumeLineBreak();
     }
 
@@ -114,7 +114,7 @@ internal sealed class TomlDocument
                 SkipComment();
                 if (!Eof)
                 {
-                    if (!AtLineBreak()) throw Error("ожидался конец строки");
+                    if (!AtLineBreak()) throw Error(L.T("ожидался конец строки"));
                     ConsumeLineBreak();
                 }
                 continue;
@@ -125,11 +125,11 @@ internal sealed class TomlDocument
                 _i += isArray ? 2 : 1;
                 var key = ParseKey();
                 SkipSpaces();
-                if (Eof || _s[_i] != ']') throw Error("ожидалась «]» в заголовке таблицы");
+                if (Eof || _s[_i] != ']') throw Error(L.T("ожидалась «]» в заголовке таблицы"));
                 _i++;
                 if (isArray)
                 {
-                    if (Eof || _s[_i] != ']') throw Error("ожидалась «]]» в заголовке массива таблиц");
+                    if (Eof || _s[_i] != ']') throw Error(L.T("ожидалась «]]» в заголовке массива таблиц"));
                     _i++;
                 }
                 ExpectLineEnd();
@@ -145,7 +145,7 @@ internal sealed class TomlDocument
 
             var k = ParseKey();
             SkipSpaces();
-            if (Eof || _s[_i] != '=') throw Error("ожидался знак «=»");
+            if (Eof || _s[_i] != '=') throw Error(L.T("ожидался знак «=»"));
             _i++;
             SkipSpaces();
             var vs = _i;
@@ -170,23 +170,23 @@ internal sealed class TomlDocument
         while (true)
         {
             SkipSpaces();
-            if (Eof) throw Error("ожидался ключ");
+            if (Eof) throw Error(L.T("ожидался ключ"));
             var c = _s[_i];
             if (c == '"')
             {
-                if (_s.AsSpan(_i).StartsWith("\"\"\"")) throw Error("многострочная строка не может быть ключом");
+                if (_s.AsSpan(_i).StartsWith("\"\"\"")) throw Error(L.T("многострочная строка не может быть ключом"));
                 parts.Add(ReadBasicString());
             }
             else if (c == '\'')
             {
-                if (_s.AsSpan(_i).StartsWith("'''")) throw Error("многострочная строка не может быть ключом");
+                if (_s.AsSpan(_i).StartsWith("'''")) throw Error(L.T("многострочная строка не может быть ключом"));
                 parts.Add(ReadLiteralString());
             }
             else
             {
                 var start = _i;
                 while (!Eof && (char.IsAsciiLetterOrDigit(_s[_i]) || _s[_i] is '_' or '-')) _i++;
-                if (_i == start) throw Error("некорректный ключ");
+                if (_i == start) throw Error(L.T("некорректный ключ"));
                 parts.Add(_s[start.._i]);
             }
             SkipSpaces();
@@ -201,7 +201,7 @@ internal sealed class TomlDocument
 
     private void ParseValue()
     {
-        if (Eof) throw Error("ожидалось значение");
+        if (Eof) throw Error(L.T("ожидалось значение"));
         var c = _s[_i];
         if (c == '"')
         {
@@ -221,7 +221,7 @@ internal sealed class TomlDocument
             while (true)
             {
                 SkipArrayTrivia();
-                if (Eof) throw Error("незакрытый массив");
+                if (Eof) throw Error(L.T("незакрытый массив"));
                 if (_s[_i] == ']')
                 {
                     _i++;
@@ -229,7 +229,7 @@ internal sealed class TomlDocument
                 }
                 ParseValue();
                 SkipArrayTrivia();
-                if (Eof) throw Error("незакрытый массив");
+                if (Eof) throw Error(L.T("незакрытый массив"));
                 if (_s[_i] == ',')
                 {
                     _i++;
@@ -240,7 +240,7 @@ internal sealed class TomlDocument
                     _i++;
                     return;
                 }
-                throw Error("ожидалась «,» или «]» в массиве");
+                throw Error(L.T("ожидалась «,» или «]» в массиве"));
             }
         }
         if (c == '{')
@@ -250,7 +250,7 @@ internal sealed class TomlDocument
             while (true)
             {
                 SkipArrayTrivia();
-                if (Eof) throw Error("незакрытая встроенная таблица");
+                if (Eof) throw Error(L.T("незакрытая встроенная таблица"));
                 if (_s[_i] == '}')
                 {
                     _i++;
@@ -258,7 +258,7 @@ internal sealed class TomlDocument
                 }
                 if (!first)
                 {
-                    if (_s[_i] != ',') throw Error("ожидалась «,» во встроенной таблице");
+                    if (_s[_i] != ',') throw Error(L.T("ожидалась «,» во встроенной таблице"));
                     _i++;
                     SkipArrayTrivia();
                     if (!Eof && _s[_i] == '}')
@@ -270,7 +270,7 @@ internal sealed class TomlDocument
                 first = false;
                 ParseKey();
                 SkipSpaces();
-                if (Eof || _s[_i] != '=') throw Error("ожидался знак «=» во встроенной таблице");
+                if (Eof || _s[_i] != '=') throw Error(L.T("ожидался знак «=» во встроенной таблице"));
                 _i++;
                 SkipSpaces();
                 ParseValue();
@@ -281,10 +281,10 @@ internal sealed class TomlDocument
         var start = _i;
         while (!Eof && _s[_i] is not (',' or ']' or '}' or '#' or '\r' or '\n')) _i++;
         while (_i > start && _s[_i - 1] is ' ' or '\t') _i--;
-        if (_i == start) throw Error("ожидалось значение");
+        if (_i == start) throw Error(L.T("ожидалось значение"));
         var token = _s[start.._i];
         if (token.Contains('"') || token.Contains('\'') || token.Contains('=') || token.Contains('[') || token.Contains('{'))
-            throw Error("некорректное значение");
+            throw Error(L.T("некорректное значение"));
     }
 
     /// <summary>Внутри массивов/встроенных таблиц допускаются переводы строк и комментарии.</summary>
@@ -306,7 +306,7 @@ internal sealed class TomlDocument
         var sb = new StringBuilder();
         while (true)
         {
-            if (Eof || _s[_i] is '\n' or '\r') throw Error("незакрытая строка");
+            if (Eof || _s[_i] is '\n' or '\r') throw Error(L.T("незакрытая строка"));
             var c = _s[_i];
             if (c == '"')
             {
@@ -325,7 +325,7 @@ internal sealed class TomlDocument
 
     private void AppendEscape(StringBuilder sb)
     {
-        if (_i + 1 >= _s.Length) throw Error("незакрытая строка");
+        if (_i + 1 >= _s.Length) throw Error(L.T("незакрытая строка"));
         var e = _s[_i + 1];
         _i += 2;
         switch (e)
@@ -341,16 +341,16 @@ internal sealed class TomlDocument
             case 'x': sb.Append(ReadHex(2)); break;
             case 'u': sb.Append(ReadHex(4)); break;
             case 'U': sb.Append(ReadHex(8)); break;
-            default: throw Error($"недопустимое экранирование «\\{e}»");
+            default: throw Error(L.F("недопустимое экранирование «\\{0}»", e));
         }
     }
 
     private string ReadHex(int n)
     {
-        if (_i + n > _s.Length) throw Error("неполная escape-последовательность");
+        if (_i + n > _s.Length) throw Error(L.T("неполная escape-последовательность"));
         if (!int.TryParse(_s.AsSpan(_i, n), NumberStyles.AllowHexSpecifier, CultureInfo.InvariantCulture, out var code) ||
             code > 0x10FFFF || code is >= 0xD800 and <= 0xDFFF)
-            throw Error("некорректная escape-последовательность");
+            throw Error(L.T("некорректная escape-последовательность"));
         _i += n;
         return char.ConvertFromUtf32(code);
     }
@@ -361,7 +361,7 @@ internal sealed class TomlDocument
         var start = _i;
         while (true)
         {
-            if (Eof || _s[_i] is '\n' or '\r') throw Error("незакрытая строка");
+            if (Eof || _s[_i] is '\n' or '\r') throw Error(L.T("незакрытая строка"));
             if (_s[_i] == '\'')
             {
                 var v = _s[start.._i];
@@ -378,7 +378,7 @@ internal sealed class TomlDocument
         _i += 3;
         while (true)
         {
-            if (Eof) throw Error("незакрытая многострочная строка");
+            if (Eof) throw Error(L.T("незакрытая многострочная строка"));
             if (q == '"' && _s[_i] == '\\')
             {
                 _i += 2;
@@ -592,10 +592,10 @@ internal sealed class TomlTablePatcher
                 // [[mcp_servers]] или [[mcp_servers.offload]]: добавление обычной таблицы сделало бы TOML некорректным.
                 if (s.Kind == TomlStatementKind.ArrayTable &&
                     (sectionIsOurs || (s.Key.Count < _table.Count && _table.Take(s.Key.Count).SequenceEqual(s.Key))))
-                    Unsupported = $"«{string.Join('.', s.Key)}» задан массивом таблиц [[...]]";
+                    Unsupported = L.F("«{0}» задан массивом таблиц [[...]]", string.Join('.', s.Key));
                 if (sectionIsMain)
                 {
-                    if (Main is not null) Unsupported = "таблица объявлена дважды";
+                    if (Main is not null) Unsupported = L.T("таблица объявлена дважды");
                     Main = [s];
                 }
                 continue;
@@ -608,9 +608,9 @@ internal sealed class TomlTablePatcher
             // Полный путь ключа с учётом текущей таблицы.
             var full = current.Concat(s.Key).ToList();
             if (IsOurs(full))
-                Unsupported = "запись задана точечными ключами или встроенной таблицей";
+                Unsupported = L.T("запись задана точечными ключами или встроенной таблицей");
             else if (full.Count > 0 && full.Count < _table.Count && _table.Take(full.Count).SequenceEqual(full))
-                Unsupported = $"«{string.Join('.', full)}» задан встроенной таблицей";
+                Unsupported = L.F("«{0}» задан встроенной таблицей", string.Join('.', full));
         }
         Close();
     }

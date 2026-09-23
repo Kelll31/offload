@@ -282,7 +282,7 @@ public class ModelRequestTests
         var normalText = ServerInstructions.Build(normal);
         Assert.EndsWith("the server auto-starts on the first call.", normalText);
         Assert.True(normalText.Length <= 2048, normalText.Length.ToString());
-        Assert.Contains("ToolSearch query \"offload\" (max_results 10)", text);
+        Assert.Contains("ToolSearch query \"offload\" (max_results 25)", text);
         Assert.Contains("Status at startup: model QQQ", text);
         foreach (var tool in Offload.Core.McpToolNames.All.Where(t => t != Offload.Core.McpToolNames.Status))
             Assert.Contains(tool, text);

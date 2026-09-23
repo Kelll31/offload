@@ -14,7 +14,7 @@ internal sealed class DoneStep : WizardStep
     private readonly TableLayoutPanel _summary = Kit.Table(0, 0, 100);
     private readonly Label _next = Kit.Wrap("");
     private readonly Label _hints = Kit.Hint("");
-    private readonly CheckBox _openMain = Kit.Check("Открыть панель управления", true);
+    private readonly CheckBox _openMain = Kit.Check(L.T("Открыть панель управления"), true);
     private readonly List<(Label Glyph, Label Title, Label Detail)> _rows = [];
     private bool _coreReady;
 
@@ -36,7 +36,7 @@ internal sealed class DoneStep : WizardStep
             _summary.AddRow(g, t, d);
             _rows.Add((g, t, d));
         }
-        root.AddRow(Kit.Section("Что дальше"));
+        root.AddRow(Kit.Section(L.T("Что дальше")));
         root.AddRow(_next);
         root.AddRow(_hints);
         root.AddRow(Kit.Spacer(8));
@@ -44,15 +44,15 @@ internal sealed class DoneStep : WizardStep
         SetContent(root);
     }
 
-    public override string Title => "Готово";
+    public override string Title => L.T("Готово");
 
-    public override string Heading => _coreReady ? "Готово!" : "Настройка не завершена";
+    public override string Heading => _coreReady ? L.T("Готово!") : L.T("Настройка не завершена");
 
     public override string? Subtitle => _coreReady
-        ? "Offload установлен и работает в области уведомлений."
-        : "Основные компоненты не установлены — мастер можно запустить снова из меню значка Offload.";
+        ? L.T("Offload установлен и работает в области уведомлений.")
+        : L.T("Основные компоненты не установлены — мастер можно запустить снова из меню значка Offload.");
 
-    public override string NextText => "Готово";
+    public override string NextText => L.T("Готово");
 
     public override bool CanGoBack => false;
 
@@ -67,16 +67,16 @@ internal sealed class DoneStep : WizardStep
         _coreReady = llama && model is not null && File.Exists(model.FilePath);
         if (_coreReady && !cfg.SetupCompleted)
         {
-            Ui.RunSafe(Ctx.Form, () => ConfigStore.Update(c => c.SetupCompleted = true), "Не удалось сохранить настройки");
+            Ui.RunSafe(Ctx.Form, () => ConfigStore.Update(c => c.SetupCompleted = true), L.T("Не удалось сохранить настройки"));
             Log.Info("wizard", "Первоначальная настройка завершена");
         }
         Ctx.Shell.ConfigChanged();
 
         var tasks = _install.Tasks;
         var warnings = tasks.Count(t => t.Status is StageStatus.Warning or StageStatus.Failed);
-        _headline.Text = !_coreReady ? "Не установлены llama.cpp или модель."
-            : warnings > 0 ? "Установка завершена, но есть предупреждения."
-            : "Всё установлено и проверено.";
+        _headline.Text = !_coreReady ? L.T("Не установлены llama.cpp или модель.")
+            : warnings > 0 ? L.T("Установка завершена, но есть предупреждения.")
+            : L.T("Всё установлено и проверено.");
         _headline.ForeColor = !_coreReady ? Theme.ErrorText : warnings > 0 ? Theme.WarnText : Theme.OkText;
 
         for (var i = 0; i < _rows.Count; i++)
@@ -99,11 +99,12 @@ internal sealed class DoneStep : WizardStep
 
         var server = Ctx.Shell.Server;
         _next.Text = _coreReady
-            ? "1. Перезапустите Claude Code (или другую подключённую IDE), чтобы она увидела сервер Offload." + Environment.NewLine +
-              "2. Попросите: «используй offload, чтобы …» — например, «используй offload, чтобы найти в проекте, где читается конфиг»." + Environment.NewLine +
-              "3. Состояние модели, экономию токенов и настройки смотрите в панели управления (двойной щелчок по значку Offload рядом с часами)." +
-              (server.State != ServerState.Running ? Environment.NewLine + Environment.NewLine + "Сервер сейчас не запущен: " + (server.LastError ?? Texts.State(server.State)) : "")
-            : "Откройте мастер ещё раз (меню значка Offload → «Мастер настройки…») и повторите установку. Подробности — в журнале.";
+            ? L.F("1. Перезапустите Claude Code (или другую подключённую IDE), чтобы она увидела сервер Offload.{0}2. Попросите: «используй offload, чтобы …» — например, «используй offload, чтобы найти в проекте, где читается конфиг».{0}3. Состояние модели, экономию токенов и настройки смотрите в панели управления (двойной щелчок по значку Offload рядом с часами).",
+                  Environment.NewLine) +
+              (server.State != ServerState.Running
+                  ? L.F("{0}{0}Сервер сейчас не запущен: {1}", Environment.NewLine, server.LastError ?? Texts.State(server.State))
+                  : "")
+            : L.T("Откройте мастер ещё раз (меню значка Offload → «Мастер настройки…») и повторите установку. Подробности — в журнале.");
         _hints.Text = _install.HintsText.Count > 0 ? string.Join(Environment.NewLine, _install.HintsText) : "";
         _hints.Visible = _install.HintsText.Count > 0;
         RaiseNavigationChanged();

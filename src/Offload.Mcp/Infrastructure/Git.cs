@@ -64,14 +64,23 @@ internal static class Git
         return null;
     }
 
+    /// <param name="extraEnv">Дополнительные переменные окружения (GIT_INDEX_FILE, автор коммита); null-значение удаляет переменную.</param>
     public static async Task<ChildResult> RunAsync(string workDir, IEnumerable<string> args, CancellationToken ct,
-        int maxChars = 16_000_000, TimeSpan? timeout = null, Func<string, bool>? onLine = null)
+        int maxChars = 16_000_000, TimeSpan? timeout = null, Func<string, bool>? onLine = null,
+        IReadOnlyDictionary<string, string?>? extraEnv = null)
     {
         var exe = Executable ?? throw new ToolException("git is not installed or not on PATH.");
+        var env = Env;
+        if (extraEnv is { Count: > 0 })
+        {
+            var merged = new Dictionary<string, string?>(Env);
+            foreach (var (k, v) in extraEnv) merged[k] = v;
+            env = merged;
+        }
         return await ChildProcess.RunAsync(exe, [.. SafeConfig, .. args], new ChildProcess.Options
         {
             WorkingDirectory = workDir,
-            Environment = Env,
+            Environment = env,
             Timeout = timeout ?? TimeSpan.FromSeconds(60),
             MaxCaptureChars = maxChars,
             OnStdOutLine = onLine,

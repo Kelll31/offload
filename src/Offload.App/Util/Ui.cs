@@ -8,16 +8,16 @@ internal static class Ui
 {
     public const string Caption = "Offload";
 
-    /// <summary>Понятный пользователю текст ошибки (на русском).</summary>
+    /// <summary>Понятный пользователю текст ошибки (на языке интерфейса).</summary>
     public static string FriendlyError(Exception ex)
     {
         while (ex is AggregateException { InnerExceptions.Count: 1 } agg) ex = agg.InnerExceptions[0];
         return ex switch
         {
-            NotImplementedException => "Эта функция ещё не реализована в текущей сборке Offload.",
-            OperationCanceledException => "Операция отменена.",
-            UnauthorizedAccessException => $"Нет доступа: {ex.Message}",
-            HttpRequestException h => $"Ошибка сети: {h.Message}",
+            NotImplementedException => L.T("Эта функция ещё не реализована в текущей сборке Offload."),
+            OperationCanceledException => L.T("Операция отменена."),
+            UnauthorizedAccessException => L.F("Нет доступа: {0}", ex.Message),
+            HttpRequestException h => L.F("Ошибка сети: {0}", h.Message),
             _ => string.IsNullOrWhiteSpace(ex.Message) ? ex.GetType().Name : ex.Message,
         };
     }
@@ -26,8 +26,9 @@ internal static class Ui
     /// Выполнить операцию интерфейса: исключения журналируются и показываются пользователю.
     /// Отмена (OperationCanceledException) не считается ошибкой.
     /// </summary>
-    public static async Task<bool> RunSafeAsync(IWin32Window? owner, Func<Task> action, string errorTitle = "Не удалось выполнить операцию")
+    public static async Task<bool> RunSafeAsync(IWin32Window? owner, Func<Task> action, string? errorTitle = null)
     {
+        errorTitle ??= DefaultErrorTitle;
         try
         {
             await action();
@@ -46,8 +47,9 @@ internal static class Ui
     }
 
     /// <summary>Синхронный вариант для коротких действий.</summary>
-    public static bool RunSafe(IWin32Window? owner, Action action, string errorTitle = "Не удалось выполнить операцию")
+    public static bool RunSafe(IWin32Window? owner, Action action, string? errorTitle = null)
     {
+        errorTitle ??= DefaultErrorTitle;
         try
         {
             action();
@@ -64,6 +66,8 @@ internal static class Ui
             return false;
         }
     }
+
+    private static string DefaultErrorTitle => L.T("Не удалось выполнить операцию");
 
     /// <summary>Вызов модуля с запасным значением при ошибке (ошибка пишется в журнал).</summary>
     public static T Try<T>(Func<T> func, T fallback, string what)
@@ -122,7 +126,7 @@ internal static class Ui
         catch (Exception ex)
         {
             Log.Warn("ui", $"Не удалось открыть {target}: {ex.Message}");
-            Warn(null, $"Не удалось открыть:{Environment.NewLine}{target}{Environment.NewLine}{Environment.NewLine}{ex.Message}");
+            Warn(null, L.F("Не удалось открыть:{0}{1}{0}{0}{2}", Environment.NewLine, target, ex.Message));
         }
     }
 
@@ -137,7 +141,7 @@ internal static class Ui
         catch (Exception ex)
         {
             Log.Warn("ui", $"Не удалось открыть папку {path}: {ex.Message}");
-            Warn(null, $"Не удалось открыть папку:{Environment.NewLine}{path}");
+            Warn(null, L.F("Не удалось открыть папку:{0}{1}", Environment.NewLine, path));
         }
     }
 
@@ -151,7 +155,7 @@ internal static class Ui
             else if (Path.GetDirectoryName(file) is { } dir && Directory.Exists(dir))
                 OpenFolder(dir);
             else
-                Warn(null, $"Файл не найден:{Environment.NewLine}{file}");
+                Warn(null, L.F("Файл не найден:{0}{1}", Environment.NewLine, file));
         }
         catch (Exception ex)
         {
@@ -205,11 +209,25 @@ internal static class Ui
         }
     }
 
-    /// <summary>Форматирование числа токенов: 12 345.</summary>
-    public static string N(long value) => value.ToString("N0", System.Globalization.CultureInfo.CurrentCulture);
+    /// <summary>Форматирование числа токенов: 12 345 (в культуре языка интерфейса).</summary>
+    public static string N(long value) => value.ToString("N0", L.Culture);
+
+    /// <summary>Число со словом в нужной форме: Plural(2, "строка", "строки", "строк") → «2 строки» / «2 lines».</summary>
+    public static string Plural(long n, string one, string few, string many) => L.Plural(n, one, few, many);
+
+    /// <summary>Короткая запись большого числа: 950, 12,4 тыс., 3,1 млн (12.4K, 3.1M).</summary>
+    public static string Short(long value)
+    {
+        var c = L.Culture;
+        var a = Math.Abs(value);
+        var en = L.IsEnglish;
+        return a >= 1_000_000 ? (value / 1_000_000d).ToString(a >= 10_000_000 ? "0" : "0.#", c) + (en ? "M" : " млн") // l10n-ignore — единицы по языку
+            : a >= 10_000 ? (value / 1_000d).ToString(a >= 100_000 ? "0" : "0.#", c) + (en ? "K" : " тыс.") // l10n-ignore
+            : N(value);
+    }
 
     public static string Tokens(int contextTokens) =>
-        contextTokens <= 0 ? "авто"
+        contextTokens <= 0 ? L.T("авто")
         : contextTokens % 1024 == 0 ? $"{contextTokens / 1024}K"
         : N(contextTokens);
 }

@@ -105,7 +105,7 @@ internal sealed class JsoncEditor
     /// <summary>Установить значение члена по пути (создаёт недостающие объекты). false — значение уже такое же.</summary>
     public bool Set(IReadOnlyList<string> path, JsonNode? value)
     {
-        if (path.Count == 0) throw new ArgumentException("Пустой путь", nameof(path));
+        if (path.Count == 0) throw new ArgumentException(L.T("Пустой путь"), nameof(path));
         if (TryGet(path, out var current) && JsonTree.SemanticEquals(current, value)) return false;
 
         var original = Text;
@@ -117,7 +117,7 @@ internal sealed class JsoncEditor
     /// <summary>Удалить член (все дубликаты ключа). false — члена не было.</summary>
     public bool Remove(IReadOnlyList<string> path)
     {
-        if (path.Count == 0) throw new ArgumentException("Пустой путь", nameof(path));
+        if (path.Count == 0) throw new ArgumentException(L.T("Пустой путь"), nameof(path));
         if (Find(path) is null) return false;
 
         var original = Text;
@@ -141,7 +141,7 @@ internal sealed class JsoncEditor
         var target = Find(path);
         if (target is null || target.Kind == JsoncKind.Null)
             return Set(path, new JsonArray(values.Select(v => v?.DeepClone()).ToArray()));
-        if (target.Kind != JsoncKind.Array) throw new JsoncEditException($"«{path[^1]}» не является массивом");
+        if (target.Kind != JsoncKind.Array) throw new JsoncEditException(L.F("«{0}» не является массивом", path[^1]));
 
         var original = Text;
         var work = this.Clone();
@@ -186,7 +186,7 @@ internal sealed class JsoncEditor
     private void Commit(string original, string candidate, Func<JsonNode?, JsonNode?> transform)
     {
         if (!JsonTree.TryParseOracle(original, out var before))
-            throw new JsoncEditException("файл не удалось разобрать стандартным разборщиком JSON");
+            throw new JsoncEditException(L.T("файл не удалось разобрать стандартным разборщиком JSON"));
         var expected = transform(before);
 
         if (Verify(candidate, expected))
@@ -207,7 +207,7 @@ internal sealed class JsoncEditor
                 return;
             }
         }
-        throw new JsoncEditException("не удалось безопасно изменить файл: проверка результата не прошла");
+        throw new JsoncEditException(L.T("не удалось безопасно изменить файл: проверка результата не прошла"));
     }
 
     private static bool Verify(string candidate, JsonNode? expected)
@@ -236,7 +236,7 @@ internal sealed class JsoncEditor
         for (var i = 1; i < ordered.Count; i++)
         {
             if (ordered[i].End > ordered[i - 1].Start)
-                throw new JsoncEditException("внутренняя ошибка: пересекающиеся правки");
+                throw new JsoncEditException(L.T("внутренняя ошибка: пересекающиеся правки"));
         }
         var sb = new StringBuilder(Text);
         foreach (var e in ordered)
@@ -256,7 +256,7 @@ internal sealed class JsoncEditor
             var prefix = Text.TrimEnd();
             return prefix.Length == 0 ? body + _newLine : prefix + _newLine + body + _newLine;
         }
-        if (_root.Kind != JsoncKind.Object) throw new JsoncEditException("корень файла не является объектом");
+        if (_root.Kind != JsoncKind.Object) throw new JsoncEditException(L.T("корень файла не является объектом"));
 
         var cur = _root;
         for (var i = 0; i < path.Count; i++)
@@ -274,7 +274,7 @@ internal sealed class JsoncEditor
                 return Apply(ReplaceValueEdits(cur, member, v));
             }
             if (member.Value.Kind != JsoncKind.Object)
-                throw new JsoncEditException($"«{path[i]}» не является объектом");
+                throw new JsoncEditException(L.F("«{0}» не является объектом", path[i]));
             cur = member.Value;
         }
         throw new InvalidOperationException();

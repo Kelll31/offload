@@ -50,27 +50,27 @@ internal abstract class IntegrationBase : IIdeIntegration
 
     protected static string ServerName => AppInfo.McpServerId;
 
-    protected IntegrationResult NotFound() => new(false, $"{DisplayName} не найден на этом компьютере.");
+    protected IntegrationResult NotFound() => new(false, L.F("{0} не найден на этом компьютере.", DisplayName));
 
-    protected string MsgRegistered(string path) => $"{DisplayName}: Offload подключён (файл {path}).";
+    protected string MsgRegistered(string path) => L.F("{0}: Offload подключён (файл {1}).", DisplayName, path);
 
-    protected string MsgAlready(string path) => $"{DisplayName}: Offload уже подключён (файл {path}).";
+    protected string MsgAlready(string path) => L.F("{0}: Offload уже подключён (файл {1}).", DisplayName, path);
 
-    protected string MsgUnregistered(string path) => $"{DisplayName}: Offload отключён (файл {path}).";
+    protected string MsgUnregistered(string path) => L.F("{0}: Offload отключён (файл {1}).", DisplayName, path);
 
-    protected string MsgNotRegistered => $"{DisplayName}: Offload не был подключён.";
+    protected string MsgNotRegistered => L.F("{0}: Offload не был подключён.", DisplayName);
 
     protected static string MsgParse(string path, string detail) =>
-        $"Не удалось разобрать файл {path}: {detail}. Файл не изменён — исправьте ошибку в нём вручную и повторите.";
+        L.F("Не удалось разобрать файл {0}: {1}. Файл не изменён — исправьте ошибку в нём вручную и повторите.", path, detail);
 
     protected static string MsgWrite(string path, Exception ex) =>
-        $"Не удалось записать файл {path}: {ex.Message}";
+        L.F("Не удалось записать файл {0}: {1}", path, ex.Message);
 
     protected static string MsgForeign(string path, string? command) =>
-        $"В файле {path} запись «{ServerName}» указывает на другую программу ({command ?? "без команды"}) — она оставлена без изменений.";
+        L.F("В файле {0} запись «{1}» указывает на другую программу ({2}) — она оставлена без изменений.", path, ServerName, command ?? L.T("без команды"));
 
     protected static string MsgReplacedForeign(string? command) =>
-        $"Прежняя запись «{ServerName}» ({command ?? "без команды"}) заменена, резервная копия сохранена.";
+        L.F("Прежняя запись «{0}» ({1}) заменена, резервная копия сохранена.", ServerName, command ?? L.T("без команды"));
 
     /// <summary>Несколько файлов → один статус: ошибка важнее всего, частичная регистрация = «требует обновления».</summary>
     protected static IntegrationStatus Aggregate(IReadOnlyList<IntegrationStatus> statuses)

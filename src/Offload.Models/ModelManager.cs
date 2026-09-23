@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Text;
 using Offload.Core;
 using Offload.Core.Config;
@@ -19,7 +18,6 @@ public static class ModelManager
     public const long DiskMarginBytes = 1L * 1024 * 1024 * 1024;
 
     private const int CustomRecommendedContext = 32768;
-    private static readonly CultureInfo Ru = CultureInfo.GetCultureInfo("ru-RU");
     private static readonly HashSet<string> ActiveDownloads = new(StringComparer.OrdinalIgnoreCase);
 
     public static string ModelsDir(AppConfig cfg)
@@ -45,7 +43,7 @@ public static class ModelManager
         lock (ActiveDownloads)
         {
             if (!ActiveDownloads.Add(model.Id))
-                throw new ModelException($"Модель {model.DisplayName} уже загружается.");
+                throw new ModelException(L.F("Модель {0} уже загружается.", model.LocalizedDisplayName));
         }
         try
         {
@@ -60,7 +58,7 @@ public static class ModelManager
     private static async Task<InstalledModel> DownloadCoreAsync(CatalogModel model, string? quant,
         IProgress<StepProgress>? progress, CancellationToken ct)
     {
-        progress?.Report(new StepProgress("Поиск файлов модели на Hugging Face…"));
+        progress?.Report(new StepProgress(L.T("Поиск файлов модели на Hugging Face…")));
         var resolved = await HfClient.ResolveAsync(model, quant, ct);
         var cfg = ConfigStore.Current;
         var dir = ModelsDir(cfg);
@@ -83,8 +81,8 @@ public static class ModelManager
             Log.Warn("models", $"Не удалось определить свободное место на диске для {dir}.");
         else if (free < remaining + DiskMarginBytes)
             throw new ModelException(
-                $"Недостаточно места на диске {Path.GetPathRoot(dir)}: для модели нужно ≈{Size(remaining + DiskMarginBytes)} " +
-                $"(с запасом 1 ГБ), свободно {Size(free)}. Освободите место или выберите другую папку для моделей в настройках.");
+                L.F("Недостаточно места на диске {0}: для модели нужно ≈{1} (с запасом 1 ГБ), свободно {2}. Освободите место или выберите другую папку для моделей в настройках.",
+                    Path.GetPathRoot(dir), Size(remaining + DiskMarginBytes), Size(free)));
 
         Log.Info("models", $"Загрузка {model.Id} ({resolved.Quant}): {targets.Count} файл(ов), {Size(total)} → {dir}");
 
@@ -93,8 +91,8 @@ public static class ModelManager
         {
             var (file, dest) = targets[i];
             var stage = targets.Count > 1
-                ? $"Загрузка модели {model.DisplayName} (часть {i + 1} из {targets.Count})"
-                : $"Загрузка модели {model.DisplayName}";
+                ? L.F("Загрузка модели {0} (часть {1} из {2})", model.LocalizedDisplayName, i + 1, targets.Count)
+                : L.F("Загрузка модели {0}", model.LocalizedDisplayName);
             var before = done;
             var reporter = progress is null ? null : new SyncProgress<DownloadProgress>(p => progress.Report(Describe(p, stage, before, total)));
             await HttpDownloader.DownloadFileAsync(
@@ -138,7 +136,7 @@ public static class ModelManager
             InstalledAtUtc = DateTime.UtcNow,
         };
         Register(installed);
-        progress?.Report(new StepProgress("Модель установлена", 1, $"{model.DisplayName} · {Size(installed.SizeBytes)}"));
+        progress?.Report(new StepProgress(L.T("Модель установлена"), 1, $"{model.LocalizedDisplayName} · {Size(installed.SizeBytes)}"));
         Log.Info("models", $"Модель {model.Id} установлена: {firstPath}");
         return installed;
     }
@@ -146,16 +144,16 @@ public static class ModelManager
     /// <summary>Добавить существующий GGUF-файл пользователя (метаданные читаются из заголовка).</summary>
     public static InstalledModel AddCustom(string ggufPath, string? displayName = null)
     {
-        if (string.IsNullOrWhiteSpace(ggufPath)) throw new ArgumentException("Не указан файл модели.", nameof(ggufPath));
+        if (string.IsNullOrWhiteSpace(ggufPath)) throw new ArgumentException(L.T("Не указан файл модели."), nameof(ggufPath));
         var path = Path.GetFullPath(ggufPath.Trim().Trim('"'));
-        if (!File.Exists(path)) throw new FileNotFoundException($"Файл модели не найден: {path}", path);
+        if (!File.Exists(path)) throw new FileNotFoundException(L.F("Файл модели не найден: {0}", path), path);
 
         // Для разбитой модели llama-server нужен первый шард.
         var shard = HfClient.ShardInfo(Path.GetFileName(path));
         if (shard is { Index: > 1 } s)
         {
             var first = Path.Combine(Path.GetDirectoryName(path)!, ShardName(Path.GetFileName(path), 1, s.Total));
-            if (!File.Exists(first)) throw new ModelException($"Это часть {s.Index} из {s.Total} разбитой модели — укажите первый файл ({Path.GetFileName(first)}).");
+            if (!File.Exists(first)) throw new ModelException(L.F("Это часть {0} из {1} разбитой модели — укажите первый файл ({2}).", s.Index, s.Total, Path.GetFileName(first)));
             path = first;
         }
 
@@ -166,13 +164,13 @@ public static class ModelManager
         }
         catch (InvalidDataException ex)
         {
-            throw new ModelException($"Не удалось прочитать модель {Path.GetFileName(path)}: {ex.Message}", ex);
+            throw new ModelException(L.F("Не удалось прочитать модель {0}: {1}", Path.GetFileName(path), ex.Message), ex);
         }
 
         var files = ShardFiles(path);
         var missing = files.Where(f => !File.Exists(f)).ToList();
         if (missing.Count > 0)
-            throw new ModelException($"Не хватает частей разбитой модели: {string.Join(", ", missing.Select(Path.GetFileName))}.");
+            throw new ModelException(L.F("Не хватает частей разбитой модели: {0}.", string.Join(", ", missing.Select(Path.GetFileName))));
 
         var template = info.ChatTemplate ?? "";
         var reasoning = string.Equals(info.Architecture, "gpt-oss", StringComparison.OrdinalIgnoreCase) ? ReasoningControl.ReasoningEffort
@@ -216,7 +214,7 @@ public static class ModelManager
 
     public static void SetActive(string modelId)
     {
-        if (string.IsNullOrWhiteSpace(modelId)) throw new ArgumentException("Не указана модель.", nameof(modelId));
+        if (string.IsNullOrWhiteSpace(modelId)) throw new ArgumentException(L.T("Не указана модель."), nameof(modelId));
         var found = false;
         ConfigStore.Update(c =>
         {
@@ -225,14 +223,14 @@ public static class ModelManager
             found = true;
             c.Models.ActiveModelId = m.Id;
         });
-        if (!found) throw new ModelException($"Модель «{modelId}» не установлена.");
+        if (!found) throw new ModelException(L.F("Модель «{0}» не установлена.", modelId));
     }
 
     /// <summary>Удалить модель из списка и (опционально) файлы с диска.</summary>
     /// <remarks>Файлы вне папки моделей не удаляются никогда (пользовательские модели там только отменяют регистрацию).</remarks>
     public static void Remove(string modelId, bool deleteFiles)
     {
-        if (string.IsNullOrWhiteSpace(modelId)) throw new ArgumentException("Не указана модель.", nameof(modelId));
+        if (string.IsNullOrWhiteSpace(modelId)) throw new ArgumentException(L.T("Не указана модель."), nameof(modelId));
         var cfg = ConfigStore.Current;
         var entry = cfg.Models.Installed.FirstOrDefault(m => string.Equals(m.Id, modelId, StringComparison.OrdinalIgnoreCase));
         if (entry is null)
@@ -272,8 +270,8 @@ public static class ModelManager
             }
             if (failed.Count > 0)
                 throw new ModelException(
-                    $"Не удалось удалить файл(ы) модели: {string.Join(", ", failed)}. Возможно, модель сейчас загружена сервером — " +
-                    "остановите сервер и повторите удаление.");
+                    L.F("Не удалось удалить файл(ы) модели: {0}. Возможно, модель сейчас загружена сервером — остановите сервер и повторите удаление.",
+                        string.Join(", ", failed)));
         }
 
         ConfigStore.Update(c =>
@@ -343,7 +341,7 @@ public static class ModelManager
             !string.Equals(m.Repo, model.Repo, StringComparison.OrdinalIgnoreCase) &&
             ShardFiles(m.FilePath).Any(f => SamePath(f, dest)));
         if (conflict) dest = Path.Combine(dir, SanitizeFileName(model.Repo.Replace('/', '_')), name);
-        if (!IsInside(dest, dir)) throw new ModelException($"Недопустимое имя файла модели: {repoPath}");
+        if (!IsInside(dest, dir)) throw new ModelException(L.F("Недопустимое имя файла модели: {0}", repoPath));
         return dest;
     }
 
@@ -450,20 +448,20 @@ public static class ModelManager
         switch (p.Stage)
         {
             case DownloadStage.Connecting:
-                return new StepProgress(p.BytesReceived > 0 ? "Возобновление загрузки…" : "Подключение к Hugging Face…", fraction,
-                    total > 0 ? $"{Size(overall)} из {Size(total)}" : null);
+                return new StepProgress(p.BytesReceived > 0 ? L.T("Возобновление загрузки…") : L.T("Подключение к Hugging Face…"), fraction,
+                    total > 0 ? L.F("{0} из {1}", Size(overall), Size(total)) : null);
             case DownloadStage.Verifying:
-                return new StepProgress("Проверка целостности файла (SHA-256)…", p.Fraction,
-                    p.TotalBytes is > 0 ? $"{Size(p.BytesReceived)} из {Size(p.TotalBytes.Value)}" : null);
+                return new StepProgress(L.T("Проверка целостности файла (SHA-256)…"), p.Fraction,
+                    p.TotalBytes is > 0 ? L.F("{0} из {1}", Size(p.BytesReceived), Size(p.TotalBytes.Value)) : null);
             case DownloadStage.Completed:
                 return new StepProgress(stage, total > 0 ? Math.Clamp((double)(doneBefore + (p.TotalBytes ?? p.BytesReceived)) / total, 0, 1) : 1,
-                    total > 0 ? $"{Size(doneBefore + (p.TotalBytes ?? p.BytesReceived))} из {Size(total)}" : null);
+                    total > 0 ? L.F("{0} из {1}", Size(doneBefore + (p.TotalBytes ?? p.BytesReceived)), Size(total)) : null);
             default:
-                var parts = new List<string> { total > 0 ? $"{Size(overall)} из {Size(total)}" : Size(overall) };
+                var parts = new List<string> { total > 0 ? L.F("{0} из {1}", Size(overall), Size(total)) : Size(overall) };
                 if (p.BytesPerSecond > 1)
                 {
-                    parts.Add($"{Size((long)p.BytesPerSecond)}/с");
-                    if (total > overall) parts.Add("осталось " + Eta(TimeSpan.FromSeconds((total - overall) / p.BytesPerSecond)));
+                    parts.Add(L.F("{0}/с", Size((long)p.BytesPerSecond)));
+                    if (total > overall) parts.Add(L.F("осталось {0}", Eta(TimeSpan.FromSeconds((total - overall) / p.BytesPerSecond))));
                 }
                 return new StepProgress(stage, fraction, string.Join(" · ", parts));
         }
@@ -473,17 +471,17 @@ public static class ModelManager
     internal static string Size(long bytes)
     {
         double v = bytes;
-        if (v >= 1024d * 1024 * 1024) return (v / (1024d * 1024 * 1024)).ToString("0.0", Ru) + " ГБ";
-        if (v >= 1024d * 1024) return (v / (1024d * 1024)).ToString("0.0", Ru) + " МБ";
-        if (v >= 1024) return (v / 1024).ToString("0", Ru) + " КБ";
-        return bytes.ToString(Ru) + " Б";
+        if (v >= 1024d * 1024 * 1024) return L.F("{0:0.0} ГБ", v / (1024d * 1024 * 1024));
+        if (v >= 1024d * 1024) return L.F("{0:0.0} МБ", v / (1024d * 1024));
+        if (v >= 1024) return L.F("{0:0} КБ", v / 1024);
+        return L.F("{0} Б", bytes);
     }
 
     internal static string Eta(TimeSpan t)
     {
-        if (t.TotalHours >= 1) return $"{(int)t.TotalHours} ч {t.Minutes} мин";
-        if (t.TotalMinutes >= 1) return $"{Math.Max(1, (int)Math.Round(t.TotalMinutes))} мин";
-        return $"{Math.Max(1, (int)Math.Ceiling(t.TotalSeconds))} с";
+        if (t.TotalHours >= 1) return L.F("{0} ч {1} мин", (int)t.TotalHours, t.Minutes);
+        if (t.TotalMinutes >= 1) return L.F("{0} мин", Math.Max(1, (int)Math.Round(t.TotalMinutes)));
+        return L.F("{0} с", Math.Max(1, (int)Math.Ceiling(t.TotalSeconds)));
     }
 
     /// <summary>IProgress без захвата контекста синхронизации: пересчёт делается сразу в потоке загрузки.</summary>

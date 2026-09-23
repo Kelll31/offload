@@ -43,7 +43,7 @@ internal sealed class IpcRequestHandler(IAppShell shell)
             {
                 Log.Info("ipc", "Запрос запуска сервера из IDE");
                 var ok = await server.EnsureRunningAsync().ConfigureAwait(false);
-                return new IpcResponse(ok, ok ? "Сервер работает" : server.LastError ?? server.Summary, server.StatusData());
+                return new IpcResponse(ok, ok ? L.T("Сервер работает") : server.LastError ?? server.Summary, server.StatusData());
             }
 
             case IpcCommands.StopServer:
@@ -53,7 +53,7 @@ internal sealed class IpcRequestHandler(IAppShell shell)
             case IpcCommands.RestartServer:
             {
                 var ok = await server.RestartAsync().ConfigureAwait(false);
-                return new IpcResponse(ok, ok ? "Сервер перезапущен" : server.LastError ?? server.Summary, server.StatusData());
+                return new IpcResponse(ok, ok ? L.T("Сервер перезапущен") : server.LastError ?? server.Summary, server.StatusData());
             }
 
             case IpcCommands.RecordUsage:
@@ -61,7 +61,7 @@ internal sealed class IpcRequestHandler(IAppShell shell)
                 // Запись статистики от MCP-процесса: трей дописывает её в свой usage.jsonl.
                 var json = request.Args?.GetValueOrDefault("record");
                 var record = string.IsNullOrWhiteSpace(json) ? null : UsageLog.Parse(json);
-                if (record is null) return new IpcResponse(false, "Некорректная запись статистики");
+                if (record is null) return new IpcResponse(false, L.T("Некорректная запись статистики"));
                 UsageLog.AppendLocal(record);
                 server.MarkActivity();
                 return new IpcResponse(true);
@@ -72,7 +72,7 @@ internal sealed class IpcRequestHandler(IAppShell shell)
                 return new IpcResponse(true);
 
             default:
-                return new IpcResponse(false, $"Неизвестная команда: {request.Command}");
+                return new IpcResponse(false, L.F("Неизвестная команда: {0}", request.Command));
         }
     }
 }

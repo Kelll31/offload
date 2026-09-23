@@ -77,10 +77,11 @@ public static class McpEntry
                 ];
 #pragma warning restore MCP9005
             })
-            .WithTools<OffloadTools>();
+            .WithTools<OffloadTools>()
+            .WithPrompts<OffloadPrompts>();
     }
 
-    /// <summary>Удаление старых задач правки — в фоне, не задерживая initialize.</summary>
+    /// <summary>Удаление старых задач правки и их песочниц — в фоне, не задерживая initialize.</summary>
     private static void StartBackgroundCleanup()
     {
         _ = Task.Run(async () =>
@@ -91,6 +92,8 @@ public static class McpEntry
                 var days = ConfigStore.Reload().Mcp.JobRetentionDays;
                 var removed = JobStore.CleanupOld(days);
                 if (removed > 0) Log.Info("mcp", $"Удалено старых задач: {removed}");
+                var orphans = GitSandbox.CleanupOrphans();
+                if (orphans > 0) Log.Info("mcp", $"Удалено брошенных песочниц: {orphans}");
             }
             catch (Exception ex)
             {

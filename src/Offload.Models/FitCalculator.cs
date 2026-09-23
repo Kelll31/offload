@@ -1,4 +1,3 @@
-using System.Globalization;
 using Offload.Core.Hardware;
 
 namespace Offload.Models;
@@ -58,7 +57,6 @@ public static class FitCalculator
     /// <summary>При выгрузке на ЦП (медленно) большой контекст бессмыслен: обработка промпта займёт минуты.</summary>
     private const int MaxSlowContext = 32768;
 
-    private static readonly CultureInfo Ru = CultureInfo.GetCultureInfo("ru-RU");
 
     /// <summary>Байт на элемент KV-кэша для типа (f16 = 2, q8_0 ≈ 1.0625, q4_0 ≈ 0.5625).</summary>
     public static double BytesPerKvElement(string cacheType) => (cacheType ?? "").Trim().ToLowerInvariant() switch
@@ -162,7 +160,7 @@ public static class FitCalculator
                 var n = NeedFor(ctx);
                 if (n.Total <= budget)
                     return Result(FitLevel.FullGpu, n, n.Total, 0, 0, -1,
-                        $"Полностью в видеопамяти: ≈{Gb(n.Total)} из {Gb(vram)} ГБ, контекст {Ctx(ctx)}");
+                        L.F("Полностью в видеопамяти: ≈{0} из {1} ГБ, контекст {2}", Gb(n.Total), Gb(vram), Ctx(ctx)));
 
                 if (moe is not null)
                 {
@@ -171,8 +169,8 @@ public static class FitCalculator
                     var cpuBytes = layers * moe.ExpertBytesPerLayer;
                     if (layers <= moe.MoeLayers && cpuBytes <= ramBudget)
                         return Result(FitLevel.MoeOffload, n, n.Total - cpuBytes, cpuBytes, layers, -1,
-                            $"MoE: {layers} {Plural(layers, "слой", "слоя", "слоёв")} экспертов на ЦП (≈{Gb(cpuBytes)} ГБ ОЗУ), " +
-                            $"видеопамять ≈{Gb(n.Total - cpuBytes)} из {Gb(vram)} ГБ, контекст {Ctx(ctx)} — быстро");
+                            L.F("MoE: {0} {1} экспертов на ЦП (≈{2} ГБ ОЗУ), видеопамять ≈{3} из {4} ГБ, контекст {5} — быстро",
+                                layers, L.PluralWord(layers, "слой", "слоя", "слоёв"), Gb(cpuBytes), Gb(n.Total - cpuBytes), Gb(vram), Ctx(ctx)));
                 }
             }
         }
@@ -195,8 +193,8 @@ public static class FitCalculator
                 var cpuBytes = n.Total - gpuBytes;
                 if (cpuBytes <= ramBudget)
                     return Result(FitLevel.PartialGpu, n, gpuBytes, cpuBytes, 0, gpuLayers,
-                        $"Частично на видеокарте: {gpuLayers} из {blocks} {Plural(blocks, "слоя", "слоёв", "слоёв")}, " +
-                        $"≈{Gb(cpuBytes)} ГБ в ОЗУ, контекст {Ctx(ctx)} — медленно");
+                        L.F("Частично на видеокарте: {0} из {1} {2}, ≈{3} ГБ в ОЗУ, контекст {4} — медленно",
+                            gpuLayers, blocks, L.PluralWord(blocks, "слоя", "слоёв", "слоёв"), Gb(cpuBytes), Ctx(ctx)));
             }
         }
 
@@ -207,17 +205,17 @@ public static class FitCalculator
             if (n.Total <= ramBudget)
                 return Result(FitLevel.CpuOnly, n, 0, n.Total, 0, 0,
                     vram > 0
-                        ? $"Только процессор (видеокарты мало): ≈{Gb(n.Total)} ГБ ОЗУ из {Gb(ramTotal)} ГБ, контекст {Ctx(ctx)} — медленно"
-                        : $"Только процессор: ≈{Gb(n.Total)} ГБ ОЗУ из {Gb(ramTotal)} ГБ, контекст {Ctx(ctx)} — медленно");
+                        ? L.F("Только процессор (видеокарты мало): ≈{0} ГБ ОЗУ из {1} ГБ, контекст {2} — медленно", Gb(n.Total), Gb(ramTotal), Ctx(ctx))
+                        : L.F("Только процессор: ≈{0} ГБ ОЗУ из {1} ГБ, контекст {2} — медленно", Gb(n.Total), Gb(ramTotal), Ctx(ctx)));
         }
 
         // 4. Не помещается даже с минимальным контекстом.
         var min = NeedFor(slow.Length > 0 ? slow.Min() : candidates.Min());
         var have = vram > 0
-            ? $"видеопамять {Gb(vram)} ГБ, ОЗУ {Gb(ramTotal)} ГБ"
-            : $"ОЗУ {Gb(ramTotal)} ГБ, видеокарты нет";
+            ? L.F("видеопамять {0} ГБ, ОЗУ {1} ГБ", Gb(vram), Gb(ramTotal))
+            : L.F("ОЗУ {0} ГБ, видеокарты нет", Gb(ramTotal));
         return Result(FitLevel.TooLarge, min, min.Total, 0, 0, 0,
-            $"Не хватит памяти: нужно ≈{Gb(min.Total)} ГБ ({have})");
+            L.F("Не хватит памяти: нужно ≈{0} ГБ ({1})", Gb(min.Total), have));
 
         FitResult Result(FitLevel level, Need n, long vramBytes, long ramBytes, int cpuMoe, int gpuLayers, string text) =>
             new(level, weights, n.Kv, vramBytes, ramBytes, n.Ctx, cpuMoe, gpuLayers, text);
@@ -234,7 +232,7 @@ public static class FitCalculator
     internal static CatalogModel Recommend(HardwareInfo hw, IReadOnlyList<CatalogModel> catalog)
     {
         ArgumentNullException.ThrowIfNull(hw);
-        if (catalog.Count == 0) throw new InvalidOperationException("Каталог моделей пуст.");
+        if (catalog.Count == 0) throw new InvalidOperationException(L.T("Каталог моделей пуст."));
 
         var vramGb = hw.PrimaryVramBytes >= MinUsableVramBytes ? hw.PrimaryVramBytes / (double)GiB : 0;
         var ramGb = hw.TotalRamBytes / (double)GiB;
@@ -298,17 +296,11 @@ public static class FitCalculator
     private sealed record Need(int Ctx, long Kv, long State, long Compute, long Total);
 
     /// <summary>Гигабайты (ГиБ) с одним знаком после запятой: «21,4», «24».</summary>
-    internal static string Gb(long bytes) => (Math.Round(bytes / (double)GiB, 1)).ToString("0.#", Ru);
+    internal static string Gb(long bytes) => (Math.Round(bytes / (double)GiB, 1)).ToString("0.#", L.Culture);
 
     /// <summary>Контекст в тысячах токенов: 65536 → «64K».</summary>
     internal static string Ctx(int tokens) =>
-        tokens % 1024 == 0 ? $"{tokens / 1024}K" : (tokens / 1024d).ToString("0.#", Ru) + "K";
+        tokens % 1024 == 0 ? $"{tokens / 1024}K" : (tokens / 1024d).ToString("0.#", L.Culture) + "K";
 
-    internal static string Plural(int n, string one, string few, string many)
-    {
-        var n100 = Math.Abs(n) % 100;
-        var n10 = n100 % 10;
-        if (n100 is >= 11 and <= 14) return many;
-        return n10 switch { 1 => one, >= 2 and <= 4 => few, _ => many };
-    }
+    internal static string Plural(int n, string one, string few, string many) => L.PluralWord(n, one, few, many);
 }

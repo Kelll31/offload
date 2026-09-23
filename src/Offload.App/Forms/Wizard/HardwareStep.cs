@@ -13,7 +13,7 @@ namespace Offload.App.Forms.Wizard;
 internal sealed class HardwareStep : WizardStep
 {
     private readonly ProgressBar _spinner = new() { Style = ProgressBarStyle.Marquee, MarqueeAnimationSpeed = 30, Height = 14, Dock = DockStyle.Fill, Margin = new Padding(0, 6, 0, 6) };
-    private readonly Label _detecting = Kit.Label("Определение оборудования…");
+    private readonly Label _detecting = Kit.Label(L.T("Определение оборудования…"));
     private readonly Label _gpus = Kit.Wrap("—");
     private readonly Label _ram = Kit.Label("—");
     private readonly Label _cpu = Kit.Wrap("—");
@@ -31,7 +31,7 @@ internal sealed class HardwareStep : WizardStep
 
     public HardwareStep(WizardContext ctx) : base(ctx)
     {
-        _redetect = Kit.ActionLink("Определить заново", () => _ = DetectAsync(refresh: true));
+        _redetect = Kit.ActionLink(L.T("Определить заново"), () => _ = DetectAsync(refresh: true));
         _backend.SelectedIndexChanged += (_, _) =>
         {
             if (_loading || _backend.SelectedIndex < 0) return;
@@ -44,32 +44,32 @@ internal sealed class HardwareStep : WizardStep
         root.AddRow(_progressRow);
 
         var grid = Kit.Grid();
-        grid.AddField("Видеокарты:", _gpus);
-        grid.AddField("Оперативная память:", _ram);
-        grid.AddField("Процессор:", _cpu);
-        grid.AddField("Свободно на диске:", _disk);
+        grid.AddField(L.T("Видеокарты:"), _gpus);
+        grid.AddField(L.T("Оперативная память:"), _ram);
+        grid.AddField(L.T("Процессор:"), _cpu);
+        grid.AddField(L.T("Свободно на диске:"), _disk);
         root.AddRow(grid);
         root.AddRow(Kit.Flow(_redetect));
 
-        root.AddRow(Kit.Section("Сборка llama.cpp"));
+        root.AddRow(Kit.Section(L.T("Сборка llama.cpp")));
         var card = new CardPanel { ColumnCount = 1 };
         card.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         card.AddRow(_recommendTitle);
         card.AddRow(_recommendReason);
         root.AddRow(card);
         var choose = Kit.Grid();
-        choose.AddField("Установить сборку:", _backend);
+        choose.AddField(L.T("Установить сборку:"), _backend);
         root.AddRow(choose);
-        root.AddRow(Kit.Hint("Обычно лучше оставить рекомендуемую сборку. Vulkan работает почти на любой видеокарте; " +
-                             "«Только процессор» — если видеокарты нет или она не поддерживается (медленно)."));
+        root.AddRow(Kit.Hint(L.T(
+            "Обычно лучше оставить рекомендуемую сборку. Vulkan работает почти на любой видеокарте; «Только процессор» — если видеокарты нет или она не поддерживается (медленно).")));
         SetContent(root);
     }
 
-    public override string Title => "Оборудование";
+    public override string Title => L.T("Оборудование");
 
-    public override string Heading => "Оборудование компьютера";
+    public override string Heading => L.T("Оборудование компьютера");
 
-    public override string? Subtitle => "От видеокарты зависят сборка llama.cpp и то, какая модель поместится в память.";
+    public override string? Subtitle => L.T("От видеокарты зависят сборка llama.cpp и то, какая модель поместится в память.");
 
     public override bool CanGoNext => _detected && !_running && _backend.SelectedIndex >= 0;
 
@@ -83,7 +83,7 @@ internal sealed class HardwareStep : WizardStep
         if (_running) return;
         _running = true;
         _progressRow.Visible = true;
-        _detecting.Text = "Определение оборудования…";
+        _detecting.Text = L.T("Определение оборудования…");
         _redetect.Enabled = false;
         RaiseNavigationChanged();
         HardwareInfo? hw = null;
@@ -94,7 +94,7 @@ internal sealed class HardwareStep : WizardStep
         catch (Exception ex)
         {
             Log.Error("wizard", "Не удалось определить оборудование", ex);
-            _gpus.Text = "Не удалось определить: " + Ui.FriendlyError(ex);
+            _gpus.Text = L.F("Не удалось определить: {0}", Ui.FriendlyError(ex));
         }
         finally
         {
@@ -114,20 +114,20 @@ internal sealed class HardwareStep : WizardStep
         if (hw is not null)
         {
             _gpus.Text = hw.Gpus.Count == 0
-                ? "не найдены"
+                ? L.T("не найдены")
                 : string.Join(Environment.NewLine, hw.Gpus.Select(Texts.Gpu));
-            var avail = hw.AvailableRamBytes > 0 ? $" (свободно {FileUtil.FormatBytes(hw.AvailableRamBytes)})" : "";
+            var avail = hw.AvailableRamBytes > 0 ? L.F(" (свободно {0})", FileUtil.FormatBytes(hw.AvailableRamBytes)) : "";
             _ram.Text = $"{FileUtil.FormatBytes(hw.TotalRamBytes)}{avail}";
-            _cpu.Text = $"{hw.CpuName}, {hw.LogicalCores} потоков{(hw.CpuHasAvx2 ? ", AVX2" : "")}{(hw.IsArm64 ? ", ARM64" : "")}";
+            _cpu.Text = $"{hw.CpuName}, {Ui.Plural(hw.LogicalCores, "поток", "потока", "потоков")}{(hw.CpuHasAvx2 ? ", AVX2" : "")}{(hw.IsArm64 ? ", ARM64" : "")}";
         }
         var free = HardwareDetector.GetFreeDiskBytes(AppPaths.DataDir);
-        _disk.Text = free > 0 ? $"{FileUtil.FormatBytes(free)} ({Path.GetPathRoot(AppPaths.DataDir)})" : "неизвестно";
+        _disk.Text = free > 0 ? $"{FileUtil.FormatBytes(free)} ({Path.GetPathRoot(AppPaths.DataDir)})" : L.T("неизвестно");
 
         var rec = hw is null
-            ? new Offload.Llama.BackendRecommendation(LlamaBackend.Vulkan, "Оборудование не определено — Vulkan работает на большинстве видеокарт.")
+            ? new Offload.Llama.BackendRecommendation(LlamaBackend.Vulkan, L.T("Оборудование не определено — Vulkan работает на большинстве видеокарт."))
             : Texts.RecommendBackend(hw);
         State.RecommendedBackend = rec.Backend;
-        _recommendTitle.Text = $"Рекомендуется: {Texts.Backend(rec.Backend)}";
+        _recommendTitle.Text = L.F("Рекомендуется: {0}", Texts.Backend(rec.Backend));
         _recommendReason.Text = rec.ReasonRu;
 
         _loading = true;
@@ -141,12 +141,12 @@ internal sealed class HardwareStep : WizardStep
             foreach (var b in list)
             {
                 _backendValues.Add(b);
-                _backend.Items.Add(b == rec.Backend ? $"{Texts.Backend(b)} (рекомендуется)" : Texts.Backend(b));
+                _backend.Items.Add(b == rec.Backend ? L.F("{0} (рекомендуется)", Texts.Backend(b)) : Texts.Backend(b));
             }
             if (!_backendValues.Contains(rec.Backend))
             {
                 _backendValues.Insert(0, rec.Backend);
-                _backend.Items.Insert(0, $"{Texts.Backend(rec.Backend)} (рекомендуется)");
+                _backend.Items.Insert(0, L.F("{0} (рекомендуется)", Texts.Backend(rec.Backend)));
             }
 
             // Повторный запуск мастера: предлагаем уже установленную сборку.

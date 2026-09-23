@@ -199,8 +199,8 @@ internal sealed class ServerController : IDisposable
 
             error ??= SafeProcessError()
                       ?? (ps == ServerState.Starting
-                          ? "Сервер не успел загрузить модель за отведённое время."
-                          : "Сервер не запустился — подробности в журнале llama-server.");
+                          ? L.T("Сервер не успел загрузить модель за отведённое время.")
+                          : L.T("Сервер не запустился — подробности в журнале llama-server."));
             if (ps is ServerState.Starting or ServerState.Running) await SafeStopProcessAsync().ConfigureAwait(false);
             SetState(ServerState.Failed, error);
             return false;
@@ -262,13 +262,13 @@ internal sealed class ServerController : IDisposable
         }
         catch (Exception ex)
         {
-            return "Не удалось проверить установку llama.cpp: " + Ui.FriendlyError(ex);
+            return L.F("Не удалось проверить установку llama.cpp: {0}", Ui.FriendlyError(ex));
         }
-        if (!installed) return "llama.cpp не установлен — запустите мастер настройки.";
+        if (!installed) return L.T("llama.cpp не установлен — запустите мастер настройки.");
         var model = cfg.ActiveModel();
-        if (model is null) return "Модель не выбрана — скачайте модель на вкладке «Модели».";
+        if (model is null) return L.T("Модель не выбрана — скачайте модель на вкладке «Модели».");
         if (string.IsNullOrWhiteSpace(model.FilePath) || !File.Exists(model.FilePath))
-            return $"Файл модели не найден: {model.FilePath}";
+            return L.F("Файл модели не найден: {0}", model.FilePath);
         return null;
     }
 
@@ -317,7 +317,7 @@ internal sealed class ServerController : IDisposable
             {
                 crash = true;
                 _state = ServerState.Failed;
-                _lastError = SafeProcessError() ?? "Процесс llama-server неожиданно завершился.";
+                _lastError = SafeProcessError() ?? L.T("Процесс llama-server неожиданно завершился.");
             }
         }
         RaiseChanged();
@@ -327,18 +327,18 @@ internal sealed class ServerController : IDisposable
     private void HandleCrash()
     {
         if (_disposed) return;
-        var err = LastError ?? "Процесс llama-server неожиданно завершился.";
+        var err = LastError ?? L.T("Процесс llama-server неожиданно завершился.");
         if (_budget.TryTake(out var attempt))
         {
             Log.Warn("server", $"llama-server упал: {err}. Автоперезапуск {attempt}/{MaxAutoRestarts}");
-            Notify("Сервер llama.cpp остановился", $"{err}{Environment.NewLine}Перезапуск ({attempt} из {MaxAutoRestarts})…", ToolTipIcon.Warning);
+            Notify(L.T("Сервер llama.cpp остановился"), L.F("{0}{1}Перезапуск ({2} из {3})…", err, Environment.NewLine, attempt, MaxAutoRestarts), ToolTipIcon.Warning);
             _ = Task.Run(async () =>
             {
                 await Task.Delay(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
                 if (_disposed || State is not (ServerState.Failed or ServerState.Stopped)) return;
                 var ok = await StartAsync(false).ConfigureAwait(false);
                 if (ok)
-                    Notify("Сервер llama.cpp перезапущен", "Локальная модель снова доступна.", ToolTipIcon.Info);
+                    Notify(L.T("Сервер llama.cpp перезапущен"), L.T("Локальная модель снова доступна."), ToolTipIcon.Info);
                 else if (State == ServerState.Failed)
                     HandleCrash();
             });
@@ -347,8 +347,8 @@ internal sealed class ServerController : IDisposable
         {
             Log.Error("server", $"llama-server упал {MaxAutoRestarts} раза за {RestartWindow.TotalMinutes:0} минут, автоперезапуск отключён: {err}");
             SetState(ServerState.Failed, err);
-            Notify("Сервер llama.cpp не работает",
-                $"Сервер падал {MaxAutoRestarts} раза за {RestartWindow.TotalMinutes:0} минут и больше не перезапускается автоматически. {err}",
+            Notify(L.T("Сервер llama.cpp не работает"),
+                L.F("Сервер падал {0} раза за {1:0} минут и больше не перезапускается автоматически. {2}", MaxAutoRestarts, RestartWindow.TotalMinutes, err),
                 ToolTipIcon.Error);
         }
     }
@@ -366,7 +366,7 @@ internal sealed class ServerController : IDisposable
             last = Max(last, FileTimeUtc(Path.Combine(AppPaths.LogsDir, "llama-server.log")));
             if (DateTime.UtcNow - last < TimeSpan.FromMinutes(minutes)) return;
             Log.Info("server", $"Простой {minutes} мин — модель выгружается из памяти");
-            _ = StopAsync($"модель выгружена после простоя ({minutes} мин), запустится при следующем обращении из IDE");
+            _ = StopAsync(L.F("модель выгружена после простоя ({0} мин), запустится при следующем обращении из IDE", minutes));
         }
         catch (Exception ex)
         {

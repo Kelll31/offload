@@ -29,6 +29,12 @@ internal abstract class PageBase : UserControl
     /// <summary>Заголовок вкладки.</summary>
     public abstract string Title { get; }
 
+    /// <summary>Пояснение под заголовком страницы (одна строка).</summary>
+    public virtual string? Subtitle => null;
+
+    /// <summary>Значок пункта навигации (см. Controls.Glyphs).</summary>
+    public virtual string Glyph => Offload.App.Controls.Glyphs.Info;
+
     public bool IsActive { get; private set; }
 
     /// <summary>Выполняется длительная операция (закрытие окна не прерывает её, но предупреждает).</summary>
@@ -36,6 +42,9 @@ internal abstract class PageBase : UserControl
 
     /// <summary>Описание текущей длительной операции (для предупреждения при выходе).</summary>
     public virtual string? BusyDescription => null;
+
+    /// <summary>На странице есть несохранённые изменения (предупредить перед пересозданием окна).</summary>
+    public virtual bool HasUnsavedChanges => false;
 
     public void Activate()
     {

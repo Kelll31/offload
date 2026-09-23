@@ -131,13 +131,13 @@ internal static class VcRuntimeCheck
         TryDelete(dest);
         TryDelete(dest + ".part");
 
-        Report(progress, $"Загрузка {title}…", 0);
+        Report(progress, L.F("Загрузка {0}…", title), 0);
         await HttpDownloader.DownloadFileAsync(url, dest,
             progress: new ActionProgress<DownloadProgress>(p =>
-                Report(progress, $"Загрузка {title}…", p.Fraction is double f ? f * 0.5 : null, InstallerImpl.DownloadDetail(p))),
+                Report(progress, L.F("Загрузка {0}…", title), p.Fraction is double f ? f * 0.5 : null, InstallerImpl.DownloadDetail(p))),
             ct: ct).ConfigureAwait(false);
 
-        Report(progress, $"Установка {title}… Подтвердите запрос контроля учётных записей Windows.", 0.6);
+        Report(progress, L.F("Установка {0}… Подтвердите запрос контроля учётных записей Windows.", title), 0.6);
         Process? proc;
         try
         {
@@ -151,7 +151,7 @@ internal static class VcRuntimeCheck
         catch (Win32Exception ex) when (ex.NativeErrorCode == 1223)
         {
             Log.Info("llama", "Установка VC++ Redistributable отменена пользователем (UAC)");
-            Report(progress, "Установка Visual C++ отменена: запрос контроля учётных записей отклонён.", null);
+            Report(progress, L.T("Установка Visual C++ отменена: запрос контроля учётных записей отклонён."), null);
             return false;
         }
         if (proc is null) return false;
@@ -169,20 +169,20 @@ internal static class VcRuntimeCheck
             Log.Info("llama", $"VC++ Redistributable установлен (код {code}){(code == 3010 ? ", требуется перезагрузка" : "")}");
             TryDelete(dest);
             Report(progress, code == 3010
-                ? $"{title} установлен. Для завершения может потребоваться перезагрузка."
-                : $"{title} установлен.", 1);
+                ? L.F("{0} установлен. Для завершения может потребоваться перезагрузка.", title)
+                : L.F("{0} установлен.", title), 1);
             return true;
         }
 
         var why = code switch
         {
-            1602 => "установка отменена",
-            1603 => "ошибка установки",
-            1618 => "уже выполняется другая установка — дождитесь её окончания",
-            _ => $"код {code}",
+            1602 => L.T("установка отменена"),
+            1603 => L.T("ошибка установки"),
+            1618 => L.T("уже выполняется другая установка — дождитесь её окончания"),
+            _ => L.F("код {0}", code),
         };
         Log.Warn("llama", $"Установщик VC++ Redistributable завершился с кодом {code}");
-        Report(progress, $"Не удалось установить {title}: {why}.", null);
+        Report(progress, L.F("Не удалось установить {0}: {1}.", title, why), null);
         return false;
     }
 

@@ -45,7 +45,7 @@ internal sealed class ProgressPanel : TableLayoutPanel
         this.AddRow(_stage);
         if (withCancel)
         {
-            _cancel = Kit.Button("Отмена", (_, _) => CancelRequested?.Invoke(this, EventArgs.Empty), 88);
+            _cancel = Kit.Button(L.T("Отмена"), (_, _) => CancelRequested?.Invoke(this, EventArgs.Empty), 88);
             _cancel.Anchor = AnchorStyles.Right;
             this.AddRow(_bar, _cancel);
         }

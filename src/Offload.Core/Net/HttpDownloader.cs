@@ -66,13 +66,13 @@ public static class HttpDownloader
                 var total = await DownloadAttemptAsync(url, partPath, expectedSize, fileName, progress, ct);
                 var actual = new FileInfo(partPath).Length;
                 if (total is > 0 && actual != total)
-                    throw new IOException($"Размер файла не совпадает: получено {actual}, ожидалось {total}.");
+                    throw new IOException(L.F("Размер файла не совпадает: получено {0}, ожидалось {1}.", actual, total));
 
                 if (expectedSha256 is not null &&
                     !await VerifyShaAsync(partPath, expectedSha256, actual, fileName, progress, ct))
                 {
                     File.Delete(partPath);
-                    throw new DownloadException($"Контрольная сумма SHA-256 файла {fileName} не совпадает. Файл удалён, повторите загрузку.");
+                    throw new DownloadException(L.F("Контрольная сумма SHA-256 файла {0} не совпадает. Файл удалён, повторите загрузку.", fileName));
                 }
 
                 File.Move(partPath, destinationPath, overwrite: true);
@@ -98,7 +98,7 @@ public static class HttpDownloader
             }
         }
 
-        throw new DownloadException($"Не удалось загрузить {fileName}: {lastError?.Message}", lastError);
+        throw new DownloadException(L.F("Не удалось загрузить {0}: {1}", fileName, lastError?.Message), lastError);
     }
 
     /// <returns>Полный размер файла, если сервер его сообщил.</returns>
@@ -129,7 +129,7 @@ public static class HttpDownloader
             var len = response.Content.Headers.ContentRange?.Length;
             if (len is not null && len == existing) return len;
             File.Delete(partPath);
-            throw new IOException("Сервер отклонил докачку, загрузка начнётся заново.");
+            throw new IOException(L.T("Сервер отклонил докачку, загрузка начнётся заново."));
         }
 
         response.EnsureSuccessStatusCode();
@@ -169,7 +169,7 @@ public static class HttpDownloader
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested)
             {
-                throw new TimeoutException("Сервер перестал отвечать при загрузке.");
+                throw new TimeoutException(L.T("Сервер перестал отвечать при загрузке."));
             }
             if (read == 0) break;
 

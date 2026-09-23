@@ -114,6 +114,10 @@ public class ConfigWriterTests
         Assert.Equal("deny", (string?)edit["bash"]);
         Assert.Equal("allow", (string?)edit["edit"]!["*"]);
         Assert.Equal("deny", (string?)edit["external_directory"]);
+        // Агент не правит .git (подмена gitdir в песочнице) и конфигурацию OpenCode в проекте.
+        foreach (var p in new[] { ".git", ".git/*", "*/.git/*", "opencode.json", ".opencode/*" })
+            Assert.Equal("deny", (string?)edit["edit"]![p]);
+        Assert.Null(edit["read"]![".git/*"]);
         foreach (var tool in new[] { "webfetch", "websearch", "task", "todowrite", "skill", "question", "doom_loop" })
             Assert.Equal("deny", (string?)edit[tool]);
         Assert.DoesNotContain("PowerShell", (string?)root["agent"]!["offload"]!["prompt"]);
@@ -240,7 +244,7 @@ public class ConfigWriterTests
                  {
                      "OPENCODE_DISABLE_AUTOUPDATE", "OPENCODE_DISABLE_MODELS_FETCH", "OPENCODE_DISABLE_SHARE",
                      "OPENCODE_DISABLE_LSP_DOWNLOAD", "OPENCODE_DISABLE_DEFAULT_PLUGINS", "OPENCODE_DISABLE_EXTERNAL_SKILLS",
-                     "OPENCODE_DISABLE_CLAUDE_CODE", "OPENCODE_PURE",
+                     "OPENCODE_DISABLE_CLAUDE_CODE", "OPENCODE_PURE", "OPENCODE_DISABLE_PROJECT_CONFIG",
                  })
             Assert.Equal("1", env[flag]);
         Assert.Equal(TestConfig.Key, env["OFFLOAD_API_KEY"]);

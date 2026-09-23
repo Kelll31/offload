@@ -67,6 +67,19 @@ internal sealed class ToolContext
     }
 
     public string Display(string full) => PathGuard.Display(full, Roots);
+
+    /// <summary>Контекст для фоновой задачи: свой прогресс (без клиента), свой токен отмены и своя статистика.</summary>
+    public ToolContext ForBackground(ProgressReporter progress, CancellationToken ct) => new()
+    {
+        Tool = Tool,
+        Cfg = Cfg,
+        State = State,
+        Progress = progress,
+        Roots = Roots,
+        Server = null,
+        ToolUseId = ToolUseId,
+        Ct = ct,
+    };
 }
 
 /// <summary>
@@ -188,7 +201,7 @@ internal static class ToolRunner
         return text[..cut] + marker;
     }
 
-    private static void RecordUsage(ToolContext ctx, bool ok, string resultText)
+    internal static void RecordUsage(ToolContext ctx, bool ok, string resultText)
     {
         try
         {

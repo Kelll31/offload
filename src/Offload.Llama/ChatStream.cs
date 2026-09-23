@@ -199,13 +199,13 @@ internal sealed class ChatStreamParser(Action<string>? onDelta = null)
 /// <summary>Русские тексты ошибок API llama-server.</summary>
 internal static class LlamaErrorText
 {
-    public const string Unauthorized =
-        "Неверный ключ API: llama-server отклонил запрос (401). Перезапустите сервер из Offload, чтобы ключи совпали.";
+    public static string Unauthorized =>
+        L.T("Неверный ключ API: llama-server отклонил запрос (401). Перезапустите сервер из Offload, чтобы ключи совпали.");
 
-    public const string Loading = "Модель загружается — повторите запрос через несколько секунд.";
+    public static string Loading => L.T("Модель загружается — повторите запрос через несколько секунд.");
 
     public static string NotRunning(string baseUrl) =>
-        $"Сервер не запущен: нет соединения с {baseUrl}. Запустите сервер в Offload.";
+        L.F("Сервер не запущен: нет соединения с {0}. Запустите сервер в Offload.", baseUrl);
 
     /// <summary>Ошибка по HTTP-коду и телу ответа ({"error":{...}}).</summary>
     public static LlamaApiException FromResponse(int status, string? body)
@@ -226,7 +226,7 @@ internal static class LlamaErrorText
             }
         }
         var tail = string.IsNullOrWhiteSpace(body) ? "" : ": " + Shorten(body.Trim(), 300);
-        return new LlamaApiException($"llama-server вернул ошибку {status}{tail}", status);
+        return new LlamaApiException(L.F("llama-server вернул ошибку {0}{1}", status, tail), status);
     }
 
     public static LlamaApiException FromErrorJson(JsonElement err, int? statusCode)
@@ -250,15 +250,15 @@ internal static class LlamaErrorText
         if (code == 503 || type == "unavailable_error") return new LlamaApiException(Loading, 503);
         if (type == "exceed_context_size_error" || (message?.Contains("context size", StringComparison.OrdinalIgnoreCase) ?? false))
         {
-            var detail = nPrompt is not null && nCtx is not null ? $" ({nPrompt} токенов при контексте {nCtx})" : "";
+            var detail = nPrompt is not null && nCtx is not null ? " " + L.F("({0} токенов при контексте {1})", nPrompt, nCtx) : "";
             return new LlamaApiException(
-                $"Запрос не помещается в контекст модели{detail}. Сократите объём передаваемых файлов или увеличьте размер контекста в настройках.",
+                L.F("Запрос не помещается в контекст модели{0}. Сократите объём передаваемых файлов или увеличьте размер контекста в настройках.", detail),
                 code ?? 400);
         }
-        var text = string.IsNullOrWhiteSpace(message) ? "неизвестная ошибка" : Shorten(message!, 500);
+        var text = string.IsNullOrWhiteSpace(message) ? L.T("неизвестная ошибка") : Shorten(message!, 500);
         return code is >= 500
-            ? new LlamaApiException($"Внутренняя ошибка llama-server: {text}", code)
-            : new LlamaApiException($"llama-server отклонил запрос: {text}", code);
+            ? new LlamaApiException(L.F("Внутренняя ошибка llama-server: {0}", text), code)
+            : new LlamaApiException(L.F("llama-server отклонил запрос: {0}", text), code);
     }
 
     private static string Shorten(string s, int max) => s.Length <= max ? s : s[..max] + "…";

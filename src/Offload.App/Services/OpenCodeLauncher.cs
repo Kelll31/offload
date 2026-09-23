@@ -17,7 +17,7 @@ internal static class OpenCodeLauncher
         var exe = Ui.Try(() => OpenCodeInstaller.FindExecutable(cfg), null, "FindExecutable");
         if (exe is null)
         {
-            if (Ui.Confirm(owner, "OpenCode не установлен. Открыть вкладку OpenCode, чтобы установить его?"))
+            if (Ui.Confirm(owner, L.T("OpenCode не установлен. Открыть вкладку OpenCode, чтобы установить его?")))
                 shell.ShowMainWindow("opencode");
             return;
         }
@@ -26,7 +26,7 @@ internal static class OpenCodeLauncher
         {
             using var dlg = new FolderBrowserDialog
             {
-                Description = "Папка проекта, в которой открыть OpenCode",
+                Description = L.T("Папка проекта, в которой открыть OpenCode"),
                 UseDescriptionForTitle = true,
                 ShowNewFolderButton = false,
                 InitialDirectory = _lastFolder ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
@@ -38,10 +38,10 @@ internal static class OpenCodeLauncher
 
         if (shell.Server.State != ServerState.Running)
         {
-            shell.Notify("Запуск локальной модели", "OpenCode откроется, когда модель загрузится.");
+            shell.Notify(L.T("Запуск локальной модели"), L.T("OpenCode откроется, когда модель загрузится."));
             if (!await shell.Server.StartAsync())
             {
-                Ui.ShowError(owner, "Не удалось запустить сервер llama.cpp", shell.Server.LastError ?? "");
+                Ui.ShowError(owner, L.T("Не удалось запустить сервер llama.cpp"), shell.Server.LastError ?? "");
                 return;
             }
         }
@@ -56,7 +56,7 @@ internal static class OpenCodeLauncher
         catch (Exception ex)
         {
             Log.Error("opencode", "Не удалось открыть OpenCode", ex);
-            Ui.ShowError(owner, "Не удалось открыть OpenCode", ex);
+            Ui.ShowError(owner, L.T("Не удалось открыть OpenCode"), ex);
         }
     }
 }

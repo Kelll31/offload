@@ -91,7 +91,7 @@ public class EndToEndTests
             Assert.NotNull(a.ReadOnlyHint);
             Assert.NotNull(a.DestructiveHint);
             Assert.NotNull(a.IdempotentHint);
-            Assert.False(a.OpenWorldHint);
+            Assert.Equal(t.Name == McpToolNames.Dependencies, a.OpenWorldHint);
             Assert.False(string.IsNullOrWhiteSpace(t.Title));
             Assert.InRange(t.Description!.Length, 150, 1000);
             Assert.True(t.Meta?["anthropic/searchHint"] is not null, t.Name);
@@ -107,6 +107,18 @@ public class EndToEndTests
         Assert.True(tools[McpToolNames.EditFiles].Annotations!.DestructiveHint);
         Assert.False(tools[McpToolNames.WriteFile].Annotations!.DestructiveHint);
         Assert.Contains("\"paths\"", tools[McpToolNames.AskFiles].InputSchema.GetRawText());
+        Assert.True(tools[McpToolNames.AgentTask].Annotations!.DestructiveHint);
+        Assert.Contains("\"background\"", tools[McpToolNames.AgentTask].InputSchema.GetRawText());
+
+        // Подсказки (слэш-команды Claude Code) ссылаются на инструменты по полным именам.
+        var prompts = await h.Client.ListPromptsAsync();
+        Assert.Equal(OffloadPrompts.All.OrderBy(x => x), prompts.Select(p => p.Name).OrderBy(x => x));
+        var delegatePrompt = await h.Client.GetPromptAsync(OffloadPrompts.Delegate,
+            new Dictionary<string, object?> { ["task"] = "Add a Sum method", ["verify_command"] = "dotnet test" });
+        var text = string.Join("\n", delegatePrompt.Messages.Select(m => (m.Content as ModelContextProtocol.Protocol.TextContentBlock)?.Text));
+        Assert.Contains("Add a Sum method", text);
+        Assert.Contains(McpToolNames.ClaudeCodeName(McpToolNames.AgentTask), text);
+        Assert.Contains("\"dotnet test\"", text);
     }
 
     [Fact]

@@ -13,22 +13,22 @@ internal static class Texts
 {
     public static string State(ServerState s) => s switch
     {
-        ServerState.NotConfigured => "Не настроен",
-        ServerState.Stopped => "Остановлен",
-        ServerState.Starting => "Запускается…",
-        ServerState.Running => "Работает",
-        ServerState.Stopping => "Останавливается…",
-        ServerState.Failed => "Ошибка",
+        ServerState.NotConfigured => L.T("Не настроен"),
+        ServerState.Stopped => L.T("Остановлен"),
+        ServerState.Starting => L.T("Запускается…"),
+        ServerState.Running => L.T("Работает"),
+        ServerState.Stopping => L.T("Останавливается…"),
+        ServerState.Failed => L.T("Ошибка"),
         _ => s.ToString(),
     };
 
     public static string Integration(IntegrationStatus s) => s switch
     {
-        IntegrationStatus.ClientNotFound => "Не найдена",
-        IntegrationStatus.NotRegistered => "Не подключена",
-        IntegrationStatus.Registered => "Подключена",
-        IntegrationStatus.Outdated => "Требует обновления",
-        IntegrationStatus.Error => "Ошибка",
+        IntegrationStatus.ClientNotFound => L.T("Не найдена"),
+        IntegrationStatus.NotRegistered => L.T("Не подключена"),
+        IntegrationStatus.Registered => L.T("Подключена"),
+        IntegrationStatus.Outdated => L.T("Требует обновления"),
+        IntegrationStatus.Error => L.T("Ошибка"),
         _ => s.ToString(),
     };
 
@@ -47,13 +47,13 @@ internal static class Texts
 
     public static string FallbackBackendName(LlamaBackend b) => b switch
     {
-        LlamaBackend.Auto => "Автовыбор",
+        LlamaBackend.Auto => L.T("Автовыбор"),
         LlamaBackend.Cuda12 => "NVIDIA CUDA 12",
         LlamaBackend.Cuda13 => "NVIDIA CUDA 13",
-        LlamaBackend.Vulkan => "Vulkan (любая видеокарта)",
+        LlamaBackend.Vulkan => L.T("Vulkan (любая видеокарта)"),
         LlamaBackend.Rocm => "AMD ROCm (HIP)",
         LlamaBackend.Sycl => "Intel SYCL",
-        LlamaBackend.Cpu => "Только процессор",
+        LlamaBackend.Cpu => L.T("Только процессор"),
         _ => b.ToString(),
     };
 
@@ -73,18 +73,18 @@ internal static class Texts
 
     public static string Gpu(GpuInfo g)
     {
-        var mem = g.DedicatedMemoryBytes > 0 ? $"{g.DedicatedMemoryGb:0.0} ГБ" : "память неизвестна";
-        var extra = g.IsIntegrated ? ", встроенная" : "";
-        var driver = string.IsNullOrWhiteSpace(g.DriverVersion) ? "" : $", драйвер {g.DriverVersion}";
+        var mem = g.DedicatedMemoryBytes > 0 ? L.F("{0:0.0} ГБ", g.DedicatedMemoryGb) : L.T("память неизвестна");
+        var extra = g.IsIntegrated ? L.T(", встроенная") : "";
+        var driver = string.IsNullOrWhiteSpace(g.DriverVersion) ? "" : L.F(", драйвер {0}", g.DriverVersion);
         return $"{g.Name} — {mem}{extra}{driver}";
     }
 
     public static string HardwareSummary(HardwareInfo hw)
     {
         var gpu = hw.PrimaryGpu is { } g && !g.IsIntegrated
-            ? $"{g.Name} ({g.DedicatedMemoryGb:0.#} ГБ)"
-            : "дискретная видеокарта не найдена";
-        return $"Видеокарта: {gpu} · ОЗУ: {hw.TotalRamGb:0.#} ГБ · ЦП: {hw.LogicalCores} потоков";
+            ? L.F("{0} ({1:0.#} ГБ)", g.Name, g.DedicatedMemoryGb)
+            : L.T("дискретная видеокарта не найдена");
+        return L.F("Видеокарта: {0} · ОЗУ: {1:0.#} ГБ · ЦП: {2} потоков", gpu, hw.TotalRamGb, hw.LogicalCores);
     }
 
     /// <summary>Рекомендация сборки: из модуля llama, при недоступности — простое правило.</summary>
@@ -96,9 +96,9 @@ internal static class Texts
         }
         catch
         {
-            if (hw.HasNvidia) return new BackendRecommendation(LlamaBackend.Cuda12, "Найдена видеокарта NVIDIA — сборка CUDA работает быстрее всего.");
-            if (hw.PrimaryVramBytes > 0) return new BackendRecommendation(LlamaBackend.Vulkan, "Vulkan поддерживается видеокартами AMD и Intel.");
-            return new BackendRecommendation(LlamaBackend.Cpu, "Дискретная видеокарта не найдена — модель будет работать на процессоре.");
+            if (hw.HasNvidia) return new BackendRecommendation(LlamaBackend.Cuda12, L.T("Найдена видеокарта NVIDIA — сборка CUDA работает быстрее всего."));
+            if (hw.PrimaryVramBytes > 0) return new BackendRecommendation(LlamaBackend.Vulkan, L.T("Vulkan поддерживается видеокартами AMD и Intel."));
+            return new BackendRecommendation(LlamaBackend.Cpu, L.T("Дискретная видеокарта не найдена — модель будет работать на процессоре."));
         }
     }
 
@@ -120,21 +120,37 @@ internal static class Texts
     public static string Truncate(string text, int max) =>
         text.Length <= max ? text : text[..Math.Max(0, max - 1)] + "…";
 
-    public static string ModelName(InstalledModel? m) => m is null ? "модель не выбрана" : m.DisplayName;
+    public static string ModelName(InstalledModel? m) => m is null ? L.T("модель не выбрана") : Offload.Models.ModelCatalog.NameOf(m);
 
     /// <summary>Название MCP-инструмента для статистики: «Вопрос по файлам (local_ask_files)».</summary>
     public static string ToolName(string tool)
     {
         var title = tool switch
         {
-            McpToolNames.Status => "Состояние",
-            McpToolNames.AskFiles => "Вопрос по файлам",
-            McpToolNames.SummarizeLog => "Сжатие лога",
-            McpToolNames.ReviewDiff => "Ревью diff",
-            McpToolNames.CommitMessage => "Сообщение коммита",
-            McpToolNames.WriteFile => "Создание файла",
-            McpToolNames.EditFiles => "Правка файлов",
-            McpToolNames.Job => "Задачи правки",
+            McpToolNames.Status => L.T("Состояние"),
+            McpToolNames.AskFiles => L.T("Вопрос по файлам"),
+            McpToolNames.SummarizeLog => L.T("Сжатие лога"),
+            McpToolNames.ReviewDiff => L.T("Ревью diff"),
+            McpToolNames.CommitMessage => L.T("Сообщение коммита"),
+            McpToolNames.WriteFile => L.T("Создание файла"),
+            McpToolNames.EditFiles => L.T("Правка файлов"),
+            McpToolNames.AgentTask => L.T("Задача агенту"),
+            McpToolNames.Verify => L.T("Сборка и тесты"),
+            McpToolNames.Job => L.T("Задачи правки"),
+            McpToolNames.FindContext => L.T("Контекст под задачу"),
+            McpToolNames.SearchCode => L.T("Поиск по коду"),
+            McpToolNames.Symbols => L.T("Символы и граф вызовов"),
+            McpToolNames.ProjectMap => L.T("Карта проекта"),
+            McpToolNames.Diagnostics => L.T("Диагностика сборки"),
+            McpToolNames.ApplyPatch => L.T("Применение патча"),
+            McpToolNames.Refactor => L.T("Рефакторинг"),
+            McpToolNames.Impact => L.T("Влияние изменений"),
+            McpToolNames.CodeScan => L.T("Статический анализ"),
+            McpToolNames.SecurityReview => L.T("Проверка безопасности"),
+            McpToolNames.GitHistory => L.T("История git"),
+            McpToolNames.Dependencies => L.T("Зависимости"),
+            McpToolNames.Memory => L.T("Память проекта"),
+            McpToolNames.Solve => L.T("Решение задачи"),
             _ => null,
         };
         return title is null ? tool : $"{title} ({tool})";

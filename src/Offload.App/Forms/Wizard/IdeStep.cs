@@ -24,11 +24,11 @@ internal sealed class IdeStep : WizardStep
         Margin = new Padding(0, 4, 0, 4),
         BorderStyle = BorderStyle.FixedSingle,
     };
-    private readonly Label _loading = Kit.Hint("Поиск установленных IDE…");
+    private readonly Label _loading = Kit.Hint(L.T("Поиск установленных IDE…"));
     private readonly Label _notFound = Kit.Hint("");
-    private readonly CheckBox _guidance = Kit.Check("Установить инструкции по делегированию для Claude Code");
-    private readonly CheckBox _preapprove = Kit.Check("Разрешить Claude Code вызывать инструменты чтения Offload без подтверждения");
-    private readonly CheckBox _autostart = Kit.Check("Запускать Offload вместе с Windows");
+    private readonly CheckBox _guidance = Kit.Check(L.T("Установить инструкции по делегированию для Claude Code"));
+    private readonly CheckBox _preapprove = Kit.Check(L.T("Разрешить Claude Code вызывать инструменты чтения Offload без подтверждения"));
+    private readonly CheckBox _autostart = Kit.Check(L.T("Запускать Offload вместе с Windows"));
 
     private bool _loaded;
     private bool _busy;
@@ -50,31 +50,31 @@ internal sealed class IdeStep : WizardStep
         _autostart.CheckedChanged += (_, _) => State.Autostart = _autostart.Checked;
 
         var root = Kit.Table();
-        root.AddRow(Kit.Section("IDE и агенты", first: true));
-        root.AddRow(Kit.Hint("Offload будет прописан как MCP-сервер в выбранных программах. Перед изменением их настроек делается резервная копия."));
+        root.AddRow(Kit.Section(L.T("IDE и агенты"), first: true));
+        root.AddRow(Kit.Hint(L.T("Offload будет прописан как MCP-сервер в выбранных программах. Перед изменением их настроек делается резервная копия.")));
         root.AddRow(_loading);
         root.AddFixedRow(170, _ides);
         root.AddRow(_notFound);
 
         root.AddRow(Kit.Section("Claude Code"));
         root.AddRow(_guidance);
-        root.AddRow(Indent(Kit.Hint("Объясняет Claude, какие задачи выгодно поручать локальной модели, чтобы экономить токены.")));
+        root.AddRow(Indent(Kit.Hint(L.T("Объясняет Claude, какие задачи выгодно поручать локальной модели, чтобы экономить токены."))));
         root.AddRow(_preapprove);
-        root.AddRow(Indent(Kit.Hint("Только инструменты чтения (вопросы по файлам, ревью, сжатие логов). Инструменты записи можно разрешить позже на вкладке «Интеграции».")));
+        root.AddRow(Indent(Kit.Hint(L.T("Только инструменты чтения (вопросы по файлам, ревью, сжатие логов). Инструменты записи можно разрешить позже на вкладке «Интеграции»."))));
 
-        root.AddRow(Kit.Section("Автозапуск"));
+        root.AddRow(Kit.Section(L.T("Автозапуск")));
         root.AddRow(_autostart);
-        root.AddRow(Indent(Kit.Hint("Offload стартует в области уведомлений, и IDE сразу может обращаться к локальной модели.")));
+        root.AddRow(Indent(Kit.Hint(L.T("Offload стартует в области уведомлений, и IDE сразу может обращаться к локальной модели."))));
         SetContent(root);
     }
 
-    public override string Title => "Подключение к IDE";
+    public override string Title => L.T("Подключение к IDE");
 
-    public override string Heading => "Подключение к IDE";
+    public override string Heading => L.T("Подключение к IDE");
 
-    public override string? Subtitle => "Выберите программы, из которых можно будет поручать задачи локальной модели.";
+    public override string? Subtitle => L.T("Выберите программы, из которых можно будет поручать задачи локальной модели.");
 
-    public override string NextText => "Установить";
+    public override string NextText => L.T("Установить");
 
     public override bool CanGoNext => _loaded;
 
@@ -135,9 +135,9 @@ internal sealed class IdeStep : WizardStep
             }
             _loading.Visible = found.Count == 0 || error is not null;
             _loading.Text = error is not null
-                ? "Не удалось получить список IDE: " + error
-                : found.Count == 0 ? "Поддерживаемые IDE не найдены. Подключить их можно позже на вкладке «Интеграции»." : "";
-            _notFound.Text = missing.Count == 0 ? "" : "Не найдены на этом компьютере: " + string.Join(", ", missing) + ".";
+                ? L.F("Не удалось получить список IDE: {0}", error)
+                : found.Count == 0 ? L.T("Поддерживаемые IDE не найдены. Подключить их можно позже на вкладке «Интеграции».") : "";
+            _notFound.Text = missing.Count == 0 ? "" : L.F("Не найдены на этом компьютере: {0}.", string.Join(", ", missing));
 
             _claudeFound = found.Any(f => f.Item.Id == ClaudeCodeId);
             _guidance.Enabled = _claudeFound;
@@ -152,7 +152,7 @@ internal sealed class IdeStep : WizardStep
             State.Autostart = _autostart.Checked;
             if (!_claudeFound)
             {
-                _guidance.Text = "Установить инструкции по делегированию для Claude Code (Claude Code не найден)";
+                _guidance.Text = L.T("Установить инструкции по делегированию для Claude Code (Claude Code не найден)");
             }
             State.IdesLoaded = true;
             _loaded = true;
@@ -160,7 +160,7 @@ internal sealed class IdeStep : WizardStep
         catch (Exception ex)
         {
             Log.Error("wizard", "Шаг «Подключение к IDE»", ex);
-            _loading.Text = "Не удалось получить список IDE: " + Ui.FriendlyError(ex);
+            _loading.Text = L.F("Не удалось получить список IDE: {0}", Ui.FriendlyError(ex));
             _loaded = true;
         }
         finally

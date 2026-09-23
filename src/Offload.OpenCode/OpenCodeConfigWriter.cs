@@ -156,7 +156,7 @@ public static class OpenCodeConfigWriter
     internal static JsonObject BuildProvider(AppConfig cfg, int context, string apiKeyValue)
     {
         var model = cfg.ActiveModel();
-        var name = model is { DisplayName.Length: > 0 } ? $"{model.DisplayName} (Offload)" : "Локальная модель (Offload)";
+        var name = model is { DisplayName.Length: > 0 } ? $"{model.DisplayName} (Offload)" : "Локальная модель (Offload)"; // l10n-ignore: имя провайдера в конфиге OpenCode
         return new JsonObject
         {
             ["npm"] = "@ai-sdk/openai-compatible",
@@ -221,7 +221,7 @@ public static class OpenCodeConfigWriter
         var s = cfg.ActiveModel()?.Sampling ?? new SamplingSettings();
         return new JsonObject
         {
-            ["description"] = "Offload: локальная модель выполняет задачу в проекте (чтение и правка файлов).",
+            ["description"] = "Offload: локальная модель выполняет задачу в проекте (чтение и правка файлов).", // l10n-ignore: конфиг OpenCode
             ["mode"] = "primary",
             ["model"] = ModelRef(cfg),
             ["temperature"] = s.Temperature,
@@ -237,7 +237,7 @@ public static class OpenCodeConfigWriter
         var s = cfg.ActiveModel()?.Sampling ?? new SamplingSettings();
         return new JsonObject
         {
-            ["description"] = "Offload: локальная модель анализирует проект (только чтение).",
+            ["description"] = "Offload: локальная модель анализирует проект (только чтение).", // l10n-ignore: конфиг OpenCode
             ["mode"] = "primary",
             ["model"] = ModelRef(cfg),
             ["temperature"] = s.Temperature,
@@ -258,7 +258,7 @@ public static class OpenCodeConfigWriter
         {
             ["*"] = "allow",
             ["read"] = SecretRules(cfg),
-            ["edit"] = allowEdit ? SecretRules(cfg) : "deny",
+            ["edit"] = allowEdit ? EditRules(cfg) : "deny",
             ["bash"] = BashRules(allowShell),
             ["external_directory"] = "deny",
         };
@@ -271,6 +271,21 @@ public static class OpenCodeConfigWriter
         if (!allowShell) return JsonValue.Create("deny");
         var rules = new JsonObject { ["*"] = "allow" };
         foreach (var pattern in DangerousCommands) rules[pattern] = "deny";
+        return rules;
+    }
+
+    /// <summary>Служебные файлы, которые агент не правит: git (подмена .git в песочнице), конфигурация самого OpenCode.</summary>
+    private static readonly string[] ProtectedEditPatterns =
+        [".git", ".git/*", "opencode.json", "opencode.jsonc", ".opencode/*", "node_modules/*", ".venv/*"];
+
+    internal static JsonObject EditRules(AppConfig cfg)
+    {
+        var rules = SecretRules(cfg);
+        foreach (var pattern in ProtectedEditPatterns)
+        {
+            rules[pattern] = "deny";
+            rules["*/" + pattern] = "deny";
+        }
         return rules;
     }
 
@@ -336,6 +351,8 @@ public static class OpenCodeConfigWriter
             // CLAUDE.md и навыки Claude Code не нужны маленькой модели (AGENTS.md проекта загружается).
             ["OPENCODE_DISABLE_CLAUDE_CODE"] = "1",
             ["OPENCODE_PURE"] = "1",
+            // opencode.json и .opencode/ из проекта (или созданные агентом) не должны подключать MCP-серверы, плагины и провайдеров.
+            ["OPENCODE_DISABLE_PROJECT_CONFIG"] = "1",
             ["XDG_CONFIG_HOME"] = Path.Combine(dir, "config"),
             ["XDG_CACHE_HOME"] = CacheHome,
             ["XDG_DATA_HOME"] = Path.Combine(dir, interactive ? "data-tui" : "data"),
@@ -406,7 +423,7 @@ public static class OpenCodeConfigWriter
         }
         else
         {
-            throw new InvalidOperationException($"В {path} поле «provider» имеет неожиданный вид — исправьте файл вручную.");
+            throw new InvalidOperationException(L.F("В {0} поле «provider» имеет неожиданный вид — исправьте файл вручную.", path));
         }
         // В профиле пользователя переменной OFFLOAD_API_KEY нет — ключ записывается как есть.
         providers[ProviderId] = BuildProvider(cfg, EffectiveContext(cfg), cfg.Server.ApiKey);
@@ -482,10 +499,10 @@ public static class OpenCodeConfigWriter
         }
         catch (Exception ex) when (ex is JsonException or ArgumentException or InvalidOperationException)
         {
-            throw new InvalidOperationException($"Не удалось разобрать {path}: {ex.Message}. Исправьте файл вручную.", ex);
+            throw new InvalidOperationException(L.F("Не удалось разобрать {0}: {1}. Исправьте файл вручную.", path, ex.Message), ex);
         }
         return node as JsonObject
-               ?? throw new InvalidOperationException($"{path} содержит не JSON-объект — исправьте файл вручную.");
+               ?? throw new InvalidOperationException(L.F("{0} содержит не JSON-объект — исправьте файл вручную.", path));
     }
 
     /// <summary>Резервная копия (комментарии JSONC при перезаписи теряются) и атомарная запись.</summary>

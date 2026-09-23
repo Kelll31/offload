@@ -51,13 +51,13 @@ internal static class InstallerImpl
         var arm64 = IsArm64;
         if (backend == LlamaBackend.Auto)
         {
-            Report(progress, "Определение видеокарты…");
+            Report(progress, L.T("Определение видеокарты…"));
             var hw = await HardwareDetector.DetectAsync(ct).ConfigureAwait(false);
             backend = BackendAdvisor.Recommend(hw).Backend;
             Log.Info("llama", $"Автовыбор сборки llama.cpp: {backend}");
         }
 
-        Report(progress, "Поиск последней версии llama.cpp…");
+        Report(progress, L.T("Поиск последней версии llama.cpp…"));
         LlamaRelease release;
         try
         {
@@ -69,15 +69,14 @@ internal static class InstallerImpl
             var hw = await HardwareDetector.DetectAsync(ct).ConfigureAwait(false);
             if (!BackendAdvisor.SupportsCuda13(hw))
                 throw new InvalidOperationException(
-                    "В последних релизах llama.cpp нет сборки CUDA 12, а сборка CUDA 13 не поддерживается этой видеокартой или драйвером. " +
-                    "Выберите сборку Vulkan.");
+                    L.T("В последних релизах llama.cpp нет сборки CUDA 12, а сборка CUDA 13 не поддерживается этой видеокартой или драйвером. Выберите сборку Vulkan."));
             Log.Warn("llama", "В релизах llama.cpp нет сборки CUDA 12 — устанавливается CUDA 13");
             backend = LlamaBackend.Cuda13;
             release = await FindReleaseAsync(backend, arm64, ct).ConfigureAwait(false);
         }
 
         var sel = AssetSelector.Select(release, backend, arm64)
-                  ?? throw new InvalidOperationException($"В релизе {release.Tag} нет сборки «{BackendAdvisor.DisplayName(backend)}».");
+                  ?? throw new InvalidOperationException(L.F("В релизе {0} нет сборки «{1}».", release.Tag, BackendAdvisor.DisplayName(backend)));
         var name = $"llama.cpp {release.Tag} ({BackendAdvisor.DisplayName(backend)})";
 
         AppPaths.EnsureCreated();
@@ -91,7 +90,7 @@ internal static class InstallerImpl
             {
                 VcRuntimeCheck.EnsureAvailable(finalDir);
                 Log.Info("llama", $"{name} уже установлен");
-                Report(progress, $"{name} уже установлен", 1);
+                Report(progress, L.F("{0} уже установлен", name), 1);
                 return new LlamaInstallResult(release.Tag, backend, finalDir, exe);
             }
             Log.Info("llama", $"{name} уже распакован в {finalDir}, загрузка не нужна");
@@ -102,7 +101,7 @@ internal static class InstallerImpl
         }
 
         var serverExe = Path.Combine(finalDir, ServerExeName);
-        Report(progress, "Проверка запуска llama-server…", 0.96);
+        Report(progress, L.T("Проверка запуска llama-server…"), 0.96);
         var version = await ValidateAsync(serverExe, ct).ConfigureAwait(false);
         Log.Info("llama", $"Установлен {name}: {version}");
 
@@ -119,7 +118,7 @@ internal static class InstallerImpl
         CleanupDownloads(sel);
         CleanupOldVersions(finalDir);
 
-        Report(progress, $"{name} установлен", 1);
+        Report(progress, L.F("{0} установлен", name), 1);
         return new LlamaInstallResult(release.Tag, backend, finalDir, serverExe);
     }
 
@@ -130,9 +129,9 @@ internal static class InstallerImpl
     private static async Task<string> DownloadAndExtractAsync(
         LlamaBuildSelection sel, string finalDir, string name, IProgress<StepProgress>? progress, CancellationToken ct)
     {
-        var files = new List<(LlamaAsset Asset, string Stage)> { (sel.Main, $"Загрузка {name}") };
+        var files = new List<(LlamaAsset Asset, string Stage)> { (sel.Main, L.F("Загрузка {0}", name)) };
         if (sel.CudaRuntime is { } rt)
-            files.Add((rt, $"Загрузка библиотек NVIDIA CUDA {AssetSelector.CudaVersionOf(rt)}"));
+            files.Add((rt, L.F("Загрузка библиотек NVIDIA CUDA {0}", AssetSelector.CudaVersionOf(rt))));
 
         var totalBytes = files.Sum(f => Math.Max(0, f.Asset.Size));
         long doneBytes = 0;
@@ -148,8 +147,8 @@ internal static class InstallerImpl
                 {
                     var overall = totalBytes > 0 ? (before + Math.Min(p.BytesReceived, size ?? p.BytesReceived)) / (double)totalBytes * 0.85 : (double?)null;
                     if (p.Stage == DownloadStage.Verifying)
-                        Report(progress, "Проверка контрольной суммы…", totalBytes > 0 ? (before + (size ?? 0)) / (double)totalBytes * 0.85 : null,
-                            p.TotalBytes is > 0 ? $"{FileUtil.FormatBytes(p.BytesReceived)} из {FileUtil.FormatBytes(p.TotalBytes.Value)}" : null);
+                        Report(progress, L.T("Проверка контрольной суммы…"), totalBytes > 0 ? (before + (size ?? 0)) / (double)totalBytes * 0.85 : null,
+                            p.TotalBytes is > 0 ? L.F("{0} из {1}", FileUtil.FormatBytes(p.BytesReceived), FileUtil.FormatBytes(p.TotalBytes.Value)) : null);
                     else
                         Report(progress, stage, overall, DownloadDetail(p));
                 }), ct).ConfigureAwait(false);
@@ -162,24 +161,24 @@ internal static class InstallerImpl
         var temp = Path.Combine(AppPaths.LlamaDir, $".tmp-{Path.GetFileName(finalDir)}-{Guid.NewGuid():N}");
         try
         {
-            Report(progress, "Распаковка…", 0.86);
+            Report(progress, L.T("Распаковка…"), 0.86);
             await Task.Run(() =>
             {
                 Directory.CreateDirectory(temp);
                 ExtractZip(paths[0], temp, flatten: false, (done, total) =>
-                    Report(progress, "Распаковка…", 0.86 + 0.07 * done / Math.Max(1, total), $"{FileUtil.FormatBytes(done)} из {FileUtil.FormatBytes(total)}"), ct);
+                    Report(progress, L.T("Распаковка…"), 0.86 + 0.07 * done / Math.Max(1, total), L.F("{0} из {1}", FileUtil.FormatBytes(done), FileUtil.FormatBytes(total))), ct);
             }, ct).ConfigureAwait(false);
 
             var exeDir = FindExeDir(temp) ?? throw new InvalidOperationException(
-                $"В архиве {sel.Main.Name} нет файла {ServerExeName}. Возможно, изменился формат релизов llama.cpp — сообщите разработчикам Offload.");
+                L.F("В архиве {0} нет файла {1}. Возможно, изменился формат релизов llama.cpp — сообщите разработчикам Offload.", sel.Main.Name, ServerExeName));
 
             if (paths.Count > 1)
             {
-                Report(progress, "Распаковка библиотек CUDA…", 0.93);
+                Report(progress, L.T("Распаковка библиотек CUDA…"), 0.93);
                 // Библиотеки CUDA должны лежать рядом с llama-server.exe.
                 await Task.Run(() => ExtractZip(paths[1], exeDir, flatten: true, (done, total) =>
-                    Report(progress, "Распаковка библиотек CUDA…", 0.93 + 0.02 * done / Math.Max(1, total),
-                        $"{FileUtil.FormatBytes(done)} из {FileUtil.FormatBytes(total)}"), ct), ct).ConfigureAwait(false);
+                    Report(progress, L.T("Распаковка библиотек CUDA…"), 0.93 + 0.02 * done / Math.Max(1, total),
+                        L.F("{0} из {1}", FileUtil.FormatBytes(done), FileUtil.FormatBytes(total))), ct), ct).ConfigureAwait(false);
             }
 
             WriteMarker(exeDir, sel);
@@ -196,7 +195,7 @@ internal static class InstallerImpl
         {
             // Повреждённый архив — удаляем, чтобы следующая попытка скачала заново.
             foreach (var p in paths) TryDeleteFile(p);
-            throw new InvalidOperationException($"Архив llama.cpp повреждён ({ex.Message}). Повторите установку — файл будет загружен заново.", ex);
+            throw new InvalidOperationException(L.F("Архив llama.cpp повреждён ({0}). Повторите установку — файл будет загружен заново.", ex.Message), ex);
         }
         finally
         {
@@ -209,11 +208,11 @@ internal static class InstallerImpl
         var parts = new List<string>
         {
             p.TotalBytes is > 0
-                ? $"{FileUtil.FormatBytes(p.BytesReceived)} из {FileUtil.FormatBytes(p.TotalBytes.Value)}"
+                ? L.F("{0} из {1}", FileUtil.FormatBytes(p.BytesReceived), FileUtil.FormatBytes(p.TotalBytes.Value))
                 : FileUtil.FormatBytes(p.BytesReceived),
         };
         if (p.BytesPerSecond > 1) parts.Add(FileUtil.FormatSpeed(p.BytesPerSecond));
-        if (p.Eta is { } eta) parts.Add("осталось " + FileUtil.FormatDuration(eta));
+        if (p.Eta is { } eta) parts.Add(L.F("осталось {0}", FileUtil.FormatDuration(eta)));
         return string.Join(" · ", parts);
     }
 
@@ -233,7 +232,7 @@ internal static class InstallerImpl
             var rel = flatten ? e.Name : e.FullName;
             var target = Path.GetFullPath(Path.Combine(root, rel));
             if (!target.StartsWith(root, StringComparison.OrdinalIgnoreCase))
-                throw new InvalidDataException($"недопустимый путь в архиве: {e.FullName}");
+                throw new InvalidDataException(L.F("недопустимый путь в архиве: {0}", e.FullName));
             if (isDir)
             {
                 Directory.CreateDirectory(target);
@@ -278,7 +277,7 @@ internal static class InstallerImpl
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
                 throw new InvalidOperationException(
-                    $"Не удалось переместить файлы llama.cpp в {dest}: {ex.Message}. Возможно, папку блокирует антивирус — повторите установку.", ex);
+                    L.F("Не удалось переместить файлы llama.cpp в {0}: {1}. Возможно, папку блокирует антивирус — повторите установку.", dest, ex.Message), ex);
             }
         }
     }
@@ -319,13 +318,13 @@ internal static class InstallerImpl
     internal static async Task<string> ValidateAsync(string exe, CancellationToken ct)
     {
         var dir = Path.GetDirectoryName(exe)!;
-        if (!File.Exists(exe)) throw new InvalidOperationException($"Не найден {exe} — переустановите llama.cpp.");
+        if (!File.Exists(exe)) throw new InvalidOperationException(L.F("Не найден {0} — переустановите llama.cpp.", exe));
         VcRuntimeCheck.EnsureAvailable(dir);
 
         var r = await ProcessRunner.RunAsync(exe, ["--version"], workingDirectory: dir, timeout: TimeSpan.FromSeconds(60), ct: ct)
             .ConfigureAwait(false);
         if (r.TimedOut)
-            throw new InvalidOperationException("llama-server не ответил на запрос версии за 60 секунд. Возможно, запуск блокирует антивирус.");
+            throw new InvalidOperationException(L.T("llama-server не ответил на запрос версии за 60 секунд. Возможно, запуск блокирует антивирус."));
         if (r.ExitCode != 0)
         {
             if (NtStatus.StartupFailure(r.ExitCode) is { } known) throw known;
@@ -334,10 +333,10 @@ internal static class InstallerImpl
                 throw new LlamaVcRuntimeMissingException(NtStatus.VcOutdatedMessage);
             var tail = OutputTail(r.StdErr + "\n" + r.StdOut, 5);
             throw new InvalidOperationException(
-                $"Установленный llama-server не запускается (код {NtStatus.Format(r.ExitCode)}).{(tail.Length > 0 ? " " + tail : "")}");
+                L.F("Установленный llama-server не запускается (код {0}).", NtStatus.Format(r.ExitCode)) + (tail.Length > 0 ? " " + tail : ""));
         }
         var m = Regex.Match(r.StdOut + "\n" + r.StdErr, @"version:\s*(?<v>[^\r\n]+)", RegexOptions.CultureInvariant);
-        return m.Success ? m.Groups["v"].Value.Trim() : "версия неизвестна";
+        return m.Success ? m.Groups["v"].Value.Trim() : L.T("версия неизвестна");
     }
 
     internal static string OutputTail(string text, int lines)
@@ -551,19 +550,19 @@ internal static class DeviceList
     public static async Task<IReadOnlyList<string>> ListAsync(string serverExePath, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(serverExePath) || !File.Exists(serverExePath))
-            throw new FileNotFoundException($"Не найден llama-server.exe: {serverExePath}", serverExePath);
+            throw new FileNotFoundException(L.F("Не найден llama-server.exe: {0}", serverExePath), serverExePath);
         var dir = Path.GetDirectoryName(Path.GetFullPath(serverExePath))!;
         VcRuntimeCheck.EnsureAvailable(dir);
 
         var r = await ProcessRunner.RunAsync(serverExePath, ["--list-devices"], workingDirectory: dir,
             timeout: TimeSpan.FromSeconds(60), ct: ct).ConfigureAwait(false);
         if (r.TimedOut)
-            throw new InvalidOperationException("llama-server не вернул список устройств за 60 секунд.");
+            throw new InvalidOperationException(L.T("llama-server не вернул список устройств за 60 секунд."));
         if (r.ExitCode != 0)
         {
             if (NtStatus.StartupFailure(r.ExitCode) is { } known) throw known;
             throw new InvalidOperationException(
-                $"Не удалось получить список устройств (код {NtStatus.Format(r.ExitCode)}): {InstallerImpl.OutputTail(r.StdErr + "\n" + r.StdOut, 4)}");
+                L.F("Не удалось получить список устройств (код {0}): {1}", NtStatus.Format(r.ExitCode), InstallerImpl.OutputTail(r.StdErr + "\n" + r.StdOut, 4)));
         }
         var list = Parse(r.StdOut);
         if (list.Count == 0 && !r.StdOut.Contains("Available devices", StringComparison.OrdinalIgnoreCase)) list = Parse(r.StdErr);

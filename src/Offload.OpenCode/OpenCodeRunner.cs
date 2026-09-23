@@ -39,12 +39,12 @@ public static class OpenCodeRunner
         OpenCodeRunResult Fail(string error, int exitCode = -1) =>
             new(false, "", [], [], error, exitCode, total.Elapsed, 0, 0);
 
-        if (string.IsNullOrWhiteSpace(task)) return Fail("Пустая задача: опишите, что нужно сделать.");
+        if (string.IsNullOrWhiteSpace(task)) return Fail(L.T("Пустая задача: опишите, что нужно сделать."));
         if (System.Environment.GetEnvironmentVariable(OpenCodeConfigWriter.NestedEnvVar) == "1")
-            return Fail("Рекурсивный вызов: локальный агент уже работает внутри OpenCode, запущенного Offload.");
+            return Fail(L.T("Рекурсивный вызов: локальный агент уже работает внутри OpenCode, запущенного Offload."));
 
         var exe = OpenCodeInstaller.FindExecutable(cfg);
-        if (exe is null) return Fail("OpenCode не установлен. Установите его в Offload на вкладке «OpenCode».");
+        if (exe is null) return Fail(L.T("OpenCode не установлен. Установите его в Offload на вкладке «OpenCode»."));
 
         string wd;
         try
@@ -54,9 +54,9 @@ public static class OpenCodeRunner
         }
         catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
         {
-            return Fail($"Некорректный путь к рабочей папке: {workingDirectory}");
+            return Fail(L.F("Некорректный путь к рабочей папке: {0}", workingDirectory));
         }
-        if (!Directory.Exists(wd)) return Fail($"Рабочая папка не найдена: {wd}");
+        if (!Directory.Exists(wd)) return Fail(L.F("Рабочая папка не найдена: {0}", wd));
 
         var timeout = options.Timeout > TimeSpan.Zero
             ? options.Timeout
@@ -67,18 +67,18 @@ public static class OpenCodeRunner
         try
         {
             // 1. Сервер модели доступен? Контекст слота — для limit.context.
-            report("проверка локального сервера модели…");
+            report(L.T("проверка локального сервера модели…"));
             var probe = await LocalServer.ProbeAsync(cfg, report, ModelLoadingWait, ct);
             if (!probe.Reachable) return Fail(probe.Error!);
 
             // 2. Очередь: одновременные запуски на одной папке данных зависают.
             using var gate = await RunQueueLock.AcquireAsync(RunQueueLock.MutexName(), timeout,
-                waited => report($"ожидание очереди: выполняется другая задача локального агента… {FormatWait(waited)}"), ct);
+                waited => report(L.F("ожидание очереди: выполняется другая задача локального агента… {0}", FormatWait(waited))), ct);
             if (gate is null)
             {
                 return ct.IsCancellationRequested
-                    ? Fail("Задача отменена.")
-                    : Fail($"Не удалось дождаться очереди: другая задача локального агента выполняется дольше {FormatTimeout(timeout)}.");
+                    ? Fail(L.T("Задача отменена."))
+                    : Fail(L.F("Не удалось дождаться очереди: другая задача локального агента выполняется дольше {0}.", FormatTimeout(timeout)));
             }
 
             // 3. Конфигурация актуальна (порт, модель, контекст).
@@ -88,7 +88,7 @@ public static class OpenCodeRunner
             }
             catch (Exception ex)
             {
-                return Fail($"Не удалось записать конфигурацию OpenCode: {ex.Message}");
+                return Fail(L.F("Не удалось записать конфигурацию OpenCode: {0}", ex.Message));
             }
 
             // 4. Состояние файлов до запуска.
@@ -120,7 +120,7 @@ public static class OpenCodeRunner
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
-            return Fail("Задача отменена.");
+            return Fail(L.T("Задача отменена."));
         }
     }
 
@@ -181,11 +181,11 @@ public static class OpenCodeRunner
         Process process;
         try
         {
-            process = Process.Start(psi) ?? throw new InvalidOperationException("процесс не создан");
+            process = Process.Start(psi) ?? throw new InvalidOperationException(L.T("процесс не создан"));
         }
         catch (Exception ex) when (ex is Win32Exception or InvalidOperationException or IOException)
         {
-            return new ExecOutcome(false, -1, $"Не удалось запустить OpenCode ({exe}): {ex.Message}", sw.Elapsed, events);
+            return new ExecOutcome(false, -1, L.F("Не удалось запустить OpenCode ({0}): {1}", exe, ex.Message), sw.Elapsed, events);
         }
 
         using (process)
@@ -199,7 +199,7 @@ public static class OpenCodeRunner
             var stdoutTask = PumpLinesAsync(process.StandardOutput, MaxLineChars, (line, truncated) =>
             {
                 Interlocked.Exchange(ref lastEventTicks, Stopwatch.GetTimestamp());
-                runLog.Write(truncated ? "[обрезано] " + line[..Math.Min(line.Length, 2000)] : line);
+                runLog.Write(truncated ? "[обрезано] " + line[..Math.Min(line.Length, 2000)] : line); // l10n-ignore: журнал запуска
                 string? msg;
                 lock (progressLock) msg = truncated ? events.FeedTruncated(line) : events.Feed(line);
                 if (msg is not null) report(msg);
@@ -246,22 +246,22 @@ public static class OpenCodeRunner
 
             var exitCode = SafeExitCode(process);
             var duration = sw.Elapsed;
-            runLog.Write($"[exit] код {exitCode}, {duration}");
+            runLog.Write($"[exit] код {exitCode}, {duration}"); // l10n-ignore: журнал запуска
 
             string? error = null;
-            if (timedOut) error = $"Превышено время ожидания ({FormatTimeout(timeout)}).";
-            else if (cancelled) error = "Задача отменена.";
+            if (timedOut) error = L.F("Превышено время ожидания ({0}).", FormatTimeout(timeout));
+            else if (cancelled) error = L.T("Задача отменена.");
             else if (exitCode != 0 || events.Errors.Count > 0)
             {
                 var detail = events.Errors.Count > 0 ? string.Join("; ", events.Errors) : stderr.Text(12);
                 error = string.IsNullOrWhiteSpace(detail)
-                    ? $"OpenCode завершился с кодом {exitCode}."
-                    : $"OpenCode завершился с ошибкой (код {exitCode}): {detail}";
+                    ? L.F("OpenCode завершился с кодом {0}.", exitCode)
+                    : L.F("OpenCode завершился с ошибкой (код {0}): {1}", exitCode, detail);
             }
             else if (events.Events == 0)
             {
                 var detail = stderr.Text(12);
-                error = "OpenCode не вернул ни одного события." + (string.IsNullOrWhiteSpace(detail) ? "" : " " + detail);
+                error = L.T("OpenCode не вернул ни одного события.") + (string.IsNullOrWhiteSpace(detail) ? "" : " " + detail);
             }
 
             if (error is not null && events.Errors.Count == 0 && !timedOut && !cancelled)
@@ -357,7 +357,7 @@ public static class OpenCodeRunner
                 int steps;
                 lock (progressLock) steps = events.Steps;
                 var secs = (int)idle.TotalSeconds;
-                report(steps > 0 ? $"шаг {steps}: модель думает… {secs} с" : $"запуск агента… {secs} с");
+                report(steps > 0 ? L.F("шаг {0}: модель думает… {1} с", steps, secs) : L.F("запуск агента… {0} с", secs));
             }
         }
         catch (OperationCanceledException)
@@ -421,7 +421,7 @@ public static class OpenCodeRunner
     }
 
     internal static string FormatTimeout(TimeSpan t) =>
-        t.TotalMinutes >= 1 && t.Seconds == 0 ? $"{(int)t.TotalMinutes} мин" : FileUtil.FormatDuration(t);
+        t.TotalMinutes >= 1 && t.Seconds == 0 ? L.F("{0} мин", (int)t.TotalMinutes) : FileUtil.FormatDuration(t);
 
     private static string FormatWait(TimeSpan t) => FileUtil.FormatDuration(t);
 
@@ -430,9 +430,9 @@ public static class OpenCodeRunner
     {
         ArgumentNullException.ThrowIfNull(cfg);
         var exe = OpenCodeInstaller.FindExecutable(cfg)
-                  ?? throw new InvalidOperationException("OpenCode не установлен. Установите его в Offload на вкладке «OpenCode».");
+                  ?? throw new InvalidOperationException(L.T("OpenCode не установлен. Установите его в Offload на вкладке «OpenCode»."));
         var wd = Path.GetFullPath(workingDirectory);
-        if (!Directory.Exists(wd)) throw new DirectoryNotFoundException($"Папка не найдена: {wd}");
+        if (!Directory.Exists(wd)) throw new DirectoryNotFoundException(L.F("Папка не найдена: {0}", wd));
 
         try
         {
@@ -499,12 +499,12 @@ public static class OpenCodeRunner
         sb.Append("  & ").AppendLine(PsQuote(exe));
         sb.AppendLine("  if ($LASTEXITCODE -ne 0) {");
         sb.AppendLine("    Write-Host ''");
-        sb.AppendLine("    Write-Host \"OpenCode завершился с кодом $LASTEXITCODE.\" -ForegroundColor Yellow");
-        sb.AppendLine("    [void](Read-Host 'Нажмите Enter, чтобы закрыть окно')");
+        sb.Append("    Write-Host \"").Append(L.F("OpenCode завершился с кодом {0}.", "$LASTEXITCODE")).AppendLine("\" -ForegroundColor Yellow");
+        sb.Append("    [void](Read-Host ").Append(PsQuote(L.T("Нажмите Enter, чтобы закрыть окно"))).AppendLine(")");
         sb.AppendLine("  }");
         sb.AppendLine("} catch {");
-        sb.AppendLine("  Write-Host \"Не удалось запустить OpenCode: $_\" -ForegroundColor Red");
-        sb.AppendLine("  [void](Read-Host 'Нажмите Enter, чтобы закрыть окно')");
+        sb.Append("  Write-Host \"").Append(L.F("Не удалось запустить OpenCode: {0}", "$_")).AppendLine("\" -ForegroundColor Red");
+        sb.Append("  [void](Read-Host ").Append(PsQuote(L.T("Нажмите Enter, чтобы закрыть окно"))).AppendLine(")");
         sb.AppendLine("}");
         return sb.ToString();
     }
@@ -557,7 +557,7 @@ public static class OpenCodeRunner
                 {
                     _writer.WriteLine(line);
                     _written += line.Length + 2;
-                    if (_written > MaxRunLogBytes) _writer.WriteLine("[журнал обрезан]");
+                    if (_written > MaxRunLogBytes) _writer.WriteLine("[журнал обрезан]"); // l10n-ignore: журнал запуска
                 }
                 catch
                 {

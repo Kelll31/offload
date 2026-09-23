@@ -16,7 +16,7 @@ internal sealed record ModelRow(
 {
     public string Id => Installed?.Id ?? Catalog?.Id ?? "";
 
-    public string Name => Catalog?.DisplayName ?? Installed?.DisplayName ?? Id;
+    public string Name => Catalog?.LocalizedDisplayName ?? (Installed is null ? Id : Texts.ModelName(Installed));
 
     public bool IsInstalled => Installed is not null;
 
@@ -29,10 +29,10 @@ internal sealed record ModelRow(
     public bool GoodToolCalling => Catalog?.GoodToolCalling ?? Installed?.GoodToolCalling ?? false;
 
     public string Description =>
-        Catalog?.Description
-        ?? (Installed is { IsCustom: true } ? $"Пользовательская модель: {Installed.FilePath}" : Installed?.FilePath ?? "");
+        Catalog?.LocalizedDescription
+        ?? (Installed is { IsCustom: true } ? L.F("Пользовательская модель: {0}", Installed.FilePath) : Installed?.FilePath ?? "");
 
-    public string StatusText => IsActive ? "Активна" : IsInstalled ? "Установлена" : "—";
+    public string StatusText => IsActive ? L.T("Активна") : IsInstalled ? L.T("Установлена") : "—";
 
     public string ContextText
     {

@@ -2,7 +2,7 @@ using Offload.App.Util;
 
 namespace Offload.App.Controls;
 
-/// <summary>Основная (акцентная) кнопка: синий фон, белый текст.</summary>
+/// <summary>Основная (акцентная) кнопка: фон цвета акцента, контрастный текст.</summary>
 internal sealed class AccentButton : Button
 {
     public AccentButton()
@@ -24,16 +24,16 @@ internal sealed class AccentButton : Button
         if (Enabled)
         {
             BackColor = Theme.Accent;
-            ForeColor = Color.White;
+            ForeColor = Theme.OnAccent;
             FlatAppearance.BorderColor = Theme.Accent;
-            FlatAppearance.MouseOverBackColor = Color.FromArgb(0, 84, 166);
-            FlatAppearance.MouseDownBackColor = Color.FromArgb(0, 70, 140);
+            FlatAppearance.MouseOverBackColor = Theme.AccentHover;
+            FlatAppearance.MouseDownBackColor = Theme.AccentPressed;
         }
         else
         {
-            BackColor = Color.FromArgb(230, 230, 230);
-            ForeColor = Theme.Gray;
-            FlatAppearance.BorderColor = Color.FromArgb(210, 210, 210);
+            BackColor = Theme.Track;
+            ForeColor = Theme.TextFaint;
+            FlatAppearance.BorderColor = Theme.Border;
         }
     }
 }

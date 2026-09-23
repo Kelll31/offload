@@ -49,13 +49,13 @@ public static class OpenCodeInstaller
     {
         var arch = RuntimeInformation.OSArchitecture;
         if (arch is not (Architecture.X64 or Architecture.Arm64))
-            throw new PlatformNotSupportedException("OpenCode работает только на 64-разрядной Windows (x64 или ARM64).");
+            throw new PlatformNotSupportedException(L.T("OpenCode работает только на 64-разрядной Windows (x64 или ARM64)."));
 
-        progress?.Report(new StepProgress("Поиск последней версии OpenCode…"));
+        progress?.Report(new StepProgress(L.T("Поиск последней версии OpenCode…")));
         var release = await OpenCodeReleases.GetLatestAsync(ct);
         var asset = OpenCodeReleases.SelectAsset(release, arch, Avx2.IsSupported)
                     ?? throw new InvalidOperationException(
-                        $"В релизе OpenCode {release.Tag} нет сборки для Windows {(arch == Architecture.Arm64 ? "ARM64" : "x64")}.");
+                        L.F("В релизе OpenCode {0} нет сборки для Windows {1}.", release.Tag, arch == Architecture.Arm64 ? "ARM64" : "x64"));
 
         var target = ManagedExePath;
         var current = File.Exists(target) ? await TryGetVersionAsync(target, ct) : null;
@@ -64,7 +64,7 @@ public static class OpenCodeInstaller
         {
             version = current;
             Log.Info("opencode", $"OpenCode {version} уже установлен");
-            progress?.Report(new StepProgress($"OpenCode {version} уже установлен — обновление не требуется", 1));
+            progress?.Report(new StepProgress(L.F("OpenCode {0} уже установлен — обновление не требуется", version), 1));
         }
         else
         {
@@ -73,7 +73,7 @@ public static class OpenCodeInstaller
 
         await PreseedRipgrepAsync(arch, progress, ct);
 
-        progress?.Report(new StepProgress("Настройка OpenCode…"));
+        progress?.Report(new StepProgress(L.T("Настройка OpenCode…")));
         ConfigStore.Update(c =>
         {
             c.OpenCode.ExecutablePath = target;
@@ -93,7 +93,7 @@ public static class OpenCodeInstaller
         }
 
         Log.Info("opencode", $"OpenCode {version} установлен: {target}");
-        progress?.Report(new StepProgress($"OpenCode {version} установлен", 1));
+        progress?.Report(new StepProgress(L.F("OpenCode {0} установлен", version), 1));
         return new OpenCodeInstallResult(version, target);
     }
 
@@ -118,7 +118,7 @@ public static class OpenCodeInstaller
             new InlineProgress<DownloadProgress>(p => progress?.Report(ToStep(label, p))),
             ct);
 
-        progress?.Report(new StepProgress($"Распаковка {label}…"));
+        progress?.Report(new StepProgress(L.F("Распаковка {0}…", label)));
         Directory.CreateDirectory(BinDir);
         var staging = Path.Combine(BinDir, ".staging-" + Guid.NewGuid().ToString("N")[..8]);
         try
@@ -127,11 +127,10 @@ public static class OpenCodeInstaller
             var staged = Path.Combine(staging, "opencode.exe");
             await Task.Run(() => ExtractEntry(zip, "opencode.exe", staged, ct), ct);
 
-            progress?.Report(new StepProgress($"Проверка запуска {label}…"));
+            progress?.Report(new StepProgress(L.F("Проверка запуска {0}…", label)));
             var version = await TryGetVersionAsync(staged, ct)
                           ?? throw new InvalidOperationException(
-                              "Загруженный OpenCode не запускается (opencode --version завершился ошибкой). " +
-                              "Возможно, файл заблокировал антивирус — проверьте карантин и повторите установку.");
+                              L.T("Загруженный OpenCode не запускается (opencode --version завершился ошибкой). Возможно, файл заблокировал антивирус — проверьте карантин и повторите установку."));
 
             ReplaceExecutable(staged, target);
             TryDelete(zip);
@@ -148,17 +147,17 @@ public static class OpenCodeInstaller
         switch (p.Stage)
         {
             case DownloadStage.Verifying:
-                return new StepProgress($"Проверка контрольной суммы {p.FileName}…", p.Fraction);
+                return new StepProgress(L.F("Проверка контрольной суммы {0}…", p.FileName), p.Fraction);
             case DownloadStage.Completed:
-                return new StepProgress($"Загрузка {label} завершена", 1);
+                return new StepProgress(L.F("Загрузка {0} завершена", label), 1);
             default:
             {
                 var detail = p.TotalBytes is > 0
-                    ? $"{FileUtil.FormatBytes(p.BytesReceived)} из {FileUtil.FormatBytes(p.TotalBytes.Value)}"
+                    ? L.F("{0} из {1}", FileUtil.FormatBytes(p.BytesReceived), FileUtil.FormatBytes(p.TotalBytes.Value))
                     : FileUtil.FormatBytes(p.BytesReceived);
                 if (p.BytesPerSecond > 1) detail += $" · {FileUtil.FormatSpeed(p.BytesPerSecond)}";
-                if (p.Eta is { } eta) detail += $" · осталось {FileUtil.FormatDuration(eta)}";
-                return new StepProgress($"Загрузка {label}…", p.Fraction, detail);
+                if (p.Eta is { } eta) detail += " · " + L.F("осталось {0}", FileUtil.FormatDuration(eta));
+                return new StepProgress(L.F("Загрузка {0}…", label), p.Fraction, detail);
             }
         }
     }
@@ -171,7 +170,7 @@ public static class OpenCodeInstaller
                         .Where(e => string.Equals(e.Name, fileName, StringComparison.OrdinalIgnoreCase))
                         .OrderBy(e => e.FullName.Length)
                         .FirstOrDefault()
-                    ?? throw new InvalidDataException($"В архиве {Path.GetFileName(zipPath)} нет файла {fileName}.");
+                    ?? throw new InvalidDataException(L.F("В архиве {0} нет файла {1}.", Path.GetFileName(zipPath), fileName));
         ct.ThrowIfCancellationRequested();
         var tmp = dest + ".tmp";
         entry.ExtractToFile(tmp, overwrite: true);
@@ -206,7 +205,7 @@ public static class OpenCodeInstaller
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             throw new InvalidOperationException(
-                "Не удалось заменить opencode.exe: файл используется. Закройте все окна OpenCode и повторите установку.", ex);
+                L.T("Не удалось заменить opencode.exe: файл используется. Закройте все окна OpenCode и повторите установку."), ex);
         }
         try
         {
@@ -216,7 +215,7 @@ public static class OpenCodeInstaller
         {
             try { File.Move(aside, target); } catch { /* вернуть не удалось — останется .old */ }
             throw new InvalidOperationException(
-                "Не удалось заменить opencode.exe: файл используется. Закройте все окна OpenCode и повторите установку.", ex);
+                L.T("Не удалось заменить opencode.exe: файл используется. Закройте все окна OpenCode и повторите установку."), ex);
         }
         TryDelete(aside); // занятый файл удалится при следующей установке
     }
@@ -282,7 +281,7 @@ public static class OpenCodeInstaller
             var zip = Path.Combine(AppPaths.DownloadsDir, name);
 
             await HttpDownloader.DownloadFileAsync(url, zip, size, sha,
-                new InlineProgress<DownloadProgress>(p => progress?.Report(ToStep("ripgrep (поиск по файлам)", p))), ct);
+                new InlineProgress<DownloadProgress>(p => progress?.Report(ToStep(L.T("ripgrep (поиск по файлам)"), p))), ct);
             Directory.CreateDirectory(Path.GetDirectoryName(target)!);
             ExtractEntry(zip, "rg.exe", target, ct);
             TryDelete(zip);
@@ -295,7 +294,7 @@ public static class OpenCodeInstaller
         catch (Exception ex)
         {
             Log.Warn("opencode", $"Не удалось подготовить ripgrep: {ex.Message}. OpenCode скачает его сам при первом поиске.");
-            progress?.Report(new StepProgress("ripgrep не загружен — OpenCode скачает его сам при первом поиске"));
+            progress?.Report(new StepProgress(L.T("ripgrep не загружен — OpenCode скачает его сам при первом поиске")));
         }
     }
 
@@ -355,7 +354,7 @@ public static class OpenCodeInstaller
         }
 
         if (File.Exists(ManagedExePath))
-            throw new InvalidOperationException("Не удалось удалить OpenCode: файл используется. Закройте все окна OpenCode и повторите.");
+            throw new InvalidOperationException(L.T("Не удалось удалить OpenCode: файл используется. Закройте все окна OpenCode и повторите."));
 
         ConfigStore.Update(c =>
         {

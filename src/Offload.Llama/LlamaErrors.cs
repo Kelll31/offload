@@ -32,13 +32,11 @@ internal static class NtStatus
 
     public static string Format(int code) => code < 0 ? $"0x{code:X8}" : code.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
-    public const string VcMissingMessage =
-        "Не удалось запустить llama-server: в системе нет библиотек Microsoft Visual C++ (MSVCP140.dll, VCRUNTIME140.dll, VCRUNTIME140_1.dll). " +
-        "Установите Microsoft Visual C++ 2015–2022 Redistributable (x64) и повторите попытку.";
+    public static string VcMissingMessage =>
+        L.T("Не удалось запустить llama-server: в системе нет библиотек Microsoft Visual C++ (MSVCP140.dll, VCRUNTIME140.dll, VCRUNTIME140_1.dll). Установите Microsoft Visual C++ 2015–2022 Redistributable (x64) и повторите попытку.");
 
-    public const string VcOutdatedMessage =
-        "Не удалось запустить llama-server: установленная версия Microsoft Visual C++ Redistributable устарела. " +
-        "Установите последнюю версию Visual C++ 2015–2022 Redistributable (x64) и повторите попытку.";
+    public static string VcOutdatedMessage =>
+        L.T("Не удалось запустить llama-server: установленная версия Microsoft Visual C++ Redistributable устарела. Установите последнюю версию Visual C++ 2015–2022 Redistributable (x64) и повторите попытку.");
 
     /// <summary>Исключение для кода завершения, указывающего на отсутствие runtime-библиотек (или null).</summary>
     public static Exception? StartupFailure(int exitCode) => exitCode switch
@@ -46,7 +44,7 @@ internal static class NtStatus
         DllNotFound => new LlamaVcRuntimeMissingException(VcMissingMessage),
         EntryPointNotFound => new LlamaVcRuntimeMissingException(VcOutdatedMessage),
         InvalidImageFormat => new InvalidOperationException(
-            "Сборка llama.cpp не подходит для этой системы (неверная архитектура процессора или повреждённые файлы). Переустановите llama.cpp."),
+            L.T("Сборка llama.cpp не подходит для этой системы (неверная архитектура процессора или повреждённые файлы). Переустановите llama.cpp.")),
         _ => null,
     };
 }

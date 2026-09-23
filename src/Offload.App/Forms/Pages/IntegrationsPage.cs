@@ -1,3 +1,4 @@
+using Offload.App.Controls;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -17,7 +18,7 @@ internal sealed class IntegrationsPage : PageBase
 
     private sealed record Row(IIdeIntegration Integration, IntegrationStatus Status, bool Installed);
 
-    private readonly ListView _list = Kit.List(("IDE / агент", 28), ("Статус", 18), ("Файл конфигурации", 54));
+    private readonly ListView _list = Kit.List((L.T("IDE / агент"), 28), (L.T("Статус"), 18), (L.T("Файл конфигурации"), 54));
     private readonly Button _register;
     private readonly Button _unregister;
     private readonly Button _registerAll;
@@ -26,11 +27,11 @@ internal sealed class IntegrationsPage : PageBase
     private readonly Label _status = Kit.Wrap("");
 
     private readonly Label _claudeNote = Kit.Hint("");
-    private readonly CheckBox _guidance = Kit.Check("Инструкции по делегированию для Claude Code");
-    private readonly CheckBox _strongRule = Kit.Check("Строгий режим (правило для Claude)");
-    private readonly CheckBox _runnerAgent = Kit.Check("Субагент offload-runner");
-    private readonly CheckBox _approveRead = Kit.Check("Разрешить инструменты чтения без подтверждения");
-    private readonly CheckBox _approveWrite = Kit.Check("…и инструменты записи");
+    private readonly CheckBox _guidance = Kit.Check(L.T("Инструкции по делегированию для Claude Code"));
+    private readonly CheckBox _strongRule = Kit.Check(L.T("Строгий режим (правило для Claude)"));
+    private readonly CheckBox _runnerAgent = Kit.Check(L.T("Субагент offload-runner"));
+    private readonly CheckBox _approveRead = Kit.Check(L.T("Разрешить инструменты чтения без подтверждения"));
+    private readonly CheckBox _approveWrite = Kit.Check(L.T("…и инструменты записи"));
 
     private readonly TextBox _command = Kit.TextBox(readOnly: true);
     private readonly TextBox _json = Kit.MultiLine(118, mono: true, readOnly: true);
@@ -41,11 +42,11 @@ internal sealed class IntegrationsPage : PageBase
 
     public IntegrationsPage(IAppShell shell) : base(shell)
     {
-        _register = Kit.Primary("Подключить", async (_, _) => await RegisterSelectedAsync());
-        _unregister = Kit.Button("Отключить", async (_, _) => await UnregisterSelectedAsync());
-        _registerAll = Kit.Button("Подключить все найденные", async (_, _) => await RegisterAllAsync(), 170);
-        _openConfig = Kit.Button("Открыть файл конфигурации", (_, _) => OpenConfig(), 170);
-        _refresh = Kit.Button("Обновить", async (_, _) => await RefreshAsync());
+        _register = Kit.Primary(L.T("Подключить"), async (_, _) => await RegisterSelectedAsync());
+        _unregister = Kit.Button(L.T("Отключить"), async (_, _) => await UnregisterSelectedAsync());
+        _registerAll = Kit.Button(L.T("Подключить все найденные"), async (_, _) => await RegisterAllAsync(), 170);
+        _openConfig = Kit.Button(L.T("Открыть файл конфигурации"), (_, _) => OpenConfig(), 170);
+        _refresh = Kit.Button(L.T("Обновить список"), async (_, _) => await RefreshAsync());
         _list.SelectedIndexChanged += (_, _) => UpdateUiState();
         _list.DoubleClick += async (_, _) =>
         {
@@ -53,10 +54,9 @@ internal sealed class IntegrationsPage : PageBase
         };
 
         var root = Kit.Table();
-        root.AddRow(Kit.Section("IDE и агенты", first: true));
+        root.AddRow(Kit.Section(L.T("IDE и агенты"), first: true));
         root.AddRow(Kit.Hint(
-            "Offload подключается к IDE как MCP-сервер: IDE сама запускает «Offload.exe --mcp» и может поручать локальной модели " +
-            "чтение файлов, ревью изменений, сообщения коммитов и простые правки. Перед изменением файла настроек IDE делается резервная копия."));
+            L.T("Offload подключается к IDE как MCP-сервер: IDE сама запускает «Offload.exe --mcp» и может поручать локальной модели чтение файлов, ревью изменений, сообщения коммитов и простые правки. Перед изменением файла настроек IDE делается резервная копия.")));
         root.AddFixedRow(230, _list);
         root.AddRow(Kit.Flow(_register, _unregister, _registerAll, _openConfig, _refresh));
         root.AddRow(_status);
@@ -64,24 +64,24 @@ internal sealed class IntegrationsPage : PageBase
         root.AddRow(Kit.Section("Claude Code"));
         root.AddRow(_claudeNote);
         root.AddRow(_guidance);
-        root.AddRow(Indented(Kit.Hint("Файлы в ~/.claude объясняют Claude, какие задачи выгодно поручать локальной модели.")));
+        root.AddRow(Indented(Kit.Hint(L.T("Файлы в ~/.claude объясняют Claude, какие задачи выгодно поручать локальной модели."))));
         root.AddRow(_strongRule);
-        root.AddRow(Indented(Kit.Hint("Правило ~/.claude/rules/offload.md загружается в каждой сессии — Claude делегирует активнее.")));
+        root.AddRow(Indented(Kit.Hint(L.T("Правило ~/.claude/rules/offload.md загружается в каждой сессии — Claude делегирует активнее."))));
         root.AddRow(_runnerAgent);
-        root.AddRow(Indented(Kit.Hint("Субагент ~/.claude/agents/offload-runner.md выполняет пакеты механических задач через локальную модель.")));
+        root.AddRow(Indented(Kit.Hint(L.T("Субагент ~/.claude/agents/offload-runner.md выполняет пакеты механических задач через локальную модель."))));
         root.AddRow(_approveRead);
         _approveWrite.Margin = new Padding(20, 2, 8, 4);
         root.AddRow(_approveWrite);
-        root.AddRow(Indented(Kit.Hint("Инструменты записи создают и правят файлы проекта; каждая правка сохраняется и может быть отменена (local_job).")));
-        root.AddRow(Kit.Hint("После изменений перезапустите Claude Code."));
+        root.AddRow(Indented(Kit.Hint(L.T("Инструменты записи создают и правят файлы проекта; каждая правка сохраняется и может быть отменена (local_job)."))));
+        root.AddRow(Kit.Hint(L.T("После изменений перезапустите Claude Code.")));
 
-        root.AddRow(Kit.Section("Другие клиенты (вручную)"));
-        root.AddRow(Kit.Hint("Если вашей IDE нет в списке, добавьте в её настройки MCP-сервер со следующей командой (транспорт stdio):"));
+        root.AddRow(Kit.Section(L.T("Другие клиенты (вручную)")));
+        root.AddRow(Kit.Hint(L.T("Если вашей IDE нет в списке, добавьте в её настройки MCP-сервер со следующей командой (транспорт stdio):")));
         var cmdRow = Kit.Table(100, 0);
-        cmdRow.AddRow(_command, Kit.Button("Копировать", (_, _) => Copy(_command.Text)));
+        cmdRow.AddRow(_command, Kit.Button(L.T("Копировать"), (_, _) => Copy(_command.Text)));
         root.AddRow(cmdRow);
         var jsonRow = Kit.Table(100, 0);
-        var copyJson = Kit.Button("Копировать", (_, _) => Copy(_json.Text));
+        var copyJson = Kit.Button(L.T("Копировать"), (_, _) => Copy(_json.Text));
         copyJson.Anchor = AnchorStyles.Top | AnchorStyles.Left;
         jsonRow.AddRow(_json, copyJson);
         root.AddRow(jsonRow);
@@ -89,11 +89,11 @@ internal sealed class IntegrationsPage : PageBase
         Controls.Add(Kit.Scroll(root));
 
         _guidance.CheckedChanged += (_, _) => ToggleExtra(_guidance,
-            ClaudeCodeExtras.InstallGuidance, ClaudeCodeExtras.RemoveGuidance, "инструкции по делегированию");
+            ClaudeCodeExtras.InstallGuidance, ClaudeCodeExtras.RemoveGuidance, L.T("инструкции по делегированию"));
         _strongRule.CheckedChanged += (_, _) => ToggleExtra(_strongRule,
-            ClaudeCodeExtras.InstallStrongRule, ClaudeCodeExtras.RemoveStrongRule, "строгий режим");
+            ClaudeCodeExtras.InstallStrongRule, ClaudeCodeExtras.RemoveStrongRule, L.T("строгий режим"));
         _runnerAgent.CheckedChanged += (_, _) => ToggleExtra(_runnerAgent,
-            ClaudeCodeExtras.InstallRunnerAgent, ClaudeCodeExtras.RemoveRunnerAgent, "субагент offload-runner");
+            ClaudeCodeExtras.InstallRunnerAgent, ClaudeCodeExtras.RemoveRunnerAgent, L.T("субагент offload-runner"));
         _approveRead.CheckedChanged += (_, _) => ToggleApprovals(fromWrite: false);
         _approveWrite.CheckedChanged += (_, _) => ToggleApprovals(fromWrite: true);
 
@@ -103,9 +103,13 @@ internal sealed class IntegrationsPage : PageBase
 
     public override string Key => Tabs.Integrations;
 
-    public override string Title => "Интеграции";
+    public override string Title => L.T("Интеграции");
 
-    public override string? BusyDescription => IsBusy ? "подключение к IDE" : null;
+    public override string Subtitle => L.T("Подключение Offload к IDE и агентам как MCP-сервера");
+
+    public override string Glyph => Glyphs.Integrations;
+
+    public override string? BusyDescription => IsBusy ? L.T("подключение к IDE") : null;
 
     private static Control Indented(Label hint)
     {
@@ -117,7 +121,7 @@ internal sealed class IntegrationsPage : PageBase
     {
         try
         {
-            if (!_loaded) _status.Text = "Поиск установленных IDE…";
+            if (!_loaded) _status.Text = L.T("Поиск установленных IDE…");
             LoadClaudeChecks();
             await RefreshAsync();
             _loaded = true;
@@ -140,7 +144,7 @@ internal sealed class IntegrationsPage : PageBase
         var row = Selected();
         var busy = IsBusy || _loadingList;
         _register.Enabled = !busy && row is { Installed: true, Status: not IntegrationStatus.Registered };
-        _register.Text = row?.Status == IntegrationStatus.Outdated ? "Обновить путь" : "Подключить";
+        _register.Text = row?.Status == IntegrationStatus.Outdated ? L.T("Обновить путь") : L.T("Подключить");
         _unregister.Enabled = !busy && row is { Status: IntegrationStatus.Registered or IntegrationStatus.Outdated or IntegrationStatus.Error };
         _registerAll.Enabled = !busy && _list.Items.Count > 0;
         _openConfig.Enabled = row?.Integration.ConfigPath is { Length: > 0 };
@@ -199,13 +203,13 @@ internal sealed class IntegrationsPage : PageBase
             if (error is not null)
             {
                 _status.ForeColor = Theme.ErrorText;
-                _status.Text = "Не удалось получить список IDE: " + error;
+                _status.Text = L.F("Не удалось получить список IDE: {0}", error);
             }
-            else if (_status.Text == "Поиск установленных IDE…")
+            else if (_status.Text == L.T("Поиск установленных IDE…"))
             {
                 var found = rows.Count(r => r.Installed);
                 _status.ForeColor = Theme.TextMuted;
-                _status.Text = $"Найдено IDE и агентов: {found} из {rows.Count}.";
+                _status.Text = L.F("Найдено IDE и агентов: {0} из {1}.", found, rows.Count);
             }
         }
         finally
@@ -239,7 +243,7 @@ internal sealed class IntegrationsPage : PageBase
             var r = await RegisterAsync(i);
             if (r is null) return;
             ShowResult(i, r, registered: true);
-        }, $"Не удалось подключить {i.DisplayName}");
+        }, L.F("Не удалось подключить {0}", i.DisplayName));
         Shell.ConfigChanged();
         await RefreshAsync();
         if (i.Id == ClaudeCodeId) LoadClaudeChecks();
@@ -249,14 +253,14 @@ internal sealed class IntegrationsPage : PageBase
     {
         if (Selected() is not { } row) return;
         var i = row.Integration;
-        if (!Ui.Confirm(Owner, $"Отключить Offload от «{i.DisplayName}»?")) return;
+        if (!Ui.Confirm(Owner, L.F("Отключить Offload от «{0}»?", i.DisplayName))) return;
         await RunBusyAsync(async () =>
         {
             var r = await i.UnregisterAsync();
             Log.Info("integrations", $"{i.Id}: отключение — {r.Message}");
             if (r.Ok) ConfigStore.Update(c => c.Integrations.Remove(i.Id));
             ShowResult(i, r, registered: false);
-        }, $"Не удалось отключить {i.DisplayName}");
+        }, L.F("Не удалось отключить {0}", i.DisplayName));
         Shell.ConfigChanged();
         await RefreshAsync();
     }
@@ -267,7 +271,7 @@ internal sealed class IntegrationsPage : PageBase
             .Where(r => r.Installed && r.Status is not IntegrationStatus.Registered).ToList();
         if (targets.Count == 0)
         {
-            Ui.Info(Owner, "Все найденные IDE уже подключены.");
+            Ui.Info(Owner, L.T("Все найденные IDE уже подключены."));
             return;
         }
         var lines = new List<string>();
@@ -278,7 +282,7 @@ internal sealed class IntegrationsPage : PageBase
             foreach (var t in targets)
             {
                 _status.ForeColor = Theme.TextMuted;
-                _status.Text = $"Подключение: {t.Integration.DisplayName}…";
+                _status.Text = L.F("Подключение: {0}…", t.Integration.DisplayName);
                 try
                 {
                     var r = await RegisterAsync(t.Integration);
@@ -294,7 +298,7 @@ internal sealed class IntegrationsPage : PageBase
                     lines.Add($"✗ {t.Integration.DisplayName}: {Ui.FriendlyError(ex)}");
                 }
             }
-        }, "Не удалось подключить IDE");
+        }, L.T("Не удалось подключить IDE"));
         _status.ForeColor = failed > 0 ? Theme.ErrorText : Theme.OkText;
         _status.Text = string.Join(Environment.NewLine, lines);
         var text = string.Join(Environment.NewLine, lines);
@@ -311,10 +315,10 @@ internal sealed class IntegrationsPage : PageBase
         var hint = registered && r.Ok ? Ui.Try(() => i.PostRegisterHint, null, "PostRegisterHint") : null;
         var text = r.Message;
         if (!string.IsNullOrWhiteSpace(hint)) text += Environment.NewLine + hint;
-        if (!string.IsNullOrWhiteSpace(r.BackupPath)) text += Environment.NewLine + $"Резервная копия: {r.BackupPath}";
+        if (!string.IsNullOrWhiteSpace(r.BackupPath)) text += Environment.NewLine + L.F("Резервная копия: {0}", r.BackupPath);
         _status.ForeColor = r.Ok ? Theme.OkText : Theme.ErrorText;
         _status.Text = text;
-        if (!r.Ok) Ui.ShowError(Owner, registered ? $"Не удалось подключить {i.DisplayName}" : $"Не удалось отключить {i.DisplayName}", r.Message);
+        if (!r.Ok) Ui.ShowError(Owner, registered ? L.F("Не удалось подключить {0}", i.DisplayName) : L.F("Не удалось отключить {0}", i.DisplayName), r.Message);
         else if (!string.IsNullOrWhiteSpace(hint)) Ui.Info(Owner, $"{r.Message}{Environment.NewLine}{Environment.NewLine}{hint}");
     }
 
@@ -336,8 +340,8 @@ internal sealed class IntegrationsPage : PageBase
             var claude = Ui.Try(() => IntegrationRegistry.Find(ClaudeCodeId), null, "Find(claude-code)");
             var found = claude is not null && Ui.Try(claude.IsClientInstalled, false, "claude.IsClientInstalled");
             _claudeNote.Text = found
-                ? "Дополнительные настройки для Claude Code помогают ему чаще и правильнее поручать задачи локальной модели."
-                : "Claude Code не найден на этом компьютере. Настройки можно включить заранее — они подействуют после установки Claude Code.";
+                ? L.T("Дополнительные настройки для Claude Code помогают ему чаще и правильнее поручать задачи локальной модели.")
+                : L.T("Claude Code не найден на этом компьютере. Настройки можно включить заранее — они подействуют после установки Claude Code.");
             _guidance.Checked = Ui.Try(ClaudeCodeExtras.IsGuidanceInstalled, false, "IsGuidanceInstalled");
             _strongRule.Checked = Ui.Try(ClaudeCodeExtras.IsStrongRuleInstalled, false, "IsStrongRuleInstalled");
             _runnerAgent.Checked = Ui.Try(ClaudeCodeExtras.IsRunnerAgentInstalled, false, "IsRunnerAgentInstalled");
@@ -362,8 +366,8 @@ internal sealed class IntegrationsPage : PageBase
             Log.Info("integrations", $"Claude Code, {what}: {r.Message}");
             _status.ForeColor = r.Ok ? Theme.OkText : Theme.ErrorText;
             _status.Text = r.Message;
-            if (!r.Ok) Ui.ShowError(Owner, $"Claude Code: не удалось изменить «{what}»", r.Message);
-        }, $"Claude Code: не удалось изменить «{what}»");
+            if (!r.Ok) Ui.ShowError(Owner, L.F("Claude Code: не удалось изменить «{0}»", what), r.Message);
+        }, L.F("Claude Code: не удалось изменить «{0}»", what));
         LoadClaudeChecks();
     }
 
@@ -372,8 +376,7 @@ internal sealed class IntegrationsPage : PageBase
         if (_loadingChecks) return;
         if (fromWrite && _approveWrite.Checked &&
             !Ui.Confirm(Owner,
-                "Claude Code сможет без подтверждения поручать Offload создание и правку файлов проекта " +
-                "(каждую правку можно отменить через local_job). Разрешить?", warning: true))
+                L.T("Claude Code сможет без подтверждения поручать Offload создание и правку файлов проекта (каждую правку можно отменить через local_job). Разрешить?"), warning: true))
         {
             LoadClaudeChecks();
             return;
@@ -396,8 +399,8 @@ internal sealed class IntegrationsPage : PageBase
             Log.Info("integrations", $"Claude Code, разрешения: {r.Message}");
             _status.ForeColor = r.Ok ? Theme.OkText : Theme.ErrorText;
             _status.Text = r.Message;
-            if (!r.Ok) Ui.ShowError(Owner, "Claude Code: не удалось изменить разрешения", r.Message);
-        }, "Claude Code: не удалось изменить разрешения");
+            if (!r.Ok) Ui.ShowError(Owner, L.T("Claude Code: не удалось изменить разрешения"), r.Message);
+        }, L.T("Claude Code: не удалось изменить разрешения"));
         LoadClaudeChecks();
     }
 
@@ -433,11 +436,11 @@ internal sealed class IntegrationsPage : PageBase
         if (Ui.TrySetClipboard(text))
         {
             _status.ForeColor = Theme.OkText;
-            _status.Text = "Скопировано в буфер обмена.";
+            _status.Text = L.T("Скопировано в буфер обмена.");
         }
         else
         {
-            Ui.Warn(Owner, "Не удалось скопировать в буфер обмена.");
+            Ui.Warn(Owner, L.T("Не удалось скопировать в буфер обмена."));
         }
     }
 }

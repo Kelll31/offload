@@ -139,7 +139,7 @@ public static class UsageLog
             list.Sum(r => Math.Max(0, r.EstimatedSavedTokens)),
             TimeSpan.FromMilliseconds(list.Sum(r => r.DurationMs)),
             list.GroupBy(r => r.Tool).ToDictionary(g => g.Key, g => g.Count()),
-            list.GroupBy(r => r.Client ?? "неизвестно").ToDictionary(g => g.Key, g => g.Count()));
+            list.GroupBy(r => r.Client ?? L.T("неизвестно")).ToDictionary(g => g.Key, g => g.Count()));
     }
 
     public static void Clear()

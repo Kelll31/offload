@@ -1,3 +1,4 @@
+using Offload.App.Controls;
 using Offload.App.Forms.Pages;
 using Offload.App.Services;
 using Offload.App.Util;
@@ -7,28 +8,36 @@ using Offload.Core.Logging;
 namespace Offload.App.Forms;
 
 /// <summary>
-/// «Offload — панель управления». Единственный экземпляр; при закрытии прячется в трей
-/// (если включено Ui.MinimizeToTrayOnClose), иначе закрытие окна завершает программу.
+/// «Offload — панель управления». Слева — навигация по разделам (NavigationRail), справа — заголовок и страница.
+/// Единственный экземпляр; при закрытии прячется в трей (если включено Ui.MinimizeToTrayOnClose),
+/// иначе закрытие окна завершает программу. При смене темы окно пересоздаётся (IAppShell.ApplyTheme).
 /// </summary>
 internal sealed class MainForm : Form
 {
     private readonly IAppShell _shell;
-    private readonly TabControl _tabs;
+    private readonly NavigationRail _nav;
+    private readonly Panel _host;
+    private readonly Label _title;
+    private readonly Label _subtitle;
     private readonly List<PageBase> _pages;
+    private readonly System.Windows.Forms.Timer _statusTimer;
+    private PageBase? _current;
     private bool _allowClose;
     private bool _hintShown;
 
     public MainForm(IAppShell shell)
     {
         _shell = shell;
+        IsDark = Theme.IsDark;
         SuspendLayout();
 
-        Text = "Offload — панель управления";
+        Text = L.T("Offload — панель управления");
         Icon = AppIcons.AppIcon;
         StartPosition = FormStartPosition.CenterScreen;
-        ClientSize = new Size(1000, 720);
-        MinimumSize = new Size(820, 600);
+        ClientSize = new Size(1120, 760);
+        MinimumSize = new Size(860, 600);
         BackColor = Theme.Surface;
+        ForeColor = Theme.TextPrimary;
         KeyPreview = true;
 
         _pages =
@@ -40,45 +49,153 @@ internal sealed class MainForm : Form
             new OpenCodePage(shell),
             new PromptPage(shell),
             new LogPage(shell),
+            new SettingsPage(shell),
             new AboutPage(shell),
         ];
 
-        _tabs = new TabControl
+        // Заголовок страницы.
+        _title = Kit.Label("", Theme.Semibold(19f), Theme.TextPrimary);
+        _title.Margin = new Padding(0, 0, 0, 0);
+        _subtitle = Kit.Label("", Theme.Regular(9.5f), Theme.TextMuted);
+        _subtitle.Margin = new Padding(1, 2, 0, 0);
+        var header = new TableLayoutPanel
         {
-            Dock = DockStyle.Fill,
-            Padding = new Point(14, 5),
-            Margin = Padding.Empty,
+            Dock = DockStyle.Top,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount = 1,
+            Padding = new Padding(28, 18, 28, 6),
+            BackColor = Theme.Surface,
         };
+        header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        header.AddRow(_title);
+        header.AddRow(_subtitle);
+
+        _host = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Surface, Padding = new Padding(12, 0, 0, 0) };
         foreach (var page in _pages)
         {
-            var tab = new TabPage(page.Title)
-            {
-                Name = page.Key,
-                BackColor = Theme.Surface,
-                UseVisualStyleBackColor = false,
-                Padding = Padding.Empty,
-                Margin = Padding.Empty,
-            };
-            tab.Controls.Add(page);
-            _tabs.TabPages.Add(tab);
+            page.Visible = false;
+            _host.Controls.Add(page);
         }
-        _tabs.SelectedIndexChanged += (_, _) => UpdateActivePage();
-        Controls.Add(_tabs);
+
+        var content = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Surface };
+        content.Controls.Add(_host);
+        content.Controls.Add(header);
+
+        _nav = new NavigationRail(AppIcons.Logo);
+        _nav.SetItems(_pages.Select(p => new NavigationRail.Item(p.Key, p.Title, p.Glyph, GroupOf(p.Key))));
+        _nav.Collapsed = ConfigStore.Current.Ui.NavCollapsed;
+        _nav.SelectedChanged += (_, key) => Select(key);
+        _nav.StatusClicked += (_, _) => ShowTab(Tabs.Status);
+        _nav.ThemeClicked += (_, _) => RequestTheme(NextTheme(Theme.Mode));
+        _nav.CollapsedChanged += (_, _) =>
+            Ui.RunSafe(this, () => ConfigStore.Update(c => c.Ui.NavCollapsed = _nav.Collapsed), L.T("Не удалось сохранить настройку"));
+
+        Controls.Add(content);
+        Controls.Add(_nav);
+
+        Select(_pages[0].Key);
+        UpdateNavStatus();
+        _statusTimer = new System.Windows.Forms.Timer { Interval = 5000 };
+        _statusTimer.Tick += (_, _) => UpdateNavStatus();
 
         Kit.FinishForm(this);
         ResumeLayout(false);
         PerformLayout();
     }
 
-    private PageBase? CurrentPage =>
-        _tabs.SelectedIndex >= 0 && _tabs.SelectedIndex < _pages.Count ? _pages[_tabs.SelectedIndex] : null;
+    /// <summary>Окно создано в тёмной теме (цвета элементов задаются при создании).</summary>
+    public bool IsDark { get; }
+
+    /// <summary>Хотя бы на одной странице есть несохранённые изменения.</summary>
+    public bool HasUnsavedChanges => _pages.Any(p => p.HasUnsavedChanges);
+
+    /// <summary>Перерисовать рисованные элементы окна (после смены режима темы без смены цветов).</summary>
+    public void RefreshChrome() => _nav.Invalidate();
+
+    /// <summary>Ключ открытой страницы.</summary>
+    public string? CurrentKey => _current?.Key;
+
+    private static string GroupOf(string key) => key switch
+    {
+        Tabs.Status or Tabs.Models => L.T("Главное"),
+        Tabs.Server or Tabs.Integrations or Tabs.OpenCode or Tabs.Prompt => L.T("Настройка"),
+        _ => L.T("Сервис"),
+    };
+
+    private static string NextTheme(string mode) => mode switch
+    {
+        Theme.ModeSystem => Theme.ModeLight,
+        Theme.ModeLight => Theme.ModeDark,
+        _ => Theme.ModeSystem,
+    };
+
+    /// <summary>
+    /// Сменить тему по просьбе пользователя. Если окно придётся пересоздать, а на страницах есть несохранённые правки, —
+    /// спросить. Сама смена откладывается до выхода из обработчика (окно пересоздаётся не изнутри своего же события).
+    /// Возвращает false, если пользователь отказался.
+    /// </summary>
+    public bool RequestTheme(string mode)
+    {
+        var wantDark = Theme.WouldBeDark(mode, ConfigStore.Current.Ui.ThemePreset);
+        if (wantDark != IsDark && !ConfirmRecreate()) return false;
+        _shell.PostToUi(() => _shell.ApplyTheme(mode));
+        return true;
+    }
+
+    /// <summary>
+    /// Сменить внешний вид или язык (сохранить настройку и пересоздать окно). Несохранённые правки на страницах —
+    /// с вопросом. Возвращает false, если пользователь отказался или сохранить не удалось.
+    /// </summary>
+    public bool RequestAppearance(Action<AppConfig> mutate)
+    {
+        if (!ConfirmRecreate()) return false;
+        if (!Ui.RunSafe(this, () => ConfigStore.Update(mutate), L.T("Не удалось сохранить настройку"))) return false;
+        _shell.PostToUi(_shell.ApplyAppearance);
+        return true;
+    }
+
+    internal bool ConfirmRecreate(IWin32Window? owner = null)
+    {
+        var unsaved = _pages.Where(p => p.HasUnsavedChanges).Select(p => $"«{p.Title}»").ToList();
+        return unsaved.Count == 0 || Ui.Confirm(owner ?? this,
+            L.F("Окно будет открыто заново, а несохранённые изменения в разделах {0} — потеряны. Продолжить?", string.Join(", ", unsaved)));
+    }
+
+    private void Select(string key)
+    {
+        var page = _pages.FirstOrDefault(p => string.Equals(p.Key, key, StringComparison.OrdinalIgnoreCase));
+        if (page is null || page == _current) return;
+        // Фокус на странице, которая скрывается, иначе Windows передаст его первому полю новой страницы
+        // и прокрутит её к этому полю (страница открылась бы не с начала).
+        if (_current is not null && _current.ContainsFocus) _nav.Focus();
+        _host.SuspendLayout();
+        page.Visible = true;
+        page.BringToFront();
+        if (_current is not null) _current.Visible = false;
+        _host.ResumeLayout(true);
+        ScrollToTop(page);
+        _current = page;
+        _title.Text = page.Title;
+        _subtitle.Text = page.Subtitle ?? "";
+        _subtitle.Visible = !string.IsNullOrEmpty(page.Subtitle);
+        _nav.SelectedKey = page.Key;
+        UpdateActivePage();
+    }
+
+    private static void ScrollToTop(Control root)
+    {
+        foreach (Control c in root.Controls)
+        {
+            if (c is ScrollableControl { AutoScroll: true } sc) sc.AutoScrollPosition = Point.Empty;
+            ScrollToTop(c);
+        }
+    }
 
     /// <summary>Открыть вкладку по ключу (status, models, server, integrations, opencode, prompt, log, about).</summary>
     public void ShowTab(string? key)
     {
-        if (string.IsNullOrWhiteSpace(key)) return;
-        var idx = _pages.FindIndex(p => string.Equals(p.Key, key, StringComparison.OrdinalIgnoreCase));
-        if (idx >= 0 && idx != _tabs.SelectedIndex) _tabs.SelectedIndex = idx;
+        if (!string.IsNullOrWhiteSpace(key)) Select(key);
         UpdateActivePage();
     }
 
@@ -112,19 +229,35 @@ internal sealed class MainForm : Form
 
     public void NotifyServerStateChanged()
     {
+        UpdateNavStatus();
         foreach (var p in _pages) SafeCall(p, p.OnServerStateChanged);
     }
 
     public void NotifyConfigChanged()
     {
+        UpdateNavStatus();
         foreach (var p in _pages) SafeCall(p, p.OnConfigChanged);
     }
 
-    /// <summary>Закрыть окно по-настоящему (выход из программы).</summary>
+    /// <summary>Закрыть окно по-настоящему (выход из программы или пересоздание при смене темы).</summary>
     public void ForceClose()
     {
         _allowClose = true;
         Close();
+    }
+
+    private void UpdateNavStatus()
+    {
+        try
+        {
+            var s = _shell.Server.State;
+            var model = ConfigStore.Current.ActiveModel();
+            _nav.SetStatus(Theme.StateColor(s), Texts.State(s), model is null ? L.T("модель не выбрана") : Texts.ModelName(model));
+        }
+        catch (Exception ex)
+        {
+            Log.Debug("ui", $"Состояние в навигации: {ex.Message}");
+        }
     }
 
     private static void SafeCall(PageBase page, Action action)
@@ -141,15 +274,23 @@ internal sealed class MainForm : Form
 
     private void UpdateActivePage()
     {
-        // Вызывается и из OnResize во время конструктора, когда вкладки ещё не созданы.
-        if (_pages is null || _tabs is null) return;
+        // Вызывается и из OnResize во время конструктора, когда страницы ещё не созданы.
+        if (_pages is null || _nav is null) return;
         var visible = Visible && WindowState != FormWindowState.Minimized;
-        var current = CurrentPage;
         foreach (var p in _pages)
         {
-            if (visible && p == current) p.Activate();
+            if (visible && p == _current) p.Activate();
             else p.Deactivate();
         }
+        if (_statusTimer is null) return;
+        if (visible) _statusTimer.Start();
+        else _statusTimer.Stop();
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        Theme.ApplyWindowFrame(this);
     }
 
     protected override void OnShown(EventArgs e)
@@ -172,11 +313,17 @@ internal sealed class MainForm : Form
 
     protected override void OnKeyDown(KeyEventArgs e)
     {
-        // Ctrl+Tab и Ctrl+1…8 — переключение вкладок.
-        if (e.Control && e.KeyCode is >= Keys.D1 and <= Keys.D8)
+        // Ctrl+1…9 — разделы по порядку, Ctrl+Tab / Ctrl+Shift+Tab — следующий/предыдущий.
+        if (e.Control && e.KeyCode is >= Keys.D1 and <= Keys.D9)
         {
             var idx = e.KeyCode - Keys.D1;
-            if (idx < _tabs.TabCount) _tabs.SelectedIndex = idx;
+            if (idx < _pages.Count) Select(_pages[idx].Key);
+            e.Handled = true;
+        }
+        else if (e.Control && e.KeyCode == Keys.Tab && _current is not null)
+        {
+            var idx = _pages.IndexOf(_current) + (e.Shift ? -1 : 1);
+            Select(_pages[(idx + _pages.Count) % _pages.Count].Key);
             e.Handled = true;
         }
         base.OnKeyDown(e);
@@ -193,8 +340,8 @@ internal sealed class MainForm : Form
                 if (!_hintShown)
                 {
                     _hintShown = true;
-                    _shell.Notify("Offload продолжает работать",
-                        "Значок в области уведомлений: двойной щелчок открывает панель, правый — меню.");
+                    _shell.Notify(L.T("Offload продолжает работать"),
+                        L.T("Значок в области уведомлений: двойной щелчок открывает панель, правый — меню."));
                 }
                 return;
             }
@@ -208,7 +355,14 @@ internal sealed class MainForm : Form
 
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
+        _statusTimer.Stop();
         foreach (var p in _pages) p.Deactivate();
         base.OnFormClosed(e);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) _statusTimer.Dispose();
+        base.Dispose(disposing);
     }
 }

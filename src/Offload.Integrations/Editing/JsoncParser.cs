@@ -4,7 +4,7 @@ namespace Offload.Integrations.Editing;
 
 /// <summary>Ошибка разбора JSON/JSONC с позицией (строки и столбцы с 1).</summary>
 internal sealed class JsoncParseException(string reason, int line, int column)
-    : Exception($"{reason} (строка {line}, столбец {column})")
+    : Exception(L.F("{0} (строка {1}, столбец {2})", reason, line, column))
 {
     public string Reason { get; } = reason;
     public int Line { get; } = line;
@@ -67,7 +67,7 @@ internal sealed class JsoncParser
         }
         root = p.ParseValue(0);
         p.SkipTrivia();
-        if (p._i < p._s.Length) throw p.Error("лишние символы после конца JSON");
+        if (p._i < p._s.Length) throw p.Error(L.T("лишние символы после конца JSON"));
         return p;
     }
 
@@ -104,7 +104,7 @@ internal sealed class JsoncParser
             {
                 HasComments = true;
                 var end = _s.IndexOf("*/", _i + 2, StringComparison.Ordinal);
-                if (end < 0) throw Error("незакрытый комментарий /*");
+                if (end < 0) throw Error(L.T("незакрытый комментарий /*"));
                 _i = end + 2;
             }
             else
@@ -117,7 +117,7 @@ internal sealed class JsoncParser
     private JsoncValue ParseValue(int depth)
     {
         SkipTrivia();
-        if (_i >= _s.Length) throw Error("неожиданный конец файла");
+        if (_i >= _s.Length) throw Error(L.T("неожиданный конец файла"));
         var c = _s[_i];
         return c switch
         {
@@ -128,20 +128,20 @@ internal sealed class JsoncParser
             'f' => ParseLiteral("false", JsoncKind.False),
             'n' => ParseLiteral("null", JsoncKind.Null),
             '-' or (>= '0' and <= '9') => ParseNumber(),
-            _ => throw Error($"неожиданный символ «{c}»"),
+            _ => throw Error(L.F("неожиданный символ «{0}»", c)),
         };
     }
 
     private JsoncValue ParseObject(int depth)
     {
-        if (depth >= MaxDepth) throw Error("слишком глубокая вложенность");
+        if (depth >= MaxDepth) throw Error(L.T("слишком глубокая вложенность"));
         var obj = new JsoncValue { Kind = JsoncKind.Object, Start = _i };
         _i++;
         var afterComma = false;
         while (true)
         {
             SkipTrivia();
-            if (_i >= _s.Length) throw Error("незакрытый объект «{»");
+            if (_i >= _s.Length) throw Error(L.T("незакрытый объект «{»"));
             var c = _s[_i];
             if (c == '}')
             {
@@ -150,13 +150,13 @@ internal sealed class JsoncParser
                 obj.End = _i;
                 return obj;
             }
-            if (c != '"') throw Error(afterComma || obj.Items.Count == 0 ? "ожидалось имя свойства в кавычках" : "ожидалась «,» или «}»");
-            if (obj.Items.Count > 0 && !afterComma) throw Error("ожидалась «,» или «}»");
+            if (c != '"') throw Error(afterComma || obj.Items.Count == 0 ? L.T("ожидалось имя свойства в кавычках") : L.T("ожидалась «,» или «}»"));
+            if (obj.Items.Count > 0 && !afterComma) throw Error(L.T("ожидалась «,» или «}»"));
 
             var keyStart = _i;
             var key = ParseString();
             SkipTrivia();
-            if (_i >= _s.Length || _s[_i] != ':') throw Error("ожидалось «:» после имени свойства");
+            if (_i >= _s.Length || _s[_i] != ':') throw Error(L.T("ожидалось «:» после имени свойства"));
             var colon = _i;
             _i++;
             var value = ParseValue(depth + 1);
@@ -164,7 +164,7 @@ internal sealed class JsoncParser
             obj.Items.Add(item);
 
             SkipTrivia();
-            if (_i >= _s.Length) throw Error("незакрытый объект «{»");
+            if (_i >= _s.Length) throw Error(L.T("незакрытый объект «{»"));
             if (_s[_i] == ',')
             {
                 item.CommaPos = _i;
@@ -177,21 +177,21 @@ internal sealed class JsoncParser
             }
             else
             {
-                throw Error("ожидалась «,» или «}»");
+                throw Error(L.T("ожидалась «,» или «}»"));
             }
         }
     }
 
     private JsoncValue ParseArray(int depth)
     {
-        if (depth >= MaxDepth) throw Error("слишком глубокая вложенность");
+        if (depth >= MaxDepth) throw Error(L.T("слишком глубокая вложенность"));
         var arr = new JsoncValue { Kind = JsoncKind.Array, Start = _i };
         _i++;
         var afterComma = false;
         while (true)
         {
             SkipTrivia();
-            if (_i >= _s.Length) throw Error("незакрытый массив «[»");
+            if (_i >= _s.Length) throw Error(L.T("незакрытый массив «[»"));
             if (_s[_i] == ']')
             {
                 if (afterComma) HasTrailingCommas = true;
@@ -199,8 +199,8 @@ internal sealed class JsoncParser
                 arr.End = _i;
                 return arr;
             }
-            if (_s[_i] == ',') throw Error("лишняя запятая");
-            if (arr.Items.Count > 0 && !afterComma) throw Error("ожидалась «,» или «]»");
+            if (_s[_i] == ',') throw Error(L.T("лишняя запятая"));
+            if (arr.Items.Count > 0 && !afterComma) throw Error(L.T("ожидалась «,» или «]»"));
 
             var start = _i;
             var value = ParseValue(depth + 1);
@@ -208,7 +208,7 @@ internal sealed class JsoncParser
             arr.Items.Add(item);
 
             SkipTrivia();
-            if (_i >= _s.Length) throw Error("незакрытый массив «[»");
+            if (_i >= _s.Length) throw Error(L.T("незакрытый массив «[»"));
             if (_s[_i] == ',')
             {
                 item.CommaPos = _i;
@@ -221,7 +221,7 @@ internal sealed class JsoncParser
             }
             else
             {
-                throw Error("ожидалась «,» или «]»");
+                throw Error(L.T("ожидалась «,» или «]»"));
             }
         }
     }
@@ -240,21 +240,21 @@ internal sealed class JsoncParser
         var sb = new StringBuilder();
         while (true)
         {
-            if (_i >= _s.Length) throw Error("незакрытая строка", start);
+            if (_i >= _s.Length) throw Error(L.T("незакрытая строка"), start);
             var c = _s[_i];
             if (c == '"')
             {
                 _i++;
                 return sb.ToString();
             }
-            if (c < ' ') throw Error("управляющий символ внутри строки (нужно экранирование)");
+            if (c < ' ') throw Error(L.T("управляющий символ внутри строки (нужно экранирование)"));
             if (c != '\\')
             {
                 sb.Append(c);
                 _i++;
                 continue;
             }
-            if (_i + 1 >= _s.Length) throw Error("незакрытая строка", start);
+            if (_i + 1 >= _s.Length) throw Error(L.T("незакрытая строка"), start);
             var e = _s[_i + 1];
             switch (e)
             {
@@ -267,15 +267,15 @@ internal sealed class JsoncParser
                 case 'r': sb.Append('\r'); break;
                 case 't': sb.Append('\t'); break;
                 case 'u':
-                    if (_i + 6 > _s.Length) throw Error("неполная последовательность \\u");
+                    if (_i + 6 > _s.Length) throw Error(L.T("неполная последовательность \\u"));
                     var hex = _s.AsSpan(_i + 2, 4);
                     if (!ushort.TryParse(hex, System.Globalization.NumberStyles.AllowHexSpecifier, null, out var code))
-                        throw Error("некорректная последовательность \\u");
+                        throw Error(L.T("некорректная последовательность \\u"));
                     sb.Append((char)code);
                     _i += 4;
                     break;
                 default:
-                    throw Error($"недопустимое экранирование «\\{e}»");
+                    throw Error(L.F("недопустимое экранирование «\\{0}»", e));
             }
             _i += 2;
         }
@@ -283,10 +283,10 @@ internal sealed class JsoncParser
 
     private JsoncValue ParseLiteral(string word, JsoncKind kind)
     {
-        if (string.CompareOrdinal(_s, _i, word, 0, word.Length) != 0) throw Error("неизвестное значение");
+        if (string.CompareOrdinal(_s, _i, word, 0, word.Length) != 0) throw Error(L.T("неизвестное значение"));
         var start = _i;
         _i += word.Length;
-        if (_i < _s.Length && (char.IsLetterOrDigit(_s[_i]) || _s[_i] == '_')) throw Error("неизвестное значение", start);
+        if (_i < _s.Length && (char.IsLetterOrDigit(_s[_i]) || _s[_i] == '_')) throw Error(L.T("неизвестное значение"), start);
         return new JsoncValue { Kind = kind, Start = start, End = _i };
     }
 
@@ -294,7 +294,7 @@ internal sealed class JsoncParser
     {
         var start = _i;
         if (_s[_i] == '-') _i++;
-        if (_i >= _s.Length) throw Error("некорректное число", start);
+        if (_i >= _s.Length) throw Error(L.T("некорректное число"), start);
         if (_s[_i] == '0')
         {
             _i++;
@@ -305,22 +305,22 @@ internal sealed class JsoncParser
         }
         else
         {
-            throw Error("некорректное число", start);
+            throw Error(L.T("некорректное число"), start);
         }
         if (_i < _s.Length && _s[_i] == '.')
         {
             _i++;
-            if (_i >= _s.Length || !char.IsAsciiDigit(_s[_i])) throw Error("некорректное число", start);
+            if (_i >= _s.Length || !char.IsAsciiDigit(_s[_i])) throw Error(L.T("некорректное число"), start);
             while (_i < _s.Length && char.IsAsciiDigit(_s[_i])) _i++;
         }
         if (_i < _s.Length && _s[_i] is 'e' or 'E')
         {
             _i++;
             if (_i < _s.Length && _s[_i] is '+' or '-') _i++;
-            if (_i >= _s.Length || !char.IsAsciiDigit(_s[_i])) throw Error("некорректное число", start);
+            if (_i >= _s.Length || !char.IsAsciiDigit(_s[_i])) throw Error(L.T("некорректное число"), start);
             while (_i < _s.Length && char.IsAsciiDigit(_s[_i])) _i++;
         }
-        if (_i < _s.Length && (char.IsLetterOrDigit(_s[_i]) || _s[_i] == '.')) throw Error("некорректное число", start);
+        if (_i < _s.Length && (char.IsLetterOrDigit(_s[_i]) || _s[_i] == '.')) throw Error(L.T("некорректное число"), start);
         return new JsoncValue { Kind = JsoncKind.Number, Start = start, End = _i };
     }
 }
