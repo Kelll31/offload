@@ -17,6 +17,18 @@ internal static class JobStatus
     public const string Reverted = "reverted";
     public const string NoChanges = "no_changes";
     public const string Cancelled = "cancelled";
+
+    /// <summary>Работа агента зафиксирована в песочнице и ждёт слияния (local_job action=merge / discard).</summary>
+    public const string PendingMerge = "pending_merge";
+
+    /// <summary>Патч песочницы не применяется к текущему рабочему дереву.</summary>
+    public const string Conflict = "conflict";
+
+    /// <summary>Работа агента влита в текущую ветку проекта коммитом (fast-forward).</summary>
+    public const string Committed = "committed";
+
+    /// <summary>Песочница удалена без слияния.</summary>
+    public const string Discarded = "discarded";
 }
 
 /// <summary>Файл, затронутый задачей: исходные байты (снимок) и хэш на момент завершения.</summary>
@@ -56,6 +68,9 @@ internal sealed class JobInfo
     public List<string> Notes { get; set; } = [];
     public List<JobFile> Files { get; set; } = [];
     public DateTime? RevertedUtc { get; set; }
+
+    /// <summary>Git-песочница агентной задачи (local_agent_task) или null.</summary>
+    public SandboxInfo? Sandbox { get; set; }
 }
 
 internal sealed record RevertOutcome(bool Ok, string Message);
@@ -226,6 +241,8 @@ internal static partial class JobStore
     {
         if (job.Status == JobStatus.Reverted) return new(true, $"Job {job.Id} was already reverted at {job.RevertedUtc:u}; nothing to do.");
         if (job.Status == JobStatus.DryRun) return new(true, $"Job {job.Id} was a dry run; nothing was applied, nothing to revert.");
+        if (job.Status is JobStatus.PendingMerge or JobStatus.Conflict or JobStatus.Discarded)
+            return new(true, $"Job {job.Id} was not merged into the project (status {job.Status}); nothing to revert. Use local_job action=discard to drop its sandbox.");
         if (job.Status == JobStatus.Running && !force)
             return new(false, $"Job {job.Id} is still running (or was interrupted). Retry later, or use force=true to restore the snapshot now.");
 
@@ -336,6 +353,24 @@ internal static partial class JobStore
             || jf.Path.Equals(f.Replace('/', '\\'), StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>Последние задачи (новые первыми); filter — отбор, например по рабочей области.</summary>
+    public static List<JobInfo> List(int max, Func<JobInfo, bool>? filter = null)
+    {
+        var list = new List<JobInfo>();
+        if (!Directory.Exists(JobsDir)) return list;
+        foreach (var dir in Directory.EnumerateDirectories(JobsDir).Select(System.IO.Path.GetFileName).Where(IsValidId)
+                     .OrderByDescending(n => n, StringComparer.Ordinal).Take(500))
+        {
+            JobInfo job;
+            try { job = Load(dir!); }
+            catch (ToolException) { continue; }
+            if (filter is not null && !filter(job)) continue;
+            list.Add(job);
+            if (list.Count >= max) break;
+        }
+        return list;
+    }
+
     /// <summary>Удалить задачи старше retentionDays (по дате в id). Быстро и ограниченно — вызывается при старте.</summary>
     public static int CleanupOld(int retentionDays)
     {
@@ -351,6 +386,7 @@ internal static partial class JobStore
                 if (!DateTime.TryParseExact(name[..15], "yyyyMMdd-HHmmss", System.Globalization.CultureInfo.InvariantCulture,
                         System.Globalization.DateTimeStyles.None, out var created)) continue;
                 if (created >= cutoff) continue;
+                RemoveSandbox(name);
                 FileUtil.TryDeleteDirectory(dir);
                 removed++;
             }
@@ -360,6 +396,21 @@ internal static partial class JobStore
             Log.Debug("mcp", $"Очистка задач: {ex.Message}");
         }
         return removed;
+    }
+
+    /// <summary>Перед удалением старой задачи убрать её песочницу (worktree и ветку offload/&lt;id&gt;), если она осталась.</summary>
+    private static void RemoveSandbox(string id)
+    {
+        try
+        {
+            var job = Load(id);
+            if (job.Sandbox is { } sb && SandboxState.IsOpen(sb.State))
+                GitSandbox.RemoveAsync(sb, deleteBranch: true, CancellationToken.None).GetAwaiter().GetResult();
+        }
+        catch (Exception ex)
+        {
+            Log.Debug("mcp", $"Песочница задачи {id} не удалена: {ex.Message}");
+        }
     }
 
     public static string Sha(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes));

@@ -145,7 +145,7 @@ public sealed class IpcServer : IDisposable
                 IpcResponse resp;
                 if (req is null)
                 {
-                    resp = new IpcResponse(false, "Пустой запрос");
+                    resp = new IpcResponse(false, L.T("Пустой запрос"));
                 }
                 else
                 {

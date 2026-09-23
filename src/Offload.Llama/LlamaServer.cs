@@ -76,7 +76,7 @@ public static class LlamaServerArgs
         ArgumentNullException.ThrowIfNull(model);
         ArgumentException.ThrowIfNullOrWhiteSpace(serverExePath);
         if (string.IsNullOrWhiteSpace(model.FilePath))
-            throw new ArgumentException("У модели не указан файл GGUF.", nameof(model));
+            throw new ArgumentException(L.T("У модели не указан файл GGUF."), nameof(model));
 
         var s = cfg.Server ?? new ServerSettings();
         var parallel = Math.Clamp(s.Parallel, 1, 64);
@@ -431,10 +431,10 @@ public sealed class LlamaServerProcess : IDisposable
     {
         var model = cfg.ActiveModel();
         var exe = LlamaInstaller.GetServerExePath(cfg);
-        if (exe is null) throw NotConfigured("llama.cpp не установлен — запустите мастер настройки Offload.");
-        if (model is null) throw NotConfigured("Модель не выбрана — скачайте или добавьте модель в Offload.");
+        if (exe is null) throw NotConfigured(L.T("llama.cpp не установлен — запустите мастер настройки Offload."));
+        if (model is null) throw NotConfigured(L.T("Модель не выбрана — скачайте или добавьте модель в Offload."));
         if (string.IsNullOrWhiteSpace(model.FilePath) || !File.Exists(model.FilePath))
-            throw NotConfigured($"Файл модели не найден: {model.FilePath}");
+            throw NotConfigured(L.F("Файл модели не найден: {0}", model.FilePath));
 
         var exeDir = Path.GetDirectoryName(exe)!;
         try
@@ -486,7 +486,7 @@ public sealed class LlamaServerProcess : IDisposable
         var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
         var run = new Run(process, plan, LocalHttp.ClientBaseUrl(host, port), cfg.Server.ApiKey ?? "");
         run.Writer = ServerLogWriter.TryOpen(LogFilePath);
-        run.Writer?.WriteLine($"==== {DateTime.Now:yyyy-MM-dd HH:mm:ss} Запуск: {LlamaServerArgs.Describe(plan)}");
+        run.Writer?.WriteLine($"==== {DateTime.Now:yyyy-MM-dd HH:mm:ss} Запуск: {LlamaServerArgs.Describe(plan)}"); // l10n-ignore: журнал llama-server
 
         process.OutputDataReceived += (_, e) => OnOutput(run, e.Data, run.OutClosed);
         process.ErrorDataReceived += (_, e) => OnOutput(run, e.Data, run.ErrClosed);
@@ -494,12 +494,12 @@ public sealed class LlamaServerProcess : IDisposable
 
         try
         {
-            if (!process.Start()) throw new InvalidOperationException("процесс не создан");
+            if (!process.Start()) throw new InvalidOperationException(L.T("процесс не создан"));
         }
         catch (Exception ex)
         {
             run.Dispose();
-            var msg = $"Не удалось запустить llama-server ({exe}): {ex.Message}";
+            var msg = L.F("Не удалось запустить llama-server ({0}): {1}", exe, ex.Message);
             SetFailed(msg);
             throw new LlamaServerException(msg, ex);
         }
@@ -538,7 +538,7 @@ public sealed class LlamaServerProcess : IDisposable
             while (true)
             {
                 ct.ThrowIfCancellationRequested();
-                if (run.StopRequested) throw new OperationCanceledException("Запуск llama-server прерван остановкой сервера.");
+                if (run.StopRequested) throw new OperationCanceledException(L.T("Запуск llama-server прерван остановкой сервера."));
                 if (run.Exited.Task.IsCompleted) await OnExitWhileStartingAsync(run).ConfigureAwait(false);
 
                 // Запрос не должен продлевать отведённое на запуск время.
@@ -570,8 +570,8 @@ public sealed class LlamaServerProcess : IDisposable
                 if (sw.Elapsed >= timeout)
                 {
                     await FailStartAsync(run,
-                        $"llama-server не загрузил модель за {FileUtil.FormatDuration(timeout)}. Возможно, модель слишком велика для этого компьютера " +
-                        "или диск работает медленно. Подробности — в журнале llama-server.").ConfigureAwait(false);
+                        L.F("llama-server не загрузил модель за {0}. Возможно, модель слишком велика для этого компьютера или диск работает медленно. Подробности — в журнале llama-server.",
+                            FileUtil.FormatDuration(timeout))).ConfigureAwait(false);
                 }
 
                 await Task.WhenAny(run.Exited.Task, Task.Delay(PollInterval, ct)).ConfigureAwait(false);
@@ -603,7 +603,7 @@ public sealed class LlamaServerProcess : IDisposable
     private async Task OnExitWhileStartingAsync(Run run)
     {
         var code = await run.Exited.Task.ConfigureAwait(false);
-        if (run.StopRequested) throw new OperationCanceledException("Запуск llama-server прерван остановкой сервера.");
+        if (run.StopRequested) throw new OperationCanceledException(L.T("Запуск llama-server прерван остановкой сервера."));
         var message = DescribeExit(run, code, whileStarting: true);
         var failed = false;
         lock (_lock)
@@ -726,7 +726,7 @@ public sealed class LlamaServerProcess : IDisposable
         {
         }
         var code = SafeExitCode(run.Process);
-        run.Writer?.WriteLine($"==== {DateTime.Now:yyyy-MM-dd HH:mm:ss} llama-server завершился (код {NtStatus.Format(code)})");
+        run.Writer?.WriteLine($"==== {DateTime.Now:yyyy-MM-dd HH:mm:ss} llama-server завершился (код {NtStatus.Format(code)})"); // l10n-ignore: журнал llama-server
         run.Exited.TrySetResult(code);
 
         string? error = null;
@@ -757,11 +757,11 @@ public sealed class LlamaServerProcess : IDisposable
         if (NtStatus.StartupFailure(code) is { } known) return known.Message;
 
         var sb = new StringBuilder(whileStarting
-            ? $"llama-server не запустился (код {NtStatus.Format(code)})."
-            : $"llama-server неожиданно завершился (код {NtStatus.Format(code)}).");
+            ? L.F("llama-server не запустился (код {0}).", NtStatus.Format(code))
+            : L.F("llama-server неожиданно завершился (код {0}).", NtStatus.Format(code)));
         if (Hint(tail, code, port) is { } hint) sb.Append(' ').Append(hint);
         var lines = ImportantLines(tail);
-        if (lines.Count > 0) sb.Append(" Журнал: ").Append(string.Join(" | ", lines));
+        if (lines.Count > 0) sb.Append(' ').Append(L.F("Журнал: {0}", string.Join(" | ", lines)));
         return sb.ToString();
     }
 
@@ -780,17 +780,17 @@ public sealed class LlamaServerProcess : IDisposable
         bool Has(params string[] keys) => keys.Any(text.Contains);
         if (Has("out of memory", "cudamalloc failed", "failed to allocate", "outofdevicememory", "unable to allocate", "not enough memory",
                 "failed to create context", "error_out_of"))
-            return "Не хватило памяти (видеопамяти или ОЗУ): уменьшите размер контекста или число параллельных слотов либо выберите модель меньше.";
+            return L.T("Не хватило памяти (видеопамяти или ОЗУ): уменьшите размер контекста или число параллельных слотов либо выберите модель меньше.");
         if (Has("failed to load model", "error loading model", "invalid magic", "gguf_init_from_file", "failed to read magic", "unknown model architecture"))
-            return "Не удалось загрузить модель: файл повреждён или не докачан, либо его формат не поддерживается этой версией llama.cpp (обновите llama.cpp).";
+            return L.T("Не удалось загрузить модель: файл повреждён или не докачан, либо его формат не поддерживается этой версией llama.cpp (обновите llama.cpp).");
         if (Has("couldn't bind", "could not bind", "failed to bind", "address already in use", "only one usage of each socket address"))
-            return port > 0 ? $"Порт {port} занят другой программой." : "Порт занят другой программой.";
+            return port > 0 ? L.F("Порт {0} занят другой программой.", port) : L.T("Порт занят другой программой.");
         if (Has("invalid argument", "unknown argument", "unknown value", "error while handling argument", "invalid value"))
-            return "llama-server не принял параметры запуска — проверьте поле «Дополнительные аргументы» в настройках сервера.";
+            return L.T("llama-server не принял параметры запуска — проверьте поле «Дополнительные аргументы» в настройках сервера.");
         if (Has("cuda driver version is insufficient", "no cuda-capable device", "ggml_cuda_init: failed", "cuda error", "vk::", "vulkan error"))
-            return "Сборка llama.cpp не смогла использовать видеокарту: обновите драйвер или выберите другую сборку (например, Vulkan).";
+            return L.T("Сборка llama.cpp не смогла использовать видеокарту: обновите драйвер или выберите другую сборку (например, Vulkan).");
         if (code is NtStatus.AccessViolation or NtStatus.StackBufferOverrun)
-            return "Процесс аварийно завершился (сбой в llama.cpp или в драйвере видеокарты).";
+            return L.T("Процесс аварийно завершился (сбой в llama.cpp или в драйвере видеокарты).");
         return null;
     }
 
@@ -1005,7 +1005,7 @@ internal static class PortProbe
             if (IsFree(host, p, listening)) return p;
         }
         throw new LlamaServerException(
-            $"Порт {port} занят, и среди портов {port + 1}–{last} нет свободного. Укажите другой порт в настройках сервера.");
+            L.F("Порт {0} занят, и среди портов {1}–{2} нет свободного. Укажите другой порт в настройках сервера.", port, port + 1, last));
     }
 
     public static bool IsFree(string host, int port) => IsFree(host, port, ListeningPorts());

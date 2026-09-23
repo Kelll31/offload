@@ -66,7 +66,7 @@ public static class FileUtil
 
     public static string FormatBytes(long bytes)
     {
-        string[] units = ["Б", "КБ", "МБ", "ГБ", "ТБ"];
+        string[] units = [L.T("Б"), L.T("КБ"), L.T("МБ"), L.T("ГБ"), L.T("ТБ")];
         double v = bytes;
         var i = 0;
         while (v >= 1024 && i < units.Length - 1)
@@ -77,12 +77,12 @@ public static class FileUtil
         return i == 0 ? $"{bytes} {units[0]}" : $"{v:0.0} {units[i]}";
     }
 
-    public static string FormatSpeed(double bytesPerSecond) => FormatBytes((long)bytesPerSecond) + "/с";
+    public static string FormatSpeed(double bytesPerSecond) => L.F("{0}/с", FormatBytes((long)bytesPerSecond));
 
     public static string FormatDuration(TimeSpan t) =>
-        t.TotalHours >= 1 ? $"{(int)t.TotalHours} ч {t.Minutes} мин"
-        : t.TotalMinutes >= 1 ? $"{t.Minutes} мин {t.Seconds} с"
-        : $"{Math.Max(0, t.Seconds)} с";
+        t.TotalHours >= 1 ? L.F("{0} ч {1} мин", (int)t.TotalHours, t.Minutes)
+        : t.TotalMinutes >= 1 ? L.F("{0} мин {1} с", t.Minutes, t.Seconds)
+        : L.F("{0} с", Math.Max(0, t.Seconds));
 
     public static void TryDeleteDirectory(string path)
     {

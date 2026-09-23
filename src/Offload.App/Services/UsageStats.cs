@@ -19,9 +19,9 @@ internal static class UsageStats
 
         return
         [
-            Make("Сегодня", todayList, prices),
-            Make("За 7 дней", weekList, prices),
-            Make("За всё время", all, prices),
+            Make(L.T("Сегодня"), todayList, prices),
+            Make(L.T("За 7 дней"), weekList, prices),
+            Make(L.T("За всё время"), all, prices),
         ];
     }
 

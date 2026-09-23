@@ -54,7 +54,7 @@ internal abstract class WizardStep : UserControl
         Dock = DockStyle.Fill;
         Margin = Padding.Empty;
         Padding = Padding.Empty;
-        BackColor = Theme.Surface;
+        BackColor = Theme.Card;
         AutoScaleMode = AutoScaleMode.Inherit;
         Visible = false;
     }
@@ -71,7 +71,7 @@ internal abstract class WizardStep : UserControl
 
     public virtual string? Subtitle => null;
 
-    public virtual string NextText => "Далее";
+    public virtual string NextText => L.T("Далее");
 
     public virtual bool CanGoNext => true;
 
@@ -97,6 +97,8 @@ internal abstract class WizardStep : UserControl
     /// <summary>Прокручиваемое содержимое шага.</summary>
     protected void SetContent(TableLayoutPanel content)
     {
-        Controls.Add(Kit.Scroll(content, new Padding(24, 8, 24, 8)));
+        var scroll = Kit.Scroll(content, new Padding(24, 8, 24, 8));
+        scroll.BackColor = Theme.Card;
+        Controls.Add(scroll);
     }
 }

@@ -83,7 +83,7 @@ internal sealed class RunEvents(string workingDirectory)
     private string OnStepStart()
     {
         Steps++;
-        return $"шаг {Steps}: модель думает…";
+        return L.F("шаг {0}: модель думает…", Steps);
     }
 
     private string? OnText(JsonElement part)
@@ -110,10 +110,10 @@ internal sealed class RunEvents(string workingDirectory)
         _textsAfterLastTool.Clear();
         arg = OneLine(arg, 120);
         var entry = string.IsNullOrEmpty(arg) ? tool : $"{tool} {arg}";
-        _toolCalls.Add(failed ? entry + " (ошибка)" : entry);
-        var step = Steps > 0 ? $"шаг {Steps}: " : "";
+        _toolCalls.Add(failed ? entry + " " + L.T("(ошибка)") : entry);
         var what = string.IsNullOrEmpty(arg) ? Verb(tool) : $"{Verb(tool)}: {OneLine(arg, 80)}";
-        return step + what + (failed ? " — ошибка" : "");
+        if (failed) what = L.F("{0} — ошибка", what);
+        return Steps > 0 ? L.F("шаг {0}: {1}", Steps, what) : what;
     }
 
     private string? OnStepFinish(JsonElement part)
@@ -137,10 +137,10 @@ internal sealed class RunEvents(string workingDirectory)
 
     private string OnError(JsonElement root)
     {
-        var msg = ErrorMessage(root.TryGetProperty("error", out var e) ? e : default) ?? "неизвестная ошибка";
-        msg = OneLine(StripAnsi(msg), 500) ?? "неизвестная ошибка";
+        var msg = ErrorMessage(root.TryGetProperty("error", out var e) ? e : default) ?? L.T("неизвестная ошибка");
+        msg = OneLine(StripAnsi(msg), 500) ?? L.T("неизвестная ошибка");
         if (!_errors.Contains(msg)) _errors.Add(msg);
-        return $"ошибка: {OneLine(msg, 120)}";
+        return L.F("ошибка: {0}", OneLine(msg, 120));
     }
 
     internal static string? ErrorMessage(JsonElement e)
@@ -202,19 +202,19 @@ internal sealed class RunEvents(string workingDirectory)
 
     internal static string Verb(string tool) => tool switch
     {
-        "read" => "чтение",
-        "edit" => "правка",
-        "write" => "запись",
-        "apply_patch" or "patch" => "патч",
-        "glob" => "поиск файлов",
-        "grep" => "поиск в коде",
-        "list" => "список файлов",
-        "bash" or "shell" => "команда",
-        "webfetch" => "загрузка страницы",
-        "todowrite" => "план",
-        "task" => "подзадача",
-        "skill" => "навык",
-        "invalid" => "некорректный вызов",
+        "read" => L.T("чтение"),
+        "edit" => L.T("правка"),
+        "write" => L.T("запись"),
+        "apply_patch" or "patch" => L.T("патч"),
+        "glob" => L.T("поиск файлов"),
+        "grep" => L.T("поиск в коде"),
+        "list" => L.T("список файлов"),
+        "bash" or "shell" => L.T("команда"),
+        "webfetch" => L.T("загрузка страницы"),
+        "todowrite" => L.T("план"),
+        "task" => L.T("подзадача"),
+        "skill" => L.T("навык"),
+        "invalid" => L.T("некорректный вызов"),
         _ => tool,
     };
 

@@ -8,14 +8,14 @@ namespace Offload.App.Forms;
 /// <summary>Общий список моделей для вкладки «Модели» и мастера настройки.</summary>
 internal static class ModelListBinder
 {
-    public const string RecommendedMark = "★ рекомендуется";
+    public static string RecommendedMark => L.T("★ рекомендуется");
 
     /// <summary>Столбцы списка (полный вариант — для вкладки «Модели»).</summary>
     public static ListView Create(bool full)
     {
         var lv = full
-            ? Kit.List(("Модель", 28), ("Размер", 9), ("Контекст", 9), ("Видеопамять", 34), ("Инструменты", 10), ("Статус", 10))
-            : Kit.List(("Модель", 32), ("Размер", 10), ("Видеопамять", 38), ("Инструменты", 10), ("Статус", 10));
+            ? Kit.List((L.T("Модель"), 27), (L.T("Размер"), 8), (L.T("Контекст"), 9), (L.T("Видеопамять"), 39), (L.T("Агент"), 7), (L.T("Статус"), 10))
+            : Kit.List((L.T("Модель"), 32), (L.T("Размер"), 10), (L.T("Видеопамять"), 41), (L.T("Агент"), 7), (L.T("Статус"), 10));
         return lv;
     }
 
@@ -31,7 +31,7 @@ internal static class ModelListBinder
             {
                 var name = r.IsRecommended ? $"{r.Name}   {RecommendedMark}" : r.Name;
                 var size = r.SizeBytes > 0 ? FileUtil.FormatBytes(r.SizeBytes) : "—";
-                var tools = r.GoodToolCalling ? "агент ✓" : "—";
+                var tools = r.GoodToolCalling ? "✓" : "—";
                 string[] cells = full
                     ? [name, size, r.ContextText, r.FitText, tools, r.StatusText]
                     : [name, size, r.FitText, tools, r.StatusText];

@@ -44,7 +44,7 @@ internal static class KnownIntegrations
         ClaudeCodeIntegration.Create(),
 
         new JsonIntegration("claude-desktop", "Claude Desktop",
-            "Полностью закройте Claude Desktop (значок в трее → «Выход») и запустите снова.")
+            "Полностью закройте Claude Desktop (значок в трее → «Выход») и запустите снова.") // l10n-key
         {
             Detect = ClientLocations.ClaudeDesktopInstalled,
             Targets = () => [ClientLocations.ClaudeDesktopConfig],
@@ -53,7 +53,7 @@ internal static class KnownIntegrations
             Entry = spec => Basic(spec, env: true),
         },
 
-        new JsonIntegration("cursor", "Cursor", "Перезапустите Cursor.")
+        new JsonIntegration("cursor", "Cursor", "Перезапустите Cursor.") // l10n-key
         {
             Detect = ClientLocations.CursorInstalled,
             Targets = () => [Path.Combine(Profile, ".cursor", "mcp.json")],
@@ -62,7 +62,7 @@ internal static class KnownIntegrations
         },
 
         new JsonIntegration("vscode", "VS Code (GitHub Copilot)",
-            "Откройте чат Copilot в режиме агента; при первом запуске сервера подтвердите доверие к нему.")
+            "Откройте чат Copilot в режиме агента; при первом запуске сервера подтвердите доверие к нему.") // l10n-key
         {
             Detect = () => ClientLocations.Dir(ClientLocations.VsCodeUser(false)),
             Targets = () => [Path.Combine(ClientLocations.VsCodeUser(false), "mcp.json")],
@@ -71,7 +71,7 @@ internal static class KnownIntegrations
         },
 
         new JsonIntegration("vscode-insiders", "VS Code Insiders (GitHub Copilot)",
-            "Откройте чат Copilot в режиме агента; при первом запуске сервера подтвердите доверие к нему.")
+            "Откройте чат Copilot в режиме агента; при первом запуске сервера подтвердите доверие к нему.") // l10n-key
         {
             Detect = () => ClientLocations.Dir(ClientLocations.VsCodeUser(true)),
             Targets = () => [Path.Combine(ClientLocations.VsCodeUser(true), "mcp.json")],
@@ -80,7 +80,7 @@ internal static class KnownIntegrations
         },
 
         new JsonIntegration("copilot-cli", "GitHub Copilot CLI",
-            "Изменения применяются сразу; проверьте список серверов командой /mcp в Copilot CLI.")
+            "Изменения применяются сразу; проверьте список серверов командой /mcp в Copilot CLI.") // l10n-key
         {
             Detect = () => ClientLocations.Dir(ClientLocations.CopilotHome),
             Targets = () => [Path.Combine(ClientLocations.CopilotHome, "mcp-config.json")],
@@ -89,7 +89,7 @@ internal static class KnownIntegrations
         },
 
         new JsonIntegration("windsurf", "Windsurf / Devin Desktop",
-            "Нажмите «Обновить» (Refresh) в панели MCP или перезапустите Windsurf / Devin Desktop.")
+            "Нажмите «Обновить» (Refresh) в панели MCP или перезапустите Windsurf / Devin Desktop.") // l10n-key
         {
             Detect = () => ClientLocations.WindsurfTargets().Count > 0,
             Targets = ClientLocations.WindsurfTargets,
@@ -97,11 +97,11 @@ internal static class KnownIntegrations
             Entry = spec => Basic(spec),
             ExtraRegisterNote = () =>
                 Registry.Find("claude-code")?.GetStatus(McpServerSpec.ForCurrentExecutable()) is IntegrationStatus.Registered or IntegrationStatus.Outdated
-                    ? "Devin также импортирует серверы из конфигурации Claude Code — если Offload появится дважды, отключите импорт (read_config_from в %APPDATA%\\devin\\config.json)."
+                    ? L.T("Devin также импортирует серверы из конфигурации Claude Code — если Offload появится дважды, отключите импорт (read_config_from в %APPDATA%\\devin\\config.json).")
                     : null,
         },
 
-        new JsonIntegration("cline", "Cline", "Cline подхватит изменения автоматически.")
+        new JsonIntegration("cline", "Cline", "Cline подхватит изменения автоматически.") // l10n-key
         {
             Detect = ClientLocations.ClineInstalled,
             Targets = () => [ClientLocations.ClineUsesV4() ? ClientLocations.ClineV4Config : ClientLocations.ClineLegacyConfig],
@@ -114,7 +114,7 @@ internal static class KnownIntegrations
             DroppedKeys = ["transport"],
         },
 
-        new JsonIntegration("roo-code", "Roo Code", "Roo Code подхватит изменения автоматически.")
+        new JsonIntegration("roo-code", "Roo Code", "Roo Code подхватит изменения автоматически.") // l10n-key
         {
             Detect = ClientLocations.RooInstalled,
             Targets = () => [ClientLocations.RooConfig],
@@ -125,7 +125,7 @@ internal static class KnownIntegrations
                 .With("alwaysAllow", ReadOnlyTools()),
         },
 
-        new JsonIntegration("kilo-code", "Kilo Code", "Перезапустите Kilo Code.")
+        new JsonIntegration("kilo-code", "Kilo Code", "Перезапустите Kilo Code.") // l10n-key
         {
             Detect = () => ClientLocations.Dir(ClientLocations.KiloDir),
             Targets = ClientLocations.KiloTargets,
@@ -149,7 +149,7 @@ internal static class KnownIntegrations
         new CodexIntegration(),
 
         new JsonIntegration("gemini-cli", "Gemini CLI",
-            "Перезапустите Gemini CLI. MCP-серверы подключаются только в доверенных папках (trusted folders).")
+            "Перезапустите Gemini CLI. MCP-серверы подключаются только в доверенных папках (trusted folders).") // l10n-key
         {
             Detect = () => ClientLocations.Dir(Path.Combine(Profile, ".gemini")),
             Targets = () => [Path.Combine(Profile, ".gemini", "settings.json")],
@@ -159,7 +159,7 @@ internal static class KnownIntegrations
                 .With("trust", false),
         },
 
-        new JsonIntegration("zed", "Zed", "Zed применит настройки автоматически; если сервер не появился — перезапустите Zed.")
+        new JsonIntegration("zed", "Zed", "Zed применит настройки автоматически; если сервер не появился — перезапустите Zed.") // l10n-key
         {
             Detect = ClientLocations.ZedInstalled,
             Targets = () => [Path.Combine(AppData, "Zed", "settings.json")],
@@ -168,7 +168,7 @@ internal static class KnownIntegrations
         },
 
         new JsonIntegration("visual-studio", "Visual Studio 2022/2026",
-            "Инструменты по умолчанию выключены — включите их в окне Tools (выбор инструментов) чата Copilot. Нужна версия 17.14 или новее.")
+            "Инструменты по умолчанию выключены — включите их в окне Tools (выбор инструментов) чата Copilot. Нужна версия 17.14 или новее.") // l10n-key
         {
             Detect = ClientLocations.VisualStudioInstalled,
             // Никогда не пишем сюда "mcpServers": этот же файл Claude Code читает как проектный .mcp.json.
@@ -177,7 +177,7 @@ internal static class KnownIntegrations
             Entry = spec => Basic(spec, "stdio"),
         },
 
-        new JsonIntegration("junie", "JetBrains Junie", "Перезапустите IDE JetBrains (или сессию Junie CLI).")
+        new JsonIntegration("junie", "JetBrains Junie", "Перезапустите IDE JetBrains (или сессию Junie CLI).") // l10n-key
         {
             Detect = () => ClientLocations.Dir(Path.Combine(Profile, ".junie")),
             Targets = () => [Path.Combine(Profile, ".junie", "mcp", "mcp.json")],
@@ -189,7 +189,7 @@ internal static class KnownIntegrations
 
         new ContinueIntegration(),
 
-        new JsonIntegration("kiro", "Kiro", "Kiro применит изменения сразу после сохранения файла.")
+        new JsonIntegration("kiro", "Kiro", "Kiro применит изменения сразу после сохранения файла.") // l10n-key
         {
             Detect = () => ClientLocations.Dir(Path.Combine(Profile, ".kiro")),
             Targets = () => [Path.Combine(Profile, ".kiro", "settings", "mcp.json")],
@@ -199,7 +199,7 @@ internal static class KnownIntegrations
                 .With("autoApprove", ReadOnlyTools()),
         },
 
-        new JsonIntegration("trae", "Trae", "Перезапустите Trae.")
+        new JsonIntegration("trae", "Trae", "Перезапустите Trae.") // l10n-key
         {
             Detect = () => ClientLocations.TraeTargets().Count > 0,
             Targets = ClientLocations.TraeTargets,

@@ -26,8 +26,8 @@ internal static class BackendAdvisor
     /// <summary>Архитектуры с готовым машинным кодом (SASS) в сборке CUDA 12.4.</summary>
     private static readonly Version[] Cuda12Native = [new(8, 6), new(8, 9)];
 
-    private const string IqNote =
-        "CUDA 13 не выбрана: в сборках CUDA 13.x замечены ошибки вычислений с IQ-квантами (llama.cpp #21255), а они есть во многих моделях каталога.";
+    private static string IqNote =>
+        L.T("CUDA 13 не выбрана: в сборках CUDA 13.x замечены ошибки вычислений с IQ-квантами (llama.cpp #21255), а они есть во многих моделях каталога.");
 
     public static BackendRecommendation Recommend(HardwareInfo hw)
     {
@@ -39,8 +39,8 @@ internal static class BackendAdvisor
         {
             if (nvidia.Count > 0 && driver is not null && driver >= MinDriverCuda13)
                 return new(LlamaBackend.Cuda13,
-                    $"Windows на ARM с видеокартой {nvidia[0].Name}: для ARM64 есть только сборка CUDA 13.");
-            return new(LlamaBackend.Cpu, "Windows на ARM: используется сборка llama.cpp для процессора ARM64.");
+                    L.F("Windows на ARM с видеокартой {0}: для ARM64 есть только сборка CUDA 13.", nvidia[0].Name));
+            return new(LlamaBackend.Cpu, L.T("Windows на ARM: используется сборка llama.cpp для процессора ARM64."));
         }
 
         var primary = hw.PrimaryGpu;
@@ -51,21 +51,21 @@ internal static class BackendAdvisor
         if (primary is null || !discrete)
         {
             return primary is null
-                ? new(LlamaBackend.Cpu, "Видеокарта не найдена — модель будет работать на процессоре.")
+                ? new(LlamaBackend.Cpu, L.T("Видеокарта не найдена — модель будет работать на процессоре."))
                 : new(LlamaBackend.Cpu,
-                    $"Найдена только встроенная графика ({primary.Name}) — модель будет работать на процессоре. " +
-                    "Сборку Vulkan можно выбрать вручную.");
+                    L.F("Найдена только встроенная графика ({0}) — модель будет работать на процессоре. Сборку Vulkan можно выбрать вручную.",
+                        primary.Name));
         }
 
         return primary.Vendor switch
         {
             GpuVendor.Amd => new(LlamaBackend.Vulkan,
-                $"Видеокарта AMD {Short(primary.Name)}: выбрана сборка Vulkan — работает с любым драйвером Radeon без дополнительных компонентов " +
-                "и надёжнее с вызовом инструментов (в сборке ROCm бывают сбои, llama.cpp #27612)." +
-                (IsRocmCapable(primary.Name) ? " Сборку AMD ROCm можно выбрать вручную." : "")),
+                L.F("Видеокарта AMD {0}: выбрана сборка Vulkan — работает с любым драйвером Radeon без дополнительных компонентов и надёжнее с вызовом инструментов (в сборке ROCm бывают сбои, llama.cpp #27612).",
+                    Short(primary.Name)) +
+                (IsRocmCapable(primary.Name) ? " " + L.T("Сборку AMD ROCm можно выбрать вручную.") : "")),
             GpuVendor.Intel => new(LlamaBackend.Vulkan,
-                $"Видеокарта Intel {Short(primary.Name)}: выбрана сборка Vulkan. Сборку Intel SYCL можно выбрать вручную."),
-            _ => new(LlamaBackend.Vulkan, $"Видеокарта {primary.Name}: выбрана универсальная сборка Vulkan."),
+                L.F("Видеокарта Intel {0}: выбрана сборка Vulkan. Сборку Intel SYCL можно выбрать вручную.", Short(primary.Name))),
+            _ => new(LlamaBackend.Vulkan, L.F("Видеокарта {0}: выбрана универсальная сборка Vulkan.", primary.Name)),
         };
     }
 
@@ -73,7 +73,7 @@ internal static class BackendAdvisor
     {
         var name = gpus[0].Name;
         var ccs = gpus.Select(ComputeCapability).ToList();
-        var drv = driver is null ? "неизвестен" : FormatDriver(driver);
+        var drv = driver is null ? L.T("неизвестен") : FormatDriver(driver);
 
         // Blackwell (sm_100/sm_120) есть только в сборке CUDA 13.
         if (ccs.Any(c => c is not null && c.Major >= 10))
@@ -81,35 +81,36 @@ internal static class BackendAdvisor
             var bw = gpus.First(g => ComputeCapability(g) is { Major: >= 10 }).Name;
             if (driver is null || driver >= MinDriverCuda13)
                 return new(LlamaBackend.Cuda13,
-                    $"Видеокарта {bw} (Blackwell) поддерживается только сборкой CUDA 13 (драйвер {drv}).");
+                    L.F("Видеокарта {0} (Blackwell) поддерживается только сборкой CUDA 13 (драйвер {1}).", bw, drv));
             return new(LlamaBackend.Vulkan,
-                $"Для видеокарты {bw} нужна сборка CUDA 13 и драйвер NVIDIA 580 или новее (установлен {drv}). " +
-                "Пока выбрана сборка Vulkan — обновите драйвер, чтобы получить максимальную скорость.");
+                L.F("Для видеокарты {0} нужна сборка CUDA 13 и драйвер NVIDIA 580 или новее (установлен {1}). Пока выбрана сборка Vulkan — обновите драйвер, чтобы получить максимальную скорость.",
+                    bw, drv));
         }
 
         if (ccs.Any(c => c is not null && c < new Version(5, 0)))
             return new(LlamaBackend.Vulkan,
-                $"Видеокарта {name} слишком старая для сборок CUDA (нужна архитектура Maxwell или новее) — выбрана сборка Vulkan.");
+                L.F("Видеокарта {0} слишком старая для сборок CUDA (нужна архитектура Maxwell или новее) — выбрана сборка Vulkan.", name));
 
         var allNative = ccs.All(c => c is not null && Cuda12Native.Contains(new Version(c.Major, c.Minor)));
         var need = allNative ? MinDriverCuda12Native : MinDriverCuda12Ptx;
 
         if (driver is null)
             return new(LlamaBackend.Cuda12,
-                $"Видеокарта {name}: выбрана сборка CUDA 12.4. Версию драйвера определить не удалось — нужен драйвер {FormatDriver(need)} или новее. {IqNote}");
+                L.F("Видеокарта {0}: выбрана сборка CUDA 12.4. Версию драйвера определить не удалось — нужен драйвер {1} или новее. {2}",
+                    name, FormatDriver(need), IqNote));
 
         if (driver < need)
             return new(LlamaBackend.Vulkan,
-                $"Драйвер NVIDIA {drv} слишком старый для сборки CUDA 12.4 (нужен {FormatDriver(need)} или новее) — выбрана сборка Vulkan. " +
-                "Обновите драйвер, чтобы получить максимальную скорость.");
+                L.F("Драйвер NVIDIA {0} слишком старый для сборки CUDA 12.4 (нужен {1} или новее) — выбрана сборка Vulkan. Обновите драйвер, чтобы получить максимальную скорость.",
+                    drv, FormatDriver(need)));
 
         var cc = ccs[0] is { } c0 ? $" (compute capability {c0.Major}.{c0.Minor})" : "";
         return allNative
             ? new(LlamaBackend.Cuda12,
-                $"Видеокарта {name}{cc}, драйвер {drv}: выбрана сборка CUDA 12.4 — в ней есть готовый код для этой карты. {IqNote}")
+                L.F("Видеокарта {0}{1}, драйвер {2}: выбрана сборка CUDA 12.4 — в ней есть готовый код для этой карты. {3}", name, cc, drv, IqNote))
             : new(LlamaBackend.Cuda12,
-                $"Видеокарта {name}{cc}, драйвер {drv}: выбрана сборка CUDA 12.4. Ядра для этой карты компилирует драйвер, " +
-                $"поэтому первый запуск может занять несколько минут. {IqNote}");
+                L.F("Видеокарта {0}{1}, драйвер {2}: выбрана сборка CUDA 12.4. Ядра для этой карты компилирует драйвер, поэтому первый запуск может занять несколько минут. {3}",
+                    name, cc, drv, IqNote));
     }
 
     public static IReadOnlyList<LlamaBackend> Available(HardwareInfo hw)
@@ -158,13 +159,13 @@ internal static class BackendAdvisor
 
     public static string DisplayName(LlamaBackend backend) => backend switch
     {
-        LlamaBackend.Auto => "Автовыбор",
+        LlamaBackend.Auto => L.T("Автовыбор"),
         LlamaBackend.Cuda12 => "NVIDIA CUDA 12.4",
-        LlamaBackend.Cuda13 => "NVIDIA CUDA 13 (для RTX 50xx)",
-        LlamaBackend.Vulkan => "Vulkan (любая видеокарта)",
+        LlamaBackend.Cuda13 => L.T("NVIDIA CUDA 13 (для RTX 50xx)"),
+        LlamaBackend.Vulkan => L.T("Vulkan (любая видеокарта)"),
         LlamaBackend.Rocm => "AMD ROCm (HIP)",
         LlamaBackend.Sycl => "Intel SYCL (oneAPI)",
-        LlamaBackend.Cpu => "Только процессор",
+        LlamaBackend.Cpu => L.T("Только процессор"),
         _ => backend.ToString(),
     };
 

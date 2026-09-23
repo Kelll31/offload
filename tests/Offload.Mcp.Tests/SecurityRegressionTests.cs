@@ -92,8 +92,71 @@ public class SecurityRegressionTests
         finally { File.Delete(external); }
     }
 
+    [Theory]
+    [InlineData("src/Auth", "src/Auth/Login.cs", true)]
+    [InlineData("src/Auth", "src/AuthX/Login.cs", false)]
+    [InlineData("src/Auth/", "src/Auth/Deep/X.cs", true)]
+    [InlineData("src/**/*.cs", "src/a/b.cs", true)]
+    [InlineData("src/**/*.cs", "src/a/b.json", false)]
+    [InlineData("./tests", "tests/X.cs", true)]
+    public void AllowedPaths_MatchFoldersFilesAndGlobs(string pattern, string path, bool expected)
+    {
+        var allowed = AgentTaskTool.CompileAllowed([pattern])!;
+        Assert.Equal(expected, allowed.Any(r => r.IsMatch(path)));
+    }
+
+    [Theory]
+    [InlineData("../outside")]
+    [InlineData("src/../../x")]
+    [InlineData("C:/Windows")]
+    public void AllowedPaths_RejectEscapes(string pattern) =>
+        Assert.Throws<ToolException>(() => AgentTaskTool.CompileAllowed([pattern]));
+
+    [Theory]
+    [InlineData(".git/config")]
+    [InlineData(".env")]
+    [InlineData("src/.env.local")]
+    [InlineData("keys/server.pem")]
+    public async Task ApplyPatch_RefusesGitInternalsAndSecrets(string target)
+    {
+        using var env = new TestEnv();
+        env.WriteFile("src/a.cs", "a\n");
+        var patch = $"--- /dev/null\n+++ b/{target}\n@@ -0,0 +1,1 @@\n+evil\n";
+        await Assert.ThrowsAsync<ToolException>(() =>
+            ApplyPatchTool.RunAsync(env.Context(), patch, null, dryRun: false, rollbackOnFailure: true, timeoutSec: 60));
+        Assert.False(File.Exists(env.PathOf(target)), "файл не должен быть создан");
+    }
+
     [Fact]
-    public void Revert_RefusesJobFromAnotherWorkspace_AndForceRecoversInterrupted()
+    public async Task Memory_RefusesSecrets_AndLivesOutsideWorkspace()
+    {
+        using var env = new TestEnv();
+        var ctx = env.Context();
+        Assert.Throws<ToolException>(() => MemoryTool.Run(ctx, "store", "deploy key is AKIA" + "ABCDEFGHIJKLMNOP", "fact", null, null, null, 10));
+        MemoryTool.Run(ctx, "store", "Tests use xUnit v3 on MTP", "convention", null, null, null, 10);
+        Assert.False(PathGuard.IsInside(MemoryTool.FileFor(env.Workspace), env.Workspace), "память не хранится в проекте");
+        Assert.True(File.Exists(MemoryTool.FileFor(env.Workspace)));
+        await Task.CompletedTask;
+    }
+
+    [Fact]
+    public async Task Merge_RefusesSandboxFromAnotherWorkspace()
+    {
+        using var env = new TestEnv();
+        var other = Path.Combine(Path.GetTempPath(), "pc-other-" + Guid.NewGuid().ToString("N")[..8]);
+        var job = JobStore.Create("local_agent_task", other, "t", null);
+        job.Sandbox = new SandboxInfo { RepoRoot = other, Branch = "offload/" + job.Id, BaseCommit = "0", HeadCommit = "1" };
+        job.Status = JobStatus.PendingMerge;
+        JobStore.Save(job);
+
+        var ex = await Assert.ThrowsAsync<ToolException>(() =>
+            JobTool.RunAsync(env.Context(), job.Id, "merge", 300, null, force: false, commit: true, waitSeconds: 0));
+        Assert.Contains("another workspace", ex.Message);
+        Assert.Equal(SandboxState.Pending, JobStore.Load(job.Id).Sandbox!.State);
+    }
+
+    [Fact]
+    public async Task Revert_RefusesJobFromAnotherWorkspace_AndForceRecoversInterrupted()
     {
         using var env = new TestEnv();
         var other = Path.Combine(Path.GetTempPath(), "pc-other-" + Guid.NewGuid().ToString("N")[..8]);
@@ -107,7 +170,7 @@ public class SecurityRegressionTests
             File.WriteAllText(file, "changed\n");
             // Задача «зависла» в running (процесс был убит).
             var ctx = env.Context();
-            var ex = Assert.Throws<ToolException>(() => JobTool.Run(ctx, job.Id, "revert", 300, null, force: true));
+            var ex = await Assert.ThrowsAsync<ToolException>(() => JobTool.RunAsync(ctx, job.Id, "revert", 300, null, force: true, commit: false, waitSeconds: 0));
             Assert.Contains("another workspace", ex.Message);
 
             Assert.False(JobStore.Revert(JobStore.Load(job.Id), force: false).Ok);

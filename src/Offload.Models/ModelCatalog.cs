@@ -81,8 +81,20 @@ public sealed record CatalogModel(
     /// <summary>Порядок в списке (меньше — выше).</summary>
     int Priority = 100,
     /// <summary>Всего слоёв (block_count из GGUF, включая MTP) — для оценки -ngl; 0 — неизвестно.</summary>
-    int BlockCount = 0)
+    int BlockCount = 0,
+    /// <summary>Описание на английском (для английского интерфейса); null — показывается русское.</summary>
+    string? DescriptionEn = null,
+    /// <summary>Название на английском, если русское содержит слова (например «минимальная»); null — как DisplayName.</summary>
+    string? DisplayNameEn = null)
 {
+    /// <summary>Описание на языке интерфейса.</summary>
+    [JsonIgnore]
+    public string LocalizedDescription => L.IsEnglish && !string.IsNullOrWhiteSpace(DescriptionEn) ? DescriptionEn : Description;
+
+    /// <summary>Название на языке интерфейса.</summary>
+    [JsonIgnore]
+    public string LocalizedDisplayName => L.IsEnglish && !string.IsNullOrWhiteSpace(DisplayNameEn) ? DisplayNameEn : DisplayName;
+
     /// <summary>Квантизация по умолчанию.</summary>
     public string DefaultQuant => Quants.Count > 0 ? Quants[0] : Files is { Count: > 0 } f ? f[0].Quant : "";
 
@@ -123,10 +135,22 @@ public static partial class ModelCatalog
     public static CatalogModel? Find(string id) =>
         All.FirstOrDefault(m => string.Equals(m.Id, id, StringComparison.OrdinalIgnoreCase));
 
+    /// <summary>
+    /// Название установленной модели на языке интерфейса: для модели из каталога с неизменённым названием —
+    /// перевод из каталога, иначе — название из настроек как есть.
+    /// </summary>
+    public static string NameOf(InstalledModel model)
+    {
+        var catalog = model.IsCustom ? null : Find(model.Id);
+        return catalog is not null && string.Equals(catalog.DisplayName, model.DisplayName, StringComparison.Ordinal)
+            ? catalog.LocalizedDisplayName
+            : model.DisplayName;
+    }
+
     private static IReadOnlyList<CatalogModel> LoadEmbedded()
     {
         using var stream = typeof(ModelCatalog).Assembly.GetManifestResourceStream(ResourceName)
-            ?? throw new InvalidOperationException("Встроенный каталог моделей не найден в сборке Offload.Models.");
+            ?? throw new InvalidOperationException(L.T("Встроенный каталог моделей не найден в сборке Offload.Models."));
         using var reader = new StreamReader(stream);
         return Parse(reader.ReadToEnd());
     }
@@ -141,9 +165,9 @@ public static partial class ModelCatalog
         }
         catch (JsonException ex)
         {
-            throw new InvalidDataException($"Каталог моделей повреждён: {ex.Message}", ex);
+            throw new InvalidDataException(L.F("Каталог моделей повреждён: {0}", ex.Message), ex);
         }
-        var models = doc?.Models ?? throw new InvalidDataException("Каталог моделей пуст.");
+        var models = doc?.Models ?? throw new InvalidDataException(L.T("Каталог моделей пуст."));
         Validate(models);
         // OrderBy устойчив: при равном Priority сохраняется порядок файла.
         return models.OrderBy(m => m.Priority).ToArray();
@@ -151,38 +175,38 @@ public static partial class ModelCatalog
 
     private static void Validate(IReadOnlyList<CatalogModel> models)
     {
-        if (models.Count == 0) throw new InvalidDataException("Каталог моделей пуст.");
+        if (models.Count == 0) throw new InvalidDataException(L.T("Каталог моделей пуст."));
         var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var m in models)
         {
-            string Err(string what) => $"Каталог моделей: у модели «{m.Id}» {what}.";
-            if (m is null) throw new InvalidDataException("Каталог моделей: пустая запись.");
-            if (string.IsNullOrWhiteSpace(m.Id)) throw new InvalidDataException("Каталог моделей: запись без id.");
-            if (!ids.Add(m.Id)) throw new InvalidDataException(Err("повторяющийся id"));
-            if (string.IsNullOrWhiteSpace(m.DisplayName)) throw new InvalidDataException(Err("нет названия"));
-            if (string.IsNullOrWhiteSpace(m.Repo) || m.Repo.Count(c => c == '/') != 1) throw new InvalidDataException(Err("неверный репозиторий"));
-            if (m.Revision is not null && !Sha1Regex().IsMatch(m.Revision)) throw new InvalidDataException(Err("неверная ревизия"));
-            if (m.Quants is not { Count: > 0 }) throw new InvalidDataException(Err("нет квантизаций"));
-            if (m.Files is not { Count: > 0 }) throw new InvalidDataException(Err("нет файлов"));
-            if (m.Kv is null || m.Kv.Layers <= 0 || m.Kv.KvHeads <= 0 || m.Kv.HeadDim <= 0) throw new InvalidDataException(Err("неверные параметры KV-кэша"));
-            if (m.Sampling is null) throw new InvalidDataException(Err("нет параметров сэмплирования"));
-            if (m.NativeContext <= 0 || m.DefaultContext <= 0 || m.DefaultContext > m.NativeContext) throw new InvalidDataException(Err("неверный контекст"));
-            if (m.IsMoe && (m.Moe is null || m.Moe.MoeLayers <= 0 || m.Moe.ExpertBytesPerLayer <= 0)) throw new InvalidDataException(Err("нет раскладки MoE"));
+            string Err(string what) => L.F("Каталог моделей: у модели «{0}» {1}.", m.Id, what);
+            if (m is null) throw new InvalidDataException(L.T("Каталог моделей: пустая запись."));
+            if (string.IsNullOrWhiteSpace(m.Id)) throw new InvalidDataException(L.T("Каталог моделей: запись без id."));
+            if (!ids.Add(m.Id)) throw new InvalidDataException(Err(L.T("повторяющийся id")));
+            if (string.IsNullOrWhiteSpace(m.DisplayName)) throw new InvalidDataException(Err(L.T("нет названия")));
+            if (string.IsNullOrWhiteSpace(m.Repo) || m.Repo.Count(c => c == '/') != 1) throw new InvalidDataException(Err(L.T("неверный репозиторий")));
+            if (m.Revision is not null && !Sha1Regex().IsMatch(m.Revision)) throw new InvalidDataException(Err(L.T("неверная ревизия")));
+            if (m.Quants is not { Count: > 0 }) throw new InvalidDataException(Err(L.T("нет квантизаций")));
+            if (m.Files is not { Count: > 0 }) throw new InvalidDataException(Err(L.T("нет файлов")));
+            if (m.Kv is null || m.Kv.Layers <= 0 || m.Kv.KvHeads <= 0 || m.Kv.HeadDim <= 0) throw new InvalidDataException(Err(L.T("неверные параметры KV-кэша")));
+            if (m.Sampling is null) throw new InvalidDataException(Err(L.T("нет параметров сэмплирования")));
+            if (m.NativeContext <= 0 || m.DefaultContext <= 0 || m.DefaultContext > m.NativeContext) throw new InvalidDataException(Err(L.T("неверный контекст")));
+            if (m.IsMoe && (m.Moe is null || m.Moe.MoeLayers <= 0 || m.Moe.ExpertBytesPerLayer <= 0)) throw new InvalidDataException(Err(L.T("нет раскладки MoE")));
             foreach (var f in m.Files)
             {
                 if (f is null || string.IsNullOrWhiteSpace(f.Quant) || string.IsNullOrWhiteSpace(f.Path) || f.Size <= 0)
-                    throw new InvalidDataException(Err("неполное описание файла"));
+                    throw new InvalidDataException(Err(L.T("неполное описание файла")));
                 if (!f.Path.EndsWith(".gguf", StringComparison.OrdinalIgnoreCase) || f.Path.Contains("..") || f.Path.StartsWith('/'))
-                    throw new InvalidDataException(Err($"недопустимый путь файла {f.Path}"));
+                    throw new InvalidDataException(Err(L.F("недопустимый путь файла {0}", f.Path)));
                 if (f.Sha256 is not null && !Sha256Regex().IsMatch(f.Sha256))
-                    throw new InvalidDataException(Err($"неверный SHA-256 файла {f.Path}"));
+                    throw new InvalidDataException(Err(L.F("неверный SHA-256 файла {0}", f.Path)));
             }
             if (m.Files.GroupBy(f => f.Quant, StringComparer.OrdinalIgnoreCase).Any(g => g.Count() > 1))
-                throw new InvalidDataException(Err("повторяющаяся квантизация"));
+                throw new InvalidDataException(Err(L.T("повторяющаяся квантизация")));
             if (m.Quants.FirstOrDefault(q => m.FindFile(q) is null) is { } noFile)
-                throw new InvalidDataException(Err($"нет файла для квантизации {noFile}"));
-            if (m.FindFile(m.DefaultQuant) is not { } def) throw new InvalidDataException(Err("нет файла квантизации по умолчанию"));
-            if (m.ApproxSizeBytes != def.Size) throw new InvalidDataException(Err("размер не совпадает с файлом по умолчанию"));
+                throw new InvalidDataException(Err(L.F("нет файла для квантизации {0}", noFile)));
+            if (m.FindFile(m.DefaultQuant) is not { } def) throw new InvalidDataException(Err(L.T("нет файла квантизации по умолчанию")));
+            if (m.ApproxSizeBytes != def.Size) throw new InvalidDataException(Err(L.T("размер не совпадает с файлом по умолчанию")));
         }
     }
 

@@ -21,17 +21,22 @@ internal sealed class SetupWizardForm : Form
     private int _index = -1;
     private bool _closeWhenStopped;
     private bool _finishing;
+    private bool _reopening;
+
+    /// <summary>Положение окна для мастера, открываемого заново после смены языка (одноразово).</summary>
+    private static (Rectangle Bounds, FormWindowState State)? _reopenPlacement;
 
     public SetupWizardForm(IAppShell shell)
     {
         _shell = shell;
         SuspendLayout();
-        Text = "Мастер настройки Offload";
+        Text = L.T("Мастер настройки Offload");
         Icon = AppIcons.AppIcon;
-        StartPosition = FormStartPosition.CenterScreen;
+        StartPosition = _reopenPlacement is null ? FormStartPosition.CenterScreen : FormStartPosition.Manual;
         ClientSize = new Size(920, 660);
         MinimumSize = new Size(820, 600);
-        BackColor = Theme.Surface;
+        BackColor = Theme.Card;
+        ForeColor = Theme.TextPrimary;
         ShowInTaskbar = true;
         MaximizeBox = true;
 
@@ -54,9 +59,9 @@ internal sealed class SetupWizardForm : Form
             if (_index == _steps.IndexOf(install)) Go(_index + 1);
         };
 
-        _back = Kit.Button("< Назад", (_, _) => Go(_index - 1));
-        _next = Kit.Primary("Далее >", (_, _) => Next());
-        _cancel = Kit.Button("Отмена", (_, _) => Close());
+        _back = Kit.Button(L.T("< Назад"), (_, _) => Go(_index - 1));
+        _next = Kit.Primary(L.T("Далее >"), (_, _) => Next());
+        _cancel = Kit.Button(L.T("Отмена"), (_, _) => Close());
         _back.Margin = new Padding(8, 0, 0, 0);
         _next.Margin = new Padding(8, 0, 0, 0);
         _cancel.Margin = new Padding(16, 0, 0, 0);
@@ -65,7 +70,7 @@ internal sealed class SetupWizardForm : Form
         var sidebar = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            BackColor = Theme.Sidebar,
+            BackColor = Theme.Surface,
             Padding = new Padding(20, 20, 12, 20),
             Margin = Padding.Empty,
             ColumnCount = 1,
@@ -99,7 +104,7 @@ internal sealed class SetupWizardForm : Form
         _subtitle.Margin = new Padding(0, 2, 0, 0);
         header.AddRow(_subtitle);
 
-        _host = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty, Padding = Padding.Empty, BackColor = Theme.Surface };
+        _host = new Panel { Dock = DockStyle.Fill, Margin = Padding.Empty, Padding = Padding.Empty, BackColor = Theme.Card };
         foreach (var s in _steps)
         {
             s.NavigationChanged += (_, _) =>
@@ -118,13 +123,13 @@ internal sealed class SetupWizardForm : Form
             WrapContents = false,
             Padding = new Padding(24, 12, 24, 14),
             Margin = Padding.Empty,
-            BackColor = Theme.SurfaceAlt,
+            BackColor = Theme.Surface,
         };
         buttons.Controls.Add(_cancel);
         buttons.Controls.Add(_next);
         buttons.Controls.Add(_back);
 
-        var content = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, Margin = Padding.Empty, Padding = Padding.Empty };
+        var content = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, Margin = Padding.Empty, Padding = Padding.Empty, BackColor = Theme.Card };
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         content.AddRow(header);
         content.AddFillRow(_host);
@@ -151,6 +156,49 @@ internal sealed class SetupWizardForm : Form
 
     /// <summary>Идёт установка (для подтверждения выхода из программы).</summary>
     public bool IsInstalling => _steps.Any(s => s.IsRunning);
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        Theme.ApplyWindowFrame(this);
+    }
+
+    protected override void OnLoad(EventArgs e)
+    {
+        base.OnLoad(e);
+        if (_reopenPlacement is { } placement)
+        {
+            _reopenPlacement = null;
+            Bounds = placement.Bounds;
+            WindowState = placement.State;
+        }
+    }
+
+    /// <summary>
+    /// Открыть мастер заново (после смены языка): закрыть без вопросов, перевести главное окно и меню трея
+    /// и показать новый мастер на том же месте. Во время установки не выполняется.
+    /// </summary>
+    public void Reopen(bool applyAppearance = true)
+    {
+        if (IsInstalling || _reopening || IsDisposed) return;
+        _reopening = true;
+        _reopenPlacement = (WindowState == FormWindowState.Normal ? Bounds : RestoreBounds,
+            WindowState == FormWindowState.Maximized ? FormWindowState.Maximized : FormWindowState.Normal);
+        var shell = _shell;
+        // Отложенно: обработчик выбора в списке ещё выполняется, а закрытие освобождает его элемент.
+        shell.PostToUi(() =>
+        {
+            Close();
+            try
+            {
+                if (applyAppearance) shell.ApplyAppearance();
+            }
+            finally
+            {
+                shell.ShowSetupWizard();
+            }
+        });
+    }
 
     protected override void OnShown(EventArgs e)
     {
@@ -189,7 +237,7 @@ internal sealed class SetupWizardForm : Form
         catch (Exception ex)
         {
             Log.Error("wizard", $"Шаг «{step.Title}»", ex);
-            Ui.ShowError(this, $"Ошибка на шаге «{step.Title}»", ex);
+            Ui.ShowError(this, L.F("Ошибка на шаге «{0}»", step.Title), ex);
         }
         UpdateNavigation();
         // Фокус на «Далее», чтобы Enter переходил дальше.
@@ -206,7 +254,7 @@ internal sealed class SetupWizardForm : Form
         _back.Enabled = _index > 0 && step.CanGoBack;
         _back.Visible = step != _done;
         _next.Enabled = step.CanGoNext;
-        _next.Text = step == _done ? "Готово" : step.NextText == "Далее" ? "Далее >" : step.NextText;
+        _next.Text = step == _done ? L.T("Готово") : step.NextText == L.T("Далее") ? L.T("Далее >") : step.NextText;
         _cancel.Visible = step != _done;
 
         for (var i = 0; i < _stepLabels.Count; i++)
@@ -244,7 +292,7 @@ internal sealed class SetupWizardForm : Form
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
-        if (_finishing || e.CloseReason is CloseReason.ApplicationExitCall or CloseReason.WindowsShutDown or CloseReason.TaskManagerClosing)
+        if (_finishing || _reopening || e.CloseReason is CloseReason.ApplicationExitCall or CloseReason.WindowsShutDown or CloseReason.TaskManagerClosing)
         {
             if (IsInstalling) foreach (var s in _steps) s.CancelRunning();
             base.OnFormClosing(e);
@@ -255,7 +303,7 @@ internal sealed class SetupWizardForm : Form
         {
             e.Cancel = true;
             if (_closeWhenStopped) return;
-            if (!Ui.Confirm(this, "Прервать установку? Уже скачанные файлы сохранятся, и установку можно будет продолжить позже.", warning: true)) return;
+            if (!Ui.Confirm(this, L.T("Прервать установку? Уже скачанные файлы сохранятся, и установку можно будет продолжить позже."), warning: true)) return;
             _closeWhenStopped = true;
             foreach (var s in _steps) s.CancelRunning();
             _ = CloseWhenStoppedAsync();
@@ -263,7 +311,7 @@ internal sealed class SetupWizardForm : Form
         }
 
         if (Current != _done && !_closeWhenStopped &&
-            !Ui.Confirm(this, "Прервать настройку? Мастер можно открыть снова из меню значка Offload в области уведомлений."))
+            !Ui.Confirm(this, L.T("Прервать настройку? Мастер можно открыть снова из меню значка Offload в области уведомлений.")))
         {
             e.Cancel = true;
             return;
@@ -280,8 +328,8 @@ internal sealed class SetupWizardForm : Form
     protected override void OnFormClosed(FormClosedEventArgs e)
     {
         base.OnFormClosed(e);
-        if (!ConfigStore.Current.SetupCompleted)
-            _shell.Notify("Настройка Offload не завершена", "Продолжить можно из меню значка: «Мастер настройки…».", ToolTipIcon.Warning);
+        if (!ConfigStore.Current.SetupCompleted && !_reopening)
+            _shell.Notify(L.T("Настройка Offload не завершена"), L.T("Продолжить можно из меню значка: «Мастер настройки…»."), ToolTipIcon.Warning);
         _shell.ConfigChanged();
     }
 }

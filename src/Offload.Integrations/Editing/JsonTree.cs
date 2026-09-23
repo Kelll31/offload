@@ -180,7 +180,7 @@ internal static class JsonTree
     public static JsonNode ApplySet(JsonNode? root, IReadOnlyList<string> path, JsonNode? value)
     {
         root ??= new JsonObject();
-        if (root is not JsonObject cur) throw new JsoncEditException("корень файла не является объектом");
+        if (root is not JsonObject cur) throw new JsoncEditException(L.T("корень файла не является объектом"));
         for (var i = 0; i < path.Count - 1; i++)
         {
             if (!cur.TryGetPropertyValue(path[i], out var child) || child is null)
@@ -188,7 +188,7 @@ internal static class JsonTree
                 child = new JsonObject();
                 cur[path[i]] = child;
             }
-            if (child is not JsonObject next) throw new JsoncEditException($"«{path[i]}» не является объектом");
+            if (child is not JsonObject next) throw new JsoncEditException(L.F("«{0}» не является объектом", path[i]));
             cur = next;
         }
         cur[path[^1]] = value?.DeepClone();

@@ -157,11 +157,11 @@ public static class HardwareDetector
         try
         {
             using var k = Registry.LocalMachine.OpenSubKey(@"HARDWARE\DESCRIPTION\System\CentralProcessor\0");
-            return (k?.GetValue("ProcessorNameString") as string)?.Trim() ?? "Неизвестный процессор";
+            return (k?.GetValue("ProcessorNameString") as string)?.Trim() ?? L.T("Неизвестный процессор");
         }
         catch
         {
-            return "Неизвестный процессор";
+            return L.T("Неизвестный процессор");
         }
     }
 

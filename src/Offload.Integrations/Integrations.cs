@@ -158,10 +158,10 @@ public static class ClaudeCodeExtras
 
     /// <summary>Установить инструкции (файлы в ~/.claude), объясняющие Claude, когда делегировать задачи Offload.</summary>
     public static IntegrationResult InstallGuidance() =>
-        ClaudeExtrasImpl.InstallManaged(ClaudeExtrasImpl.SkillFile, ClaudeTexts.Skill(), "навык /offload");
+        ClaudeExtrasImpl.InstallManaged(ClaudeExtrasImpl.SkillFile, ClaudeTexts.Skill(), L.T("навык /offload"));
 
     public static IntegrationResult RemoveGuidance() =>
-        ClaudeExtrasImpl.RemoveManaged(ClaudeExtrasImpl.SkillFile, "навык /offload", deleteEmptyDir: true);
+        ClaudeExtrasImpl.RemoveManaged(ClaudeExtrasImpl.SkillFile, L.T("навык /offload"), deleteEmptyDir: true);
 
     /// <summary>Разрешены ли инструменты Offload без подтверждения (~/.claude/settings.json permissions.allow).</summary>
     public static bool AreToolsPreapproved() => ClaudeExtrasImpl.AllPresent(McpToolNames.ReadOnly);
@@ -178,17 +178,17 @@ public static class ClaudeCodeExtras
     public static bool IsStrongRuleInstalled() => ClaudeExtrasImpl.IsManagedFile(ClaudeExtrasImpl.RuleFile);
 
     public static IntegrationResult InstallStrongRule() =>
-        ClaudeExtrasImpl.InstallManaged(ClaudeExtrasImpl.RuleFile, ClaudeTexts.StrongRule(), "правило «строгого режима»");
+        ClaudeExtrasImpl.InstallManaged(ClaudeExtrasImpl.RuleFile, ClaudeTexts.StrongRule(), L.T("правило «строгого режима»"));
 
     public static IntegrationResult RemoveStrongRule() =>
-        ClaudeExtrasImpl.RemoveManaged(ClaudeExtrasImpl.RuleFile, "правило «строгого режима»", deleteEmptyDir: false);
+        ClaudeExtrasImpl.RemoveManaged(ClaudeExtrasImpl.RuleFile, L.T("правило «строгого режима»"), deleteEmptyDir: false);
 
     /// <summary>Субагент ~/.claude/agents/offload-runner.md (Haiku) для пакетных механических задач через локальную модель.</summary>
     public static bool IsRunnerAgentInstalled() => ClaudeExtrasImpl.IsManagedFile(ClaudeExtrasImpl.AgentFile);
 
     public static IntegrationResult InstallRunnerAgent() =>
-        ClaudeExtrasImpl.InstallManaged(ClaudeExtrasImpl.AgentFile, ClaudeTexts.RunnerAgent(), "субагент offload-runner");
+        ClaudeExtrasImpl.InstallManaged(ClaudeExtrasImpl.AgentFile, ClaudeTexts.RunnerAgent(), L.T("субагент offload-runner"));
 
     public static IntegrationResult RemoveRunnerAgent() =>
-        ClaudeExtrasImpl.RemoveManaged(ClaudeExtrasImpl.AgentFile, "субагент offload-runner", deleteEmptyDir: false);
+        ClaudeExtrasImpl.RemoveManaged(ClaudeExtrasImpl.AgentFile, L.T("субагент offload-runner"), deleteEmptyDir: false);
 }

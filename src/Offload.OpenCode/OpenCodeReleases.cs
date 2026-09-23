@@ -90,7 +90,7 @@ internal static class OpenCodeReleases
 
         // Лимит API при живой сети — пробуем «плавающую» ссылку releases/latest/download.
         if (apiError is OpenCodeRateLimitException) return FallbackRelease(null);
-        throw new InvalidOperationException($"Не удалось получить сведения о релизах OpenCode: {Describe(apiError)}", apiError);
+        throw new InvalidOperationException(L.F("Не удалось получить сведения о релизах OpenCode: {0}", Describe(apiError)), apiError);
     }
 
     /// <summary>Релиз без API: прямые ссылки на файлы (без размера и контрольной суммы).</summary>
@@ -138,7 +138,7 @@ internal static class OpenCodeReleases
         using var doc = JsonDocument.Parse(json);
         var e = doc.RootElement;
         var tag = e.TryGetProperty("tag_name", out var t) && t.ValueKind == JsonValueKind.String ? t.GetString() : null;
-        if (string.IsNullOrWhiteSpace(tag)) throw new InvalidDataException("В ответе GitHub нет tag_name.");
+        if (string.IsNullOrWhiteSpace(tag)) throw new InvalidDataException(L.T("В ответе GitHub нет tag_name."));
 
         var assets = new List<OpenCodeAsset>();
         if (e.TryGetProperty("assets", out var arr) && arr.ValueKind == JsonValueKind.Array)
@@ -200,8 +200,8 @@ internal static class OpenCodeReleases
                 ? DateTimeOffset.FromUnixTimeSeconds(unix).ToLocalTime()
                 : (DateTimeOffset?)null;
             throw new OpenCodeRateLimitException(reset is null
-                ? "превышен лимит запросов к GitHub API (60 в час). Повторите попытку позже."
-                : $"превышен лимит запросов к GitHub API (60 в час). Повторите попытку после {reset:HH:mm}.");
+                ? L.T("превышен лимит запросов к GitHub API (60 в час). Повторите попытку позже.")
+                : L.F("превышен лимит запросов к GitHub API (60 в час). Повторите попытку после {0:HH:mm}.", reset));
         }
         resp.EnsureSuccessStatusCode();
         return await resp.Content.ReadAsStringAsync(ct);
@@ -210,9 +210,9 @@ internal static class OpenCodeReleases
     internal static string Describe(Exception ex) => ex switch
     {
         OpenCodeRateLimitException => ex.Message,
-        HttpRequestException { StatusCode: null } => "нет подключения к GitHub. Проверьте интернет и повторите попытку.",
-        HttpRequestException h => $"GitHub ответил ошибкой {(int)h.StatusCode!}.",
-        TaskCanceledException => "GitHub не ответил вовремя. Повторите попытку позже.",
+        HttpRequestException { StatusCode: null } => L.T("нет подключения к GitHub. Проверьте интернет и повторите попытку."),
+        HttpRequestException h => L.F("GitHub ответил ошибкой {0}.", (int)h.StatusCode!),
+        TaskCanceledException => L.T("GitHub не ответил вовремя. Повторите попытку позже."),
         _ => ex.Message,
     };
 }

@@ -81,6 +81,9 @@ public class PathGuardTests
         Assert.Throws<ToolException>(() => PathGuard.CheckWrite(Path.Combine(env.Workspace, ".mcp.json"), roots, true, Secrets, "x"));
         Assert.Throws<ToolException>(() => PathGuard.CheckWrite(Path.Combine(env.Workspace, "CLAUDE.md"), roots, true, Secrets, "x"));
         Assert.Throws<ToolException>(() => PathGuard.CheckWrite(Path.Combine(env.Workspace, ".github", "workflows", "ci.yml"), roots, true, Secrets, "x"));
+        // Остальные точки исполнения: CI, git-хуки менеджеров, dev-контейнер, конфигурации запуска IDE.
+        foreach (var rel in new[] { ".gitlab-ci.yml", ".pre-commit-config.yaml", "lefthook.yml", ".github/actions/setup/action.yml", ".devcontainer/devcontainer.json", ".idea/runConfigurations/x.xml", ".github/copilot-instructions.md" })
+            Assert.Throws<ToolException>(() => PathGuard.CheckWrite(Path.Combine(env.Workspace, rel.Replace('/', '\\')), roots, true, Secrets, rel));
         Assert.Throws<ToolException>(() => PathGuard.CheckWrite(Path.Combine(env.Workspace, "config", ".env"), roots, true, Secrets, "x"));
         Assert.Throws<ToolException>(() => PathGuard.CheckWrite(env.Workspace, roots, true, Secrets, "."));
         // Без ограничения рабочей папкой запись снаружи разрешена (но секреты — нет).
@@ -226,6 +229,32 @@ public class VerifyCommandTests
     [InlineData("make", "make", true)]
     [InlineData("make install", "make", false)]
     public void Patterns(string cmd, string pattern, bool match) => Assert.Equal(match, VerifyCommand.MatchesPattern(cmd, pattern));
+
+    // Проверки форматирования разрешены только в режиме «без записи».
+    [Theory]
+    [InlineData("dotnet format --verify-no-changes", true)]
+    [InlineData("dotnet format --verify-no-changes Offload.slnx", true)]
+    [InlineData("dotnet format", false)]
+    [InlineData("dotnet format Offload.slnx", false)]
+    [InlineData("cargo fmt --check", true)]
+    [InlineData("cargo fmt", false)]
+    [InlineData("npx prettier --check .", true)]
+    [InlineData("npx prettier --write .", false)]
+    [InlineData("npx eslint .", true)]
+    [InlineData("npx eslint-evil", false)]
+    [InlineData("npx eslint --fix .", false)]
+    [InlineData("npx eslint -o report.json .", false)]
+    [InlineData("npx eslint --output-file report.json .", false)]
+    [InlineData("npx eslint --rulesdir rules .", false)]
+    [InlineData("npx prettier --check --write .", false)]
+    [InlineData("npx prettier --check -w .", false)]
+    [InlineData("ruff check --fix .", false)]
+    [InlineData("cargo clippy --fix", false)]
+    public void FormatAndLintDefaults(string cmd, bool allowed)
+    {
+        if (allowed) Assert.Equal(cmd, VerifyCommand.Validate(cmd, Allow));
+        else Assert.Throws<ToolException>(() => VerifyCommand.Validate(cmd, Allow));
+    }
 
     [Fact]
     public async Task Run_CapturesExitCodeAndOutput()

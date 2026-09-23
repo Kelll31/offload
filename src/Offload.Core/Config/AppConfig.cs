@@ -225,6 +225,8 @@ public sealed class McpSettings
         "cargo build*", "cargo test*", "cargo check*", "cargo clippy*", "go build*", "go test*", "go vet*",
         "mvn test*", "mvn -q test*", "gradle test*", "gradlew test*", "gradlew.bat test*", "make test*", "make",
         "dcc32 *", "dcc64 *", "msbuild.exe *", "cmake --build *", "ctest*",
+        // Проверки форматирования/линтеры без записи файлов (local_verify kind=lint/format).
+        "dotnet format --verify-no-changes*", "cargo fmt --check*", "npx prettier --check*", "npx eslint*",
     ];
 
     /// <summary>Файлы, которые сервер никогда не читает и не изменяет (секреты).</summary>
@@ -243,4 +245,19 @@ public sealed class UiSettings
     public bool StartWithWindows { get; set; } = true;
     public bool ShowNotifications { get; set; } = true;
     public bool MinimizeToTrayOnClose { get; set; } = true;
+
+    /// <summary>Тема интерфейса: "system" (как в Windows), "light" или "dark".</summary>
+    public string Theme { get; set; } = "system";
+
+    /// <summary>Боковая панель навигации свёрнута до значков.</summary>
+    public bool NavCollapsed { get; set; }
+
+    /// <summary>Цветовая схема: default, teal, green, purple, orange, pink, midnight, contrast или custom (свой акцент).</summary>
+    public string ThemePreset { get; set; } = "default";
+
+    /// <summary>Свой акцентный цвет «#RRGGBB» (для ThemePreset = custom).</summary>
+    public string? AccentColor { get; set; }
+
+    /// <summary>Язык интерфейса: ru, en или system (по языку Windows).</summary>
+    public string Language { get; set; } = "ru";
 }

@@ -71,6 +71,28 @@ public class CatalogTests
         }
     }
 
+    [Fact]
+    public void EveryModel_HasEnglishTexts()
+    {
+        var cyr = new Regex("[А-Яа-яЁё]");
+        foreach (var m in ModelCatalog.All)
+        {
+            Assert.False(string.IsNullOrWhiteSpace(m.DescriptionEn), $"{m.Id}: нет descriptionEn");
+            Assert.DoesNotMatch(cyr, m.DescriptionEn!);
+            Assert.Contains("License", m.DescriptionEn);
+            Assert.InRange(m.DescriptionEn!.Length, 100, 800);
+            // Русские слова в названии («минимальная», «ГБ») требуют английского варианта.
+            if (cyr.IsMatch(m.DisplayName))
+            {
+                Assert.False(string.IsNullOrWhiteSpace(m.DisplayNameEn), $"{m.Id}: нет displayNameEn");
+                Assert.DoesNotMatch(cyr, m.DisplayNameEn!);
+            }
+            // Язык по умолчанию — русский: показываются исходные тексты.
+            Assert.Equal(m.Description, m.LocalizedDescription);
+            Assert.Equal(m.DisplayName, m.LocalizedDisplayName);
+        }
+    }
+
     /// <summary>Байт KV-кэша на токен (fp16) — таблица из исследования (раздел 4).</summary>
     [Theory]
     [InlineData("qwen3.6-35b-a3b-q4", 20480, 63)]

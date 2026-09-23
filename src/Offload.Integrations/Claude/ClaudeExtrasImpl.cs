@@ -17,7 +17,7 @@ internal static class ClaudeExtrasImpl
     public static string SettingsFile => ClientLocations.ClaudeSettings;
 
     private static IntegrationResult NotInstalled() =>
-        new(false, "Claude Code не найден на этом компьютере (нет папки ~/.claude и файла ~/.claude.json).");
+        new(false, L.T("Claude Code не найден на этом компьютере (нет папки ~/.claude и файла ~/.claude.json)."));
 
     // ---------------------------------------------------------------- файлы с меткой
 
@@ -39,21 +39,21 @@ internal static class ClaudeExtrasImpl
         try
         {
             if (File.Exists(path) && !IsManagedFile(path))
-                return new IntegrationResult(false, $"Файл {path} уже существует и создан не Offload — он не изменён. Переименуйте или удалите его, чтобы установить {what}.");
+                return new IntegrationResult(false, L.F("Файл {0} уже существует и создан не Offload — он не изменён. Переименуйте или удалите его, чтобы установить {1}.", path, what));
             Directory.CreateDirectory(Path.GetDirectoryName(path)!);
             var res = ConfigFile.Edit(path, snap =>
             {
                 if (snap.Exists && !snap.Text.Contains(ClaudeTexts.Marker, StringComparison.Ordinal))
-                    throw new IOException("файл был создан другой программой");
+                    throw new IOException(L.T("файл был создан другой программой"));
                 return snap.Exists && snap.Text == content ? null : content;
             });
             return new IntegrationResult(true,
-                res.Outcome == WriteOutcome.Unchanged ? $"Claude Code: {what} уже установлен ({path})." : $"Claude Code: {what} установлен ({path}).",
+                res.Outcome == WriteOutcome.Unchanged ? L.F("Claude Code: {0} уже установлен ({1}).", what, path) : L.F("Claude Code: {0} установлен ({1}).", what, path),
                 res.BackupPath);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ConfigReadException)
         {
-            return new IntegrationResult(false, $"Не удалось записать {path}: {ex.Message}");
+            return new IntegrationResult(false, L.F("Не удалось записать {0}: {1}", path, ex.Message));
         }
     }
 
@@ -61,9 +61,9 @@ internal static class ClaudeExtrasImpl
     {
         try
         {
-            if (!File.Exists(path)) return new IntegrationResult(true, $"Claude Code: {what} не был установлен.");
+            if (!File.Exists(path)) return new IntegrationResult(true, L.F("Claude Code: {0} не был установлен.", what));
             if (!IsManagedFile(path))
-                return new IntegrationResult(false, $"Файл {path} создан не Offload — он оставлен без изменений.");
+                return new IntegrationResult(false, L.F("Файл {0} создан не Offload — он оставлен без изменений.", path));
             var snap = ConfigFile.Read(path);
             File.Delete(snap.Path);
             Log.Info("Integrations", $"Удалён файл {path}");
@@ -72,11 +72,11 @@ internal static class ClaudeExtrasImpl
                 var dir = Path.GetDirectoryName(path)!;
                 if (Directory.Exists(dir) && !Directory.EnumerateFileSystemEntries(dir).Any()) Directory.Delete(dir);
             }
-            return new IntegrationResult(true, $"Claude Code: {what} удалён.");
+            return new IntegrationResult(true, L.F("Claude Code: {0} удалён.", what));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ConfigReadException)
         {
-            return new IntegrationResult(false, $"Не удалось удалить {path}: {ex.Message}");
+            return new IntegrationResult(false, L.F("Не удалось удалить {0}: {1}", path, ex.Message));
         }
     }
 
@@ -107,11 +107,11 @@ internal static class ClaudeExtrasImpl
     private static void ValidateSettings(JsoncEditor ed)
     {
         if (ed.IsEmpty) return;
-        if (ed.KindAt([]) != JsoncKind.Object) throw new JsoncEditException("корень файла не является объектом JSON");
+        if (ed.KindAt([]) != JsoncKind.Object) throw new JsoncEditException(L.T("корень файла не является объектом JSON"));
         if (ed.KindAt(["permissions"]) is not null and not JsoncKind.Object and not JsoncKind.Null)
-            throw new JsoncEditException("«permissions» не является объектом");
+            throw new JsoncEditException(L.T("«permissions» не является объектом"));
         if (ed.KindAt(AllowPath) is not null and not JsoncKind.Array and not JsoncKind.Null)
-            throw new JsoncEditException("«permissions.allow» не является массивом");
+            throw new JsoncEditException(L.T("«permissions.allow» не является массивом"));
     }
 
     /// <summary>Привести наши явные имена в permissions.allow к набору <paramref name="wanted"/> (чужие правила не трогаем).</summary>
@@ -142,17 +142,17 @@ internal static class ClaudeExtrasImpl
             var allow = ReadAllow();
             var server = $"mcp__{AppInfo.McpServerId}";
             if (allow is not null && (allow.Contains(server) || allow.Contains(server + "__*")))
-                msg += $" Внимание: в настройках есть общее правило «{server}» (добавлено не Offload) — оно разрешает все инструменты сервера и оставлено без изменений.";
+                msg += " " + L.F("Внимание: в настройках есть общее правило «{0}» (добавлено не Offload) — оно разрешает все инструменты сервера и оставлено без изменений.", server);
             return new IntegrationResult(true, msg, res.BackupPath);
         }
         catch (Exception ex) when (ex is JsoncParseException or ConfigReadException or JsoncEditException)
         {
             return new IntegrationResult(false,
-                $"Не удалось разобрать файл {path}: {ex.Message}. Файл не изменён — исправьте ошибку в нём вручную и повторите.");
+                L.F("Не удалось разобрать файл {0}: {1}. Файл не изменён — исправьте ошибку в нём вручную и повторите.", path, ex.Message));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            return new IntegrationResult(false, $"Не удалось записать файл {path}: {ex.Message}");
+            return new IntegrationResult(false, L.F("Не удалось записать файл {0}: {1}", path, ex.Message));
         }
     }
 
@@ -161,10 +161,10 @@ internal static class ClaudeExtrasImpl
         if (!ClientLocations.ClaudeCodeInstalled()) return NotInstalled();
         IReadOnlyList<string> wanted = includeWriteTools ? McpToolNames.All : McpToolNames.ReadOnly;
         return SetApprovals(wanted, includeWriteTools
-            ? "Claude Code: инструменты Offload (чтение и запись) разрешены без подтверждения."
-            : "Claude Code: инструменты Offload только для чтения разрешены без подтверждения; инструменты записи будут спрашивать разрешение.");
+            ? L.T("Claude Code: инструменты Offload (чтение и запись) разрешены без подтверждения.")
+            : L.T("Claude Code: инструменты Offload только для чтения разрешены без подтверждения; инструменты записи будут спрашивать разрешение."));
     }
 
     public static IntegrationResult Revoke() =>
-        SetApprovals([], "Claude Code: разрешения инструментов Offload удалены из настроек.");
+        SetApprovals([], L.T("Claude Code: разрешения инструментов Offload удалены из настроек."));
 }

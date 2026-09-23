@@ -6,16 +6,19 @@ namespace Offload.Mcp.Tools;
 /// <summary>local_commit_message: сообщение коммита по diff, прочитанному сервером.</summary>
 internal static class CommitMessageTool
 {
-    public static async Task<string> RunAsync(ToolContext ctx, string? source, string? style, string? language, string? workingDirectory)
+    public static async Task<string> RunAsync(ToolContext ctx, string? source, string? style, string? language, string? workingDirectory, string? kind = "commit")
     {
-        var src = (source ?? "staged").Trim().ToLowerInvariant();
-        if (src is not ("staged" or "unstaged" or "all")) throw new ToolException("source must be staged, unstaged or all.");
+        var k = (kind ?? "commit").Trim().ToLowerInvariant();
+        if (k is not ("commit" or "pr" or "split")) throw new ToolException("kind must be commit, pr or split.");
+        var src = (source ?? (k == "pr" ? "all" : "staged")).Trim();
+        if (src.ToLowerInvariant() is "staged" or "unstaged" or "all") src = src.ToLowerInvariant();
+        else if (!Git.IsSafeRevision(src)) throw new ToolException("source must be staged, unstaged, all or a git ref/range (e.g. main...HEAD).");
         var conventional = !string.Equals((style ?? "conventional").Trim(), "plain", StringComparison.OrdinalIgnoreCase);
         var lang = string.IsNullOrWhiteSpace(language) ? "en" : language.Trim();
         if (lang.Length > 30 || !lang.All(c => char.IsLetterOrDigit(c) || c is '-' or '_' or ' ')) lang = "en";
 
         var repo = GitDiffs.ResolveRepo(ctx, workingDirectory);
-        var set = await GitDiffs.CollectAsync(ctx, repo, src, includeUntracked: src != "staged").ConfigureAwait(false);
+        var set = await GitDiffs.CollectAsync(ctx, repo, src, includeUntracked: src is "unstaged" or "all").ConfigureAwait(false);
         if (set.Files.Count == 0)
         {
             return src == "staged"
@@ -24,6 +27,7 @@ internal static class CommitMessageTool
         }
 
         var model = await ctx.GetModelAsync().ConfigureAwait(false);
+        if (k != "commit") return await DescribeAsync(ctx, model, set, k, lang).ConfigureAwait(false);
         var rules = "Write a git commit message for the diff. Output ONLY the message, nothing else (no quotes, no code fences, no explanations).\n" +
                     "Line 1: the subject, at most 72 characters, imperative mood" +
                     (conventional ? ", format 'type(scope): subject' with type one of feat, fix, refactor, perf, docs, test, build, ci, chore, style" : "") + ".\n" +
@@ -57,6 +61,41 @@ internal static class CommitMessageTool
         var msg = Clean(reply.Text);
         if (msg.Length == 0) throw new ToolException("The local model returned an empty commit message; write it yourself.");
         return msg;
+    }
+
+    /// <summary>kind=pr — заголовок и описание PR; kind=split — как разбить изменения на отдельные коммиты.</summary>
+    private static async Task<string> DescribeAsync(ToolContext ctx, LocalModel model, DiffSet set, string kind, string lang)
+    {
+        var rules = kind == "pr"
+            ? "Write a pull request title and description for the diff. Format:\nTitle: <max 72 chars>\n\n## Summary\n<2-4 sentences: what and why>\n\n" +
+              "## Changes\n- <bullet per logical change>\n\n## Testing\n- <how it was/should be tested>\n\n## Risks\n- <only real risks, or 'none'>\n" +
+              $"No preamble, no code fences. Language: {lang}."
+            : "Propose how to split this diff into small, reviewable commits that each build on their own. Output a numbered list; for each commit: " +
+              "a conventional commit subject (<=72 chars) and the files (or file:hunk descriptions) it contains. Group by logical change, " +
+              $"put refactors before features and tests with the code they test. Language: {lang}.";
+        var system = model.SystemPrompt(rules);
+        var summary = new StringBuilder($"DIFF: {set.Description}\nCHANGED FILES:\n");
+        foreach (var f in set.Files.Take(300)) summary.Append($"{f.Path} +{f.Added} -{f.Removed}\n");
+        if (set.Untracked.Count > 0) summary.Append("new untracked files: ").Append(string.Join(", ", set.Untracked.Take(40))).Append('\n');
+        var budget = model.MaterialBudget(900, system, summary.ToString());
+        var diff = new StringBuilder("\nDIFF (shortened):\n");
+        var perFile = Math.Max(150, budget / Math.Max(1, set.Files.Count));
+        var used = 0;
+        foreach (var f in set.Files)
+        {
+            var text = f.Text.Length > perFile * 3 ? f.Text[..(perFile * 3)] + "\n… (shortened)" : f.Text;
+            var tt = Tokens.Estimate(text);
+            if (used + tt > budget) break;
+            diff.Append(text).Append('\n');
+            used += tt;
+        }
+        ctx.Stats.FilesRead = set.Files.Count;
+        ctx.Stats.TokensRead = set.Files.Sum(f => (long)Tokens.Estimate(f.Text));
+        await using var slot = await GpuQueue.AcquireAsync(ctx.Cfg.Server.Parallel, ctx.Progress, ctx.Ct).ConfigureAwait(false);
+        var reply = await model.ChatAsync(system, summary + diff.ToString(), 900, kind == "pr" ? "writing PR description" : "planning commits", ctx.Ct).ConfigureAwait(false);
+        var answer = OutputCleaner.StripFence(reply.Text.Trim(), allowInnerBlock: false).Trim();
+        if (answer.Length == 0) throw new ToolException("The local model returned an empty answer; write it yourself.");
+        return answer + $"\n\n({set.Files.Count} files, +{set.Added} −{set.Removed}; {set.Description})";
     }
 
     /// <summary>Снять обёртки/кавычки и ограничить тему 72 символами (по границе слова).</summary>

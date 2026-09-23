@@ -30,6 +30,15 @@ internal sealed class ProgressReporter
 
     public bool Enabled => _server is not null && _token is not null;
 
+    /// <summary>Последнее сообщение (для состояния фоновых задач).</summary>
+    public string? LastMessage
+    {
+        get
+        {
+            lock (_lock) return History.Count > 0 ? History[^1] : null;
+        }
+    }
+
     public void Report(string message)
     {
         lock (_lock)

@@ -35,13 +35,32 @@ internal static class PathGuard
     private static readonly string[] ProtectedWriteDirs =
     [
         ".git", ".claude", ".cursor", ".vscode", ".codex", ".gemini", ".opencode", ".windsurf", ".husky", ".github/workflows",
+        ".github/actions", ".devcontainer", ".idea",
     ];
 
     private static readonly HashSet<string> ProtectedWriteFiles = new(StringComparer.OrdinalIgnoreCase)
     {
         ".mcp.json", "CLAUDE.md", "CLAUDE.local.md", "AGENTS.md", "GEMINI.md", "opencode.json", "opencode.jsonc",
         ".cursorrules", ".windsurfrules", ".clinerules", ".gitmodules", ".gitconfig",
+        ".gitlab-ci.yml", ".pre-commit-config.yaml", "lefthook.yml", ".lefthook.yml", "copilot-instructions.md",
     };
+
+    /// <summary>
+    /// Pathspec-исключения git для секретов (шаблоны настроек + встроенные) и секретных папок: такие файлы не хешируются
+    /// в хранилище объектов (снимок песочницы, коммиты агента) и не попадают в поиск по истории.
+    /// </summary>
+    public static List<string> SecretPathspecExcludes(IEnumerable<string>? secretPatterns)
+    {
+        var list = new List<string>();
+        foreach (var raw in (secretPatterns ?? []).Concat(BuiltinSecretPatterns))
+        {
+            var p = raw?.Trim().Replace('\\', '/');
+            if (string.IsNullOrEmpty(p) || p.Contains(':') || p.Contains(')')) continue;
+            list.Add(":(exclude,glob,icase)**/" + p);
+        }
+        foreach (var d in SensitiveDirNames) list.Add(":(exclude,glob,icase)**/" + d + "/**");
+        return list;
+    }
 
     /// <summary>
     /// Разобрать путь от IDE в полный нормализованный путь. Относительные — от первого корня.

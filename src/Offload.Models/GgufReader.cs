@@ -67,8 +67,8 @@ public static class GgufReader
 
     public static GgufInfo Read(string path)
     {
-        if (string.IsNullOrWhiteSpace(path)) throw new ArgumentException("Не указан путь к файлу GGUF.", nameof(path));
-        if (!File.Exists(path)) throw new FileNotFoundException($"Файл модели не найден: {path}", path);
+        if (string.IsNullOrWhiteSpace(path)) throw new ArgumentException(L.T("Не указан путь к файлу GGUF."), nameof(path));
+        if (!File.Exists(path)) throw new FileNotFoundException(L.F("Файл модели не найден: {0}", path), path);
         using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 64 * 1024, FileOptions.RandomAccess);
         try
         {
@@ -76,18 +76,18 @@ public static class GgufReader
         }
         catch (EndOfStreamException ex)
         {
-            throw new InvalidDataException($"Заголовок GGUF обрывается — файл неполный или повреждён: {Path.GetFileName(path)}", ex);
+            throw new InvalidDataException(L.F("Заголовок GGUF обрывается — файл неполный или повреждён: {0}", Path.GetFileName(path)), ex);
         }
     }
 
     /// <summary>Разбор заголовка из потока с поддержкой Seek (читается только заголовок).</summary>
     internal static GgufInfo Read(Stream stream)
     {
-        if (!stream.CanSeek || !stream.CanRead) throw new ArgumentException("Нужен поток с поддержкой чтения и перемещения.", nameof(stream));
+        if (!stream.CanSeek || !stream.CanRead) throw new ArgumentException(L.T("Нужен поток с поддержкой чтения и перемещения."), nameof(stream));
         var r = new Reader(stream);
 
         var magic = r.U32();
-        if (magic != Magic) throw new InvalidDataException("Файл не является моделью GGUF (неверная сигнатура).");
+        if (magic != Magic) throw new InvalidDataException(L.T("Файл не является моделью GGUF (неверная сигнатура)."));
         var versionRaw = r.U32();
         // Файлы для big-endian систем: версия читается «перевёрнутой».
         if (versionRaw is not (2 or 3) && BinaryPrimitives.ReverseEndianness(versionRaw) is 2 or 3)
@@ -95,19 +95,19 @@ public static class GgufReader
             r.BigEndian = true;
             versionRaw = BinaryPrimitives.ReverseEndianness(versionRaw);
         }
-        if (versionRaw == 1) throw new InvalidDataException("Устаревший формат GGUF v1 не поддерживается — скачайте актуальную версию модели.");
-        if (versionRaw is not (2 or 3)) throw new InvalidDataException($"Неподдерживаемая версия GGUF: {versionRaw}.");
+        if (versionRaw == 1) throw new InvalidDataException(L.T("Устаревший формат GGUF v1 не поддерживается — скачайте актуальную версию модели."));
+        if (versionRaw is not (2 or 3)) throw new InvalidDataException(L.F("Неподдерживаемая версия GGUF: {0}.", versionRaw));
 
-        var tensorCount = r.I64Count("число тензоров");
-        var kvCount = r.I64Count("число метаданных");
-        if (kvCount > MaxKvCount) throw new InvalidDataException($"Заголовок GGUF повреждён: слишком много метаданных ({kvCount}).");
+        var tensorCount = r.I64Count(L.T("число тензоров"));
+        var kvCount = r.I64Count(L.T("число метаданных"));
+        if (kvCount > MaxKvCount) throw new InvalidDataException(L.F("Заголовок GGUF повреждён: слишком много метаданных ({0}).", kvCount));
 
         var ints = new Dictionary<string, long>(StringComparer.Ordinal);
         string? arch = null, name = null, template = null;
 
         for (long i = 0; i < kvCount; i++)
         {
-            var key = r.String(MaxKeyBytes, "ключ");
+            var key = r.String(MaxKeyBytes, L.T("ключ"));
             var type = (ValueType)r.U32();
             switch (key)
             {
@@ -187,7 +187,7 @@ public static class GgufReader
         if (type != ValueType.Array) return false;
 
         var elemType = (ValueType)r.U32();
-        var count = r.I64Count("длина массива");
+        var count = r.I64Count(L.T("длина массива"));
         if (!IsScalarNumber(elemType) || count > MaxReadArray)
         {
             r.SkipArrayBody(elemType, count, 1);
@@ -209,7 +209,7 @@ public static class GgufReader
         ValueType.UInt16 or ValueType.Int16 => 2,
         ValueType.UInt32 or ValueType.Int32 or ValueType.Float32 => 4,
         ValueType.UInt64 or ValueType.Int64 or ValueType.Float64 => 8,
-        _ => throw new InvalidDataException($"Заголовок GGUF повреждён: неизвестный тип значения {(uint)t}."),
+        _ => throw new InvalidDataException(L.F("Заголовок GGUF повреждён: неизвестный тип значения {0}.", (uint)t)),
     };
 
     /// <summary>Чтение примитивов с проверкой границ файла (без чтения файла целиком).</summary>
@@ -236,14 +236,14 @@ public static class GgufReader
         public long I64Count(string what)
         {
             var v = U64();
-            if (v > (ulong)Math.Max(0, _length)) throw new InvalidDataException($"Заголовок GGUF повреждён (файл неполный или повреждён): неверное значение ({what}: {v}).");
+            if (v > (ulong)Math.Max(0, _length)) throw new InvalidDataException(L.F("Заголовок GGUF повреждён (файл неполный или повреждён): неверное значение ({0}: {1}).", what, v));
             return (long)v;
         }
 
         public string String(int maxBytes, string what)
         {
-            var len = I64Count($"длина строки «{what}»");
-            if (len > maxBytes) throw new InvalidDataException($"Заголовок GGUF повреждён: слишком длинная строка ({what}, {len} байт).");
+            var len = I64Count(L.F("длина строки «{0}»", what));
+            if (len > maxBytes) throw new InvalidDataException(L.F("Заголовок GGUF повреждён: слишком длинная строка ({0}, {1} байт).", what, len));
             if (len > Remaining) throw new EndOfStreamException();
             var bytes = new byte[len];
             s.ReadExactly(bytes);
@@ -253,7 +253,7 @@ public static class GgufReader
         /// <summary>Строка, если она не длиннее maxBytes; иначе пропускается (null).</summary>
         public string? StringOrSkip(int maxBytes)
         {
-            var len = I64Count("длина строки");
+            var len = I64Count(L.T("длина строки"));
             if (len > Remaining) throw new EndOfStreamException();
             if (len > maxBytes)
             {
@@ -281,7 +281,7 @@ public static class GgufReader
                 ValueType.Int64 => BigEndian ? BinaryPrimitives.ReadInt64BigEndian(b) : BinaryPrimitives.ReadInt64LittleEndian(b),
                 ValueType.Float32 => (long)Math.Clamp((double)(BigEndian ? BinaryPrimitives.ReadSingleBigEndian(b) : BinaryPrimitives.ReadSingleLittleEndian(b)), -9e18, 9e18),
                 ValueType.Float64 => (long)Math.Clamp(BigEndian ? BinaryPrimitives.ReadDoubleBigEndian(b) : BinaryPrimitives.ReadDoubleLittleEndian(b), -9e18, 9e18),
-                _ => throw new InvalidDataException($"Заголовок GGUF повреждён: неизвестный тип значения {(uint)t}."),
+                _ => throw new InvalidDataException(L.F("Заголовок GGUF повреждён: неизвестный тип значения {0}.", (uint)t)),
             };
         }
 
@@ -291,11 +291,11 @@ public static class GgufReader
             switch (t)
             {
                 case ValueType.String:
-                    Skip(I64Count("длина строки"));
+                    Skip(I64Count(L.T("длина строки")));
                     break;
                 case ValueType.Array:
                     var elem = (ValueType)U32();
-                    var count = I64Count("длина массива");
+                    var count = I64Count(L.T("длина массива"));
                     SkipArrayBody(elem, count, depth + 1);
                     break;
                 default:
@@ -306,10 +306,10 @@ public static class GgufReader
 
         public void SkipArrayBody(ValueType elem, long count, int depth)
         {
-            if (depth > MaxArrayDepth) throw new InvalidDataException("Заголовок GGUF повреждён: слишком глубокая вложенность массивов.");
+            if (depth > MaxArrayDepth) throw new InvalidDataException(L.T("Заголовок GGUF повреждён: слишком глубокая вложенность массивов."));
             if (elem == ValueType.String)
             {
-                for (long i = 0; i < count; i++) Skip(I64Count("длина строки"));
+                for (long i = 0; i < count; i++) Skip(I64Count(L.T("длина строки")));
             }
             else if (elem == ValueType.Array)
             {

@@ -13,14 +13,14 @@ internal static class ModelCheck
         var client = LlamaClient.FromConfig(cfg);
         var request = new ChatRequest(
             [
-                ChatMessage.System("Ты — помощник программиста. Отвечай очень кратко, без пояснений."),
-                ChatMessage.User("Напиши на Python однострочную функцию add(a, b), возвращающую сумму."),
+                ChatMessage.System("Ты — помощник программиста. Отвечай очень кратко, без пояснений."), // l10n-ignore
+                ChatMessage.User("Напиши на Python однострочную функцию add(a, b), возвращающую сумму."), // l10n-ignore
             ],
             MaxTokens: 160,
             Temperature: 0.2);
         var r = await client.ChatAsync(request, null, ct);
         var answer = (string.IsNullOrWhiteSpace(r.Content) ? r.Reasoning ?? "" : r.Content).Trim();
-        if (answer.Length == 0) answer = "(пустой ответ)";
+        if (answer.Length == 0) answer = L.T("(пустой ответ)");
         return new Result(answer, r.GenerationTokensPerSecond, r.Duration, r.CompletionTokens);
     }
 
@@ -28,7 +28,7 @@ internal static class ModelCheck
     {
         var text = r.Answer.Replace("\r", "").Replace("\n", " ⏎ ");
         if (text.Length > 240) text = text[..239] + "…";
-        var speed = r.TokensPerSecond is double tps ? $"{tps:0.0} ток/с" : "скорость неизвестна";
-        return $"Ответ модели: «{text}» · {speed} · {r.Duration.TotalSeconds:0.0} с";
+        var speed = r.TokensPerSecond is double tps ? L.F("{0:0.0} ток/с", tps) : L.T("скорость неизвестна");
+        return L.F("Ответ модели: «{0}» · {1} · {2:0.0} с", text, speed, r.Duration.TotalSeconds);
     }
 }

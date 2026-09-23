@@ -19,7 +19,7 @@ internal static class Presets
 
     public static IReadOnlyList<Preset> All()
     {
-        var list = new List<Preset> { new("Нет", null) };
+        var list = new List<Preset> { new(L.T("Нет"), null) };
         try
         {
             foreach (var name in typeof(AppPaths).Assembly.GetManifestResourceNames()

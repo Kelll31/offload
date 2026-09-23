@@ -16,7 +16,7 @@ internal sealed class ModelStep : WizardStep
     private readonly Label _description = Kit.Wrap("");
     private readonly Label _fit = Kit.Wrap("");
     private readonly ComboBox _quant = Kit.Combo(240);
-    private readonly Label _quantCaption = Kit.Label("Квантизация:");
+    private readonly Label _quantCaption = Kit.Label(L.T("Квантизация:"));
     private readonly TextBox _folder = Kit.TextBox(readOnly: true);
     private readonly Label _space = Kit.Wrap("");
     private IReadOnlyList<(string Quant, string Text, long Size)> _quantItems = [];
@@ -39,19 +39,19 @@ internal sealed class ModelStep : WizardStep
         root.AddRow(_fit);
         root.AddRow(Kit.Flow(_quantCaption, _quant));
 
-        root.AddRow(Kit.Section("Папка для моделей"));
+        root.AddRow(Kit.Section(L.T("Папка для моделей")));
         var folderRow = Kit.Table(100, 0);
-        folderRow.AddRow(_folder, Kit.Button("Изменить…", (_, _) => ChooseFolder()));
+        folderRow.AddRow(_folder, Kit.Button(L.T("Изменить…"), (_, _) => ChooseFolder()));
         root.AddRow(folderRow);
         root.AddRow(_space);
         SetContent(root);
     }
 
-    public override string Title => "Модель";
+    public override string Title => L.T("Модель");
 
-    public override string Heading => "Выбор модели";
+    public override string Heading => L.T("Выбор модели");
 
-    public override string? Subtitle => "Рекомендуемая модель подобрана под объём видеопамяти и оперативной памяти.";
+    public override string? Subtitle => L.T("Рекомендуемая модель подобрана под объём видеопамяти и оперативной памяти.");
 
     public override bool CanGoNext => State.Model is not null && !Insufficient();
 
@@ -69,12 +69,12 @@ internal sealed class ModelStep : WizardStep
     {
         var cfg = ConfigStore.Current;
         var hw = State.Hardware;
-        _summary.Text = hw is null ? "Оборудование не определено — оценка памяти недоступна." : Texts.HardwareSummary(hw);
+        _summary.Text = hw is null ? L.T("Оборудование не определено — оценка памяти недоступна.") : Texts.HardwareSummary(hw);
         var (rows, error) = ModelRows.Build(cfg, hw);
         _catalogFailed = error is not null;
         if (error is not null)
         {
-            _summary.Text = $"Каталог моделей недоступен: {error}";
+            _summary.Text = L.F("Каталог моделей недоступен: {0}", error);
             _summary.ForeColor = Theme.ErrorText;
         }
 
@@ -98,14 +98,14 @@ internal sealed class ModelStep : WizardStep
         State.Model = row;
         if (row is null)
         {
-            _description.Text = _catalogFailed ? "Без каталога моделей продолжить нельзя. Проверьте подключение к интернету и откройте мастер позже." : "Выберите модель в списке.";
+            _description.Text = _catalogFailed ? L.T("Без каталога моделей продолжить нельзя. Проверьте подключение к интернету и откройте мастер позже.") : L.T("Выберите модель в списке.");
             _fit.Text = "";
             _quant.Items.Clear();
             _quant.Visible = _quantCaption.Visible = false;
             UpdateSpace();
             return;
         }
-        _description.Text = row.Description + (row.IsInstalled ? $"{Environment.NewLine}Уже установлена — повторная загрузка не нужна." : "");
+        _description.Text = row.Description + (row.IsInstalled ? L.F("{0}Уже установлена — повторная загрузка не нужна.", Environment.NewLine) : "");
         if (row.Fit is { } fit)
         {
             _fit.Text = $"{Texts.FitGlyph(fit.Level)} {fit.Explanation}";
@@ -153,26 +153,26 @@ internal sealed class ModelStep : WizardStep
     {
         var need = Required();
         var free = HardwareDetector.GetFreeDiskBytes(State.ModelsDir);
-        var freeText = free > 0 ? FileUtil.FormatBytes(free) : "неизвестно";
+        var freeText = free > 0 ? FileUtil.FormatBytes(free) : L.T("неизвестно");
         if (State.Model is null)
         {
-            _space.Text = $"Свободно на диске: {freeText}";
+            _space.Text = L.F("Свободно на диске: {0}", freeText);
             _space.ForeColor = Theme.TextMuted;
         }
         else if (need <= 0)
         {
-            _space.Text = $"Загрузка не требуется. Свободно на диске: {freeText}";
+            _space.Text = L.F("Загрузка не требуется. Свободно на диске: {0}", freeText);
             _space.ForeColor = Theme.TextMuted;
         }
         else if (Insufficient())
         {
-            _space.Text = $"Недостаточно места: нужно {FileUtil.FormatBytes(need)}, свободно {freeText}. " +
-                          "Выберите папку на другом диске или модель поменьше.";
+            _space.Text = L.F("Недостаточно места: нужно {0}, свободно {1}. Выберите папку на другом диске или модель поменьше.",
+                FileUtil.FormatBytes(need), freeText);
             _space.ForeColor = Theme.ErrorText;
         }
         else
         {
-            _space.Text = $"Нужно: {FileUtil.FormatBytes(need)} · Свободно: {freeText}";
+            _space.Text = L.F("Нужно: {0} · Свободно: {1}", FileUtil.FormatBytes(need), freeText);
             _space.ForeColor = Theme.OkText;
         }
         RaiseNavigationChanged();
@@ -182,7 +182,7 @@ internal sealed class ModelStep : WizardStep
     {
         using var dlg = new FolderBrowserDialog
         {
-            Description = "Папка для хранения моделей (нужно много свободного места)",
+            Description = L.T("Папка для хранения моделей (нужно много свободного места)"),
             UseDescriptionForTitle = true,
             ShowNewFolderButton = true,
             InitialDirectory = Directory.Exists(State.ModelsDir) ? State.ModelsDir : AppPaths.DataDir,

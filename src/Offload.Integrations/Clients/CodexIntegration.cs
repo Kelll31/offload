@@ -16,7 +16,7 @@ internal sealed class CodexIntegration : IntegrationBase
 
     public override string Id => "codex";
     public override string DisplayName => "OpenAI Codex";
-    public override string? PostRegisterHint => "Перезапустите Codex (CLI, расширение IDE или приложение), чтобы он увидел сервер.";
+    public override string? PostRegisterHint => L.T("Перезапустите Codex (CLI, расширение IDE или приложение), чтобы он увидел сервер.");
     public override string? ConfigPath => Path.Combine(ClientLocations.CodexHome, "config.toml");
 
     public override bool IsClientInstalled() => Directory.Exists(ClientLocations.CodexHome);
@@ -72,7 +72,7 @@ internal sealed class CodexIntegration : IntegrationBase
         if (spec.Env.Count > 0)
         {
             if (patcher.Ranges.Any(r => !r.IsMain))
-                throw new TomlPatchException("у записи уже есть подтаблицы (например, env) — обновите их вручную");
+                throw new TomlPatchException(L.T("у записи уже есть подтаблицы (например, env) — обновите их вручную"));
             owned.Add(("env", "{ " + string.Join(", ", spec.Env.Select(kv => $"{TomlDocument.FormatKey(kv.Key)} = {TomlDocument.FormatString(kv.Value)}")) + " }"));
         }
         var defaults = new List<(string, string)>
@@ -101,17 +101,17 @@ internal sealed class CodexIntegration : IntegrationBase
     private static void Verify(TomlTablePatcher before, string updated, McpServerSpec? spec)
     {
         var after = new TomlTablePatcher(TomlDocument.Parse(updated), Table(spec?.Name ?? ServerName));
-        if (after.Unsupported is not null) throw new TomlPatchException("проверка результата не прошла: " + after.Unsupported);
+        if (after.Unsupported is not null) throw new TomlPatchException(L.F("проверка результата не прошла: {0}", after.Unsupported));
         if (spec is null)
         {
-            if (after.Ranges.Count > 0) throw new TomlPatchException("проверка результата не прошла: таблица не удалена");
+            if (after.Ranges.Count > 0) throw new TomlPatchException(L.T("проверка результата не прошла: таблица не удалена"));
         }
         else if (after.Main is null || !ReadEntry(after).Matches(spec))
         {
-            throw new TomlPatchException("проверка результата не прошла: запись не совпала с ожидаемой");
+            throw new TomlPatchException(L.T("проверка результата не прошла: запись не совпала с ожидаемой"));
         }
         if (after.ForeignFingerprint() != before.ForeignFingerprint())
-            throw new TomlPatchException("проверка результата не прошла: изменился бы чужой текст");
+            throw new TomlPatchException(L.T("проверка результата не прошла: изменился бы чужой текст"));
     }
 
     public override Task<IntegrationResult> RegisterAsync(McpServerSpec spec, CancellationToken ct = default)

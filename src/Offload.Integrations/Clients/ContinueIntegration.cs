@@ -15,7 +15,7 @@ internal sealed partial class ContinueIntegration : IntegrationBase
 
     public override string Id => "continue";
     public override string DisplayName => "Continue";
-    public override string? PostRegisterHint => "Перезагрузите окно IDE. MCP-инструменты в Continue работают только в режиме Agent.";
+    public override string? PostRegisterHint => L.T("Перезагрузите окно IDE. MCP-инструменты в Continue работают только в режиме Agent.");
 
     private static string ContinueDir => Path.Combine(IntegrationEnvironment.UserProfile, ".continue");
 
@@ -253,7 +253,7 @@ internal sealed class JetBrainsAiIntegration : IntegrationBase
 {
     public override string Id => "jetbrains-ai";
     public override string DisplayName => "JetBrains AI Assistant";
-    public override string? PostRegisterHint => "Подключение выполняется вручную в настройках IDE JetBrains.";
+    public override string? PostRegisterHint => L.T("Подключение выполняется вручную в настройках IDE JetBrains.");
     public override string? ConfigPath => null;
 
     public override bool IsClientInstalled() => ClientLocations.JetBrainsInstalled();
@@ -282,13 +282,12 @@ internal sealed class JetBrainsAiIntegration : IntegrationBase
     {
         if (!IsClientInstalled()) return Task.FromResult(NotFound());
         var msg =
-            "JetBrains AI Assistant настраивается только вручную: откройте Settings | Tools | AI Assistant | " +
-            "Model Context Protocol (MCP) и нажмите «Import from Claude» (после подключения Offload к Claude Desktop), " +
-            "либо нажмите «Add», выберите ввод JSON и вставьте:" + Environment.NewLine + Snippet(spec);
+            L.F("JetBrains AI Assistant настраивается только вручную: откройте Settings | Tools | AI Assistant | Model Context Protocol (MCP) и нажмите «Import from Claude» (после подключения Offload к Claude Desktop), либо нажмите «Add», выберите ввод JSON и вставьте:{0}{1}",
+                Environment.NewLine, Snippet(spec));
         return Task.FromResult(new IntegrationResult(false, msg));
     }
 
     public override Task<IntegrationResult> UnregisterAsync(CancellationToken ct = default) =>
         Task.FromResult(new IntegrationResult(true,
-            "Удалите сервер «offload» вручную: Settings | Tools | AI Assistant | Model Context Protocol (MCP)."));
+            L.T("Удалите сервер «offload» вручную: Settings | Tools | AI Assistant | Model Context Protocol (MCP).")));
 }

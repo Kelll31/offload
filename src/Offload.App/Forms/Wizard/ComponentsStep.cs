@@ -10,7 +10,7 @@ namespace Offload.App.Forms.Wizard;
 /// <summary>Шаг 4: дополнительные компоненты (OpenCode, Visual C++ Redistributable) и сводка установки.</summary>
 internal sealed class ComponentsStep : WizardStep
 {
-    private readonly CheckBox _openCode = Kit.Check("Установить OpenCode (рекомендуется)");
+    private readonly CheckBox _openCode = Kit.Check(L.T("Установить OpenCode (рекомендуется)"));
     private readonly Label _openCodeState = Kit.Hint("");
     private readonly Label _vc = Kit.Wrap("");
     private readonly Label _summary = Kit.Wrap("");
@@ -27,10 +27,8 @@ internal sealed class ComponentsStep : WizardStep
         var root = Kit.Table();
         root.AddRow(Kit.Section("OpenCode", first: true));
         root.AddRow(_openCode);
-        var ocHint = Kit.Hint(
-            "OpenCode — агент для программирования. С ним локальная модель может выполнять многошаговые задачи: " +
-            "прочитать нужные файлы, согласованно поправить несколько из них и проверить результат сборкой или тестами. " +
-            "Без OpenCode правки выполняются только прямой перезаписью файлов.");
+        var ocHint = Kit.Hint(L.T(
+            "OpenCode — агент для программирования. С ним локальная модель может выполнять многошаговые задачи: прочитать нужные файлы, согласованно поправить несколько из них и проверить результат сборкой или тестами. Без OpenCode правки выполняются только прямой перезаписью файлов."));
         ocHint.Margin = new Padding(20, 0, 0, 4);
         root.AddRow(ocHint);
         _openCodeState.Margin = new Padding(20, 0, 0, 6);
@@ -39,16 +37,16 @@ internal sealed class ComponentsStep : WizardStep
         root.AddRow(Kit.Section("Microsoft Visual C++ Redistributable"));
         root.AddRow(_vc);
 
-        root.AddRow(Kit.Section("Будет выполнено"));
+        root.AddRow(Kit.Section(L.T("Будет выполнено")));
         root.AddRow(_summary);
         SetContent(root);
     }
 
-    public override string Title => "Компоненты";
+    public override string Title => L.T("Компоненты");
 
-    public override string Heading => "Дополнительные компоненты";
+    public override string Heading => L.T("Дополнительные компоненты");
 
-    public override string? Subtitle => "Проверьте, что будет установлено.";
+    public override string? Subtitle => L.T("Проверьте, что будет установлено.");
 
     public override void OnEnter()
     {
@@ -60,14 +58,15 @@ internal sealed class ComponentsStep : WizardStep
             _openCode.Checked = State.InstallOpenCode;
         }
         var exe = Ui.Try(() => OpenCodeInstaller.FindExecutable(cfg), null, "FindExecutable");
-        _openCodeState.Text = exe is null ? "" : $"Уже установлен{(cfg.OpenCode.InstalledVersion is { } v ? $" (версия {v})" : "")}: {exe}";
+        _openCodeState.Text = exe is null ? ""
+            : L.F("Уже установлен{0}: {1}", cfg.OpenCode.InstalledVersion is { } v ? L.F(" (версия {0})", v) : "", exe);
 
         var vc = Ui.Try<bool?>(() => VcRuntime.IsInstalled(), null, "VcRuntime.IsInstalled");
         (_vc.Text, _vc.ForeColor) = vc switch
         {
-            true => ("✓ Установлен — ничего делать не нужно.", Theme.OkText),
-            false => ("Не найден — будет установлен автоматически. Windows попросит подтвердить установку (права администратора).", Theme.WarnText),
-            _ => ("Будет проверен во время установки; при необходимости Windows попросит подтвердить установку.", Theme.TextMuted),
+            true => (L.T("✓ Установлен — ничего делать не нужно."), Theme.OkText),
+            false => (L.T("Не найден — будет установлен автоматически. Windows попросит подтвердить установку (права администратора)."), Theme.WarnText),
+            _ => (L.T("Будет проверен во время установки; при необходимости Windows попросит подтвердить установку."), Theme.TextMuted),
         };
         UpdateSummary();
     }
@@ -79,18 +78,19 @@ internal sealed class ComponentsStep : WizardStep
         var llamaInstalled = Ui.Try(() => LlamaInstaller.IsInstalled(cfg), false, "IsInstalled")
                              && cfg.Llama.InstalledBackend == State.Backend;
         lines.Add(llamaInstalled
-            ? $"• llama.cpp ({Texts.Backend(State.Backend)}) — уже установлена"
-            : $"• llama.cpp — сборка «{Texts.Backend(State.Backend)}», последняя версия");
+            ? L.F("• llama.cpp ({0}) — уже установлена", Texts.Backend(State.Backend))
+            : L.F("• llama.cpp — сборка «{0}», последняя версия", Texts.Backend(State.Backend)));
         if (State.Model is { } m)
         {
             var size = m.Catalog is { } c && !m.IsInstalled ? ModelListBinder.RequiredBytes(c, State.Quant) : 0;
             lines.Add(m.IsInstalled
-                ? $"• Модель «{m.Name}» — уже установлена"
-                : $"• Модель «{m.Name}»{(State.Quant is { } q ? $" ({q})" : "")}{(size > 0 ? $", ≈{FileUtil.FormatBytes(size)}" : "")} → {State.ModelsDir}");
+                ? L.F("• Модель «{0}» — уже установлена", m.Name)
+                : L.F("• Модель «{0}»{1}{2} → {3}", m.Name, State.Quant is { } q ? $" ({q})" : "",
+                    size > 0 ? $", ≈{FileUtil.FormatBytes(size)}" : "", State.ModelsDir));
         }
-        lines.Add(State.InstallOpenCode ? "• OpenCode" : "• OpenCode — не устанавливается");
-        lines.Add("• Запуск сервера и проверка ответа модели");
-        lines.Add("• Подключение к выбранным IDE (следующий шаг)");
+        lines.Add(State.InstallOpenCode ? "• OpenCode" : L.T("• OpenCode — не устанавливается"));
+        lines.Add(L.T("• Запуск сервера и проверка ответа модели"));
+        lines.Add(L.T("• Подключение к выбранным IDE (следующий шаг)"));
         _summary.Text = string.Join(Environment.NewLine, lines);
     }
 }

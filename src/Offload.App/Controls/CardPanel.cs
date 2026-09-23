@@ -13,7 +13,7 @@ internal sealed class CardPanel : TableLayoutPanel
         Dock = DockStyle.Top;
         Padding = new Padding(16, 14, 16, 14);
         Margin = new Padding(0, 0, 0, 8);
-        BackColor = Theme.SurfaceAlt;
+        BackColor = Theme.Card;
         SetStyle(ControlStyles.ResizeRedraw | ControlStyles.OptimizedDoubleBuffer, true);
     }
 
@@ -31,8 +31,8 @@ internal sealed class CardPanel : TableLayoutPanel
     protected override void OnPaintBackground(PaintEventArgs e)
     {
         // Фон родителя за скруглёнными углами, затем заливка карточки.
-        var parentColor = Parent?.BackColor ?? SystemColors.Window;
-        if (parentColor == Color.Transparent) parentColor = SystemColors.Window;
+        var parentColor = Parent?.BackColor ?? Theme.Surface;
+        if (parentColor == Color.Transparent) parentColor = Theme.Surface;
         using (var b = new SolidBrush(parentColor)) e.Graphics.FillRectangle(b, ClientRectangle);
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
         var r = new Rectangle(0, 0, ClientSize.Width - 1, ClientSize.Height - 1);

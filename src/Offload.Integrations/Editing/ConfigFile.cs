@@ -36,17 +36,17 @@ internal static class ConfigFile
     public static string Decode(byte[] bytes)
     {
         if (bytes.Length >= 2 && ((bytes[0] == 0xFF && bytes[1] == 0xFE) || (bytes[0] == 0xFE && bytes[1] == 0xFF)))
-            throw new ConfigReadException("файл сохранён в кодировке UTF-16, а не UTF-8");
+            throw new ConfigReadException(L.T("файл сохранён в кодировке UTF-16, а не UTF-8"));
         var offset = bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF ? 3 : 0;
         try
         {
             var text = StrictUtf8.GetString(bytes, offset, bytes.Length - offset);
-            if (text.Contains('\0')) throw new ConfigReadException("файл содержит нулевые байты (повреждён или не текстовый)");
+            if (text.Contains('\0')) throw new ConfigReadException(L.T("файл содержит нулевые байты (повреждён или не текстовый)"));
             return text;
         }
         catch (DecoderFallbackException)
         {
-            throw new ConfigReadException("файл не в кодировке UTF-8");
+            throw new ConfigReadException(L.T("файл не в кодировке UTF-8"));
         }
     }
 
@@ -105,14 +105,14 @@ internal static class ConfigFile
             Log.Info("Integrations", $"Изменён файл {path}" + (backup is null ? "" : $" (копия: {backup})"));
             return new WriteResult(WriteOutcome.Written, backup);
         }
-        throw new ConfigBusyException($"файл {path} постоянно изменяется другой программой — попробуйте ещё раз");
+        throw new ConfigBusyException(L.F("файл {0} постоянно изменяется другой программой — попробуйте ещё раз", path));
     }
 
     /// <summary>Удалить файл (с резервной копией), только если он не менялся с момента снимка.</summary>
     public static string? Delete(ConfigSnapshot snap)
     {
         if (!snap.Exists || !File.Exists(snap.Path)) return null;
-        if (!IsUnchanged(snap)) throw new ConfigBusyException($"файл {snap.Path} изменился — попробуйте ещё раз");
+        if (!IsUnchanged(snap)) throw new ConfigBusyException(L.F("файл {0} изменился — попробуйте ещё раз", snap.Path));
         var backup = FileUtil.Backup(snap.Path);
         File.Delete(snap.Path);
         Log.Info("Integrations", $"Удалён файл {snap.Path}" + (backup is null ? "" : $" (копия: {backup})"));

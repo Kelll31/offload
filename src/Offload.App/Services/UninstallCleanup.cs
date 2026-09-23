@@ -19,7 +19,7 @@ internal static class UninstallCleanup
         Log.Init("uninstall");
         Log.Info("uninstall", "Очистка перед удалением Offload");
 
-        Step("остановка сервера", () =>
+        Step("остановка сервера", () => // l10n-ignore
         {
             if (!IpcClient.IsTrayRunning()) return;
             IpcClient.SendAsync(new IpcRequest(IpcCommands.StopServer), TimeSpan.FromSeconds(20)).GetAwaiter().GetResult();
@@ -27,11 +27,11 @@ internal static class UninstallCleanup
             // Ждём завершения трея, чтобы файлы программы освободились.
             for (var i = 0; i < 40 && IpcClient.IsTrayRunning(); i++) Thread.Sleep(250);
         });
-        Step("отключение от IDE", () => IntegrationRegistry.UnregisterAllAsync().GetAwaiter().GetResult());
-        Step("инструкции Claude Code", () => Report(ClaudeCodeExtras.RemoveGuidance()));
-        Step("разрешения Claude Code", () => Report(ClaudeCodeExtras.RevokeToolApprovals()));
-        Step("глобальный конфиг OpenCode", OpenCodeConfigWriter.UnregisterGlobal);
-        Step("автозапуск", () => Autostart.Set(false));
+        Step("отключение от IDE", () => IntegrationRegistry.UnregisterAllAsync().GetAwaiter().GetResult()); // l10n-ignore
+        Step("инструкции Claude Code", () => Report(ClaudeCodeExtras.RemoveGuidance())); // l10n-ignore
+        Step("разрешения Claude Code", () => Report(ClaudeCodeExtras.RevokeToolApprovals())); // l10n-ignore
+        Step("глобальный конфиг OpenCode", OpenCodeConfigWriter.UnregisterGlobal); // l10n-ignore
+        Step("автозапуск", () => Autostart.Set(false)); // l10n-ignore
 
         Log.Info("uninstall", "Очистка завершена");
         return 0;
