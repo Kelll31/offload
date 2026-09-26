@@ -37,6 +37,35 @@ internal static class Autostart
     /// <summary>Значение указывает на этот exe (после перемещения программы — нет).</summary>
     public static bool IsCurrent => string.Equals(CurrentValue?.Trim(), Command, StringComparison.OrdinalIgnoreCase);
 
+    /// <summary>Путь к exe из значения автозапуска («"C:\…\Offload.exe" --background» или без кавычек до пробела); null — значения нет.</summary>
+    internal static string? ExeOf(string? value)
+    {
+        var v = value?.Trim();
+        if (string.IsNullOrEmpty(v)) return null;
+        if (v[0] == '"')
+        {
+            var end = v.IndexOf('"', 1);
+            return end > 1 ? v[1..end] : null;
+        }
+        var space = v.IndexOf(' ', StringComparison.Ordinal);
+        return space < 0 ? v : v[..space];
+    }
+
+    /// <summary>
+    /// Решение при старте трея. Значение в реестре — источник истины. Путь переписывается на этот exe, только если автозапуск
+    /// включён в настройках и прежний exe больше не существует (программу переместили) — автозапуск другой существующей копии
+    /// Offload (установленной, портативной, dev-сборки) не перехватывается, как и её подключения к IDE.
+    /// Repoint — переписать путь; Enabled — включён ли автозапуск именно этой копии после решения.
+    /// </summary>
+    internal static (bool Repoint, bool Enabled) Decide(bool setupCompleted, bool wanted, string? value, string command, Func<string, bool> exists)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return (false, false);
+        if (string.Equals(value.Trim(), command, StringComparison.OrdinalIgnoreCase)) return (false, true);
+        var exe = ExeOf(value);
+        var moved = exe is not null && !exists(exe);
+        return setupCompleted && wanted && moved ? (true, true) : (false, false);
+    }
+
     public static void Set(bool enabled)
     {
         if (DevMode.Active)

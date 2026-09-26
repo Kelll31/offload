@@ -220,9 +220,25 @@ public sealed class LlamaClientTests
     [Fact]
     public async Task Chat_Refused_ServerNotRunning()
     {
-        var client = new LlamaClient($"http://127.0.0.1:{UnusedPort()}", "k");
-        var ex = await Assert.ThrowsAsync<LlamaApiException>(() => client.ChatAsync(new ChatRequest([ChatMessage.User("hi")])));
-        Assert.Null(ex.StatusCode);
+        // Свободный порт мог успеть занять параллельный тест (свой FakeHttpServer) — тогда пробуем другой.
+        LlamaApiException? ex = null;
+        for (var attempt = 0; attempt < 5 && ex is null; attempt++)
+        {
+            var client = new LlamaClient($"http://127.0.0.1:{UnusedPort()}", "k");
+            try
+            {
+                await client.ChatAsync(new ChatRequest([ChatMessage.User("hi")]));
+            }
+            catch (LlamaApiException e) when (e.StatusCode is null)
+            {
+                ex = e;
+            }
+            catch (LlamaApiException)
+            {
+                // Ответил чужой сервер на этом порту.
+            }
+        }
+        Assert.NotNull(ex);
         Assert.StartsWith("Сервер не запущен", ex.Message);
     }
 

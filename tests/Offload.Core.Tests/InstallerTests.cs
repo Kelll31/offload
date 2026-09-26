@@ -22,7 +22,10 @@ public class InstallerTests
     [Fact]
     public void UninstallRegistryKey_IsInnoSetupKey()
     {
-        Assert.Equal(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\{" + AppInfo.InstallerAppId + "}_is1", AppInfo.UninstallRegistryKey);
+        // AppId={{{#AppGuid} → «{GUID» (без «}»), Inno Setup дописывает «_is1» — так ключ выглядит у всех установок с 1.0.0.
+        Assert.Equal(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\{" + AppInfo.InstallerAppId + "_is1", AppInfo.UninstallRegistryKey);
+        var iss = File.ReadAllText(RepoFile("installer", "Offload.iss"));
+        Assert.Contains(@"UninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\' + '{' + '{#AppGuid}_is1';", iss);
     }
 
     [Fact]

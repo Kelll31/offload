@@ -19,6 +19,8 @@
 #endif
 
 [Setup]
+; «{{» — экранированная «{», закрывающей «}» нет: так было с первого выпуска, и ключ удаления у всех установок —
+; «{<GUID>_is1» (без «}»). Не «исправлять»: с другим AppId новая версия встанет второй программой, а не обновлением.
 AppId={{{#AppGuid}
 AppName={#AppName}
 AppVersion={#AppVersion}
@@ -141,7 +143,8 @@ Filename: "{app}\{#AppExe}"; Parameters: "--uninstall-cleanup"; Flags: runhidden
 
 [Code]
 const
-  UninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\{{#AppGuid}}_is1';
+  // Ключ, который Inno Setup создаёт для AppId из [Setup]: «{<GUID>_is1», без закрывающей скобки.
+  UninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\' + '{' + '{#AppGuid}_is1';
 
 var
   ExistingFound: Boolean;

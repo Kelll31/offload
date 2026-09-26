@@ -360,18 +360,25 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
         }
     }
 
-    /// <summary>Автозапуск: значение в реестре — источник истины; путь обновляется, если программу переместили.</summary>
+    /// <summary>
+    /// Автозапуск: значение в реестре — источник истины; путь обновляется, только если программу переместили (прежнего exe нет).
+    /// Автозапуск другой существующей копии не перехватывается (<see cref="Autostart.Decide"/>).
+    /// </summary>
     private static void SyncAutostart(AppConfig cfg)
     {
         try
         {
-            // Путь обновляем, только если автозапуск включён в настройках этой установки.
-            if (cfg.SetupCompleted && cfg.Ui.StartWithWindows && Autostart.IsEnabled && !Autostart.IsCurrent)
+            var value = Autostart.CurrentValue;
+            var (repoint, enabled) = Autostart.Decide(cfg.SetupCompleted, cfg.Ui.StartWithWindows, value, Autostart.Command, File.Exists);
+            if (repoint)
             {
                 Autostart.Set(true);
                 Log.Info("autostart", "Путь автозапуска обновлён");
             }
-            var enabled = Autostart.IsEnabled;
+            else if (!enabled && Autostart.IsEnabled)
+            {
+                Log.Info("autostart", $"Автозапуск указывает на другую копию Offload ({Autostart.ExeOf(value)}) — не меняется");
+            }
             if (cfg.SetupCompleted && cfg.Ui.StartWithWindows != enabled)
                 ConfigStore.Update(c => c.Ui.StartWithWindows = enabled);
         }

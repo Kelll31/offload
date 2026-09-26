@@ -21,8 +21,12 @@ public static class AppInfo
     /// </summary>
     public const string InstallerAppId = "6C1B7E2A-4F0D-4B8E-9C35-2B1F4E7A9D10";
 
-    /// <summary>Ключ удаления программы: в HKCU при установке «для себя», в HKLM — «для всех пользователей».</summary>
-    public const string UninstallRegistryKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\{" + InstallerAppId + "}_is1";
+    /// <summary>
+    /// Ключ удаления программы: в HKCU при установке «для себя», в HKLM — «для всех пользователей». Inno Setup строит его
+    /// из AppId + «_is1»; AppId в Offload.iss — «{&lt;GUID&gt;» без закрывающей скобки (так с первого выпуска), поэтому и ключ —
+    /// «{&lt;GUID&gt;_is1».
+    /// </summary>
+    public const string UninstallRegistryKey = @"Software\Microsoft\Windows\CurrentVersion\Uninstall\{" + InstallerAppId + "_is1";
 
     public static string Version { get; } =
         typeof(AppInfo).Assembly.GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion?.Split('+')[0]
