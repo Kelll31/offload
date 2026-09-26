@@ -30,6 +30,12 @@ internal static class IntegrationEnvironment
         public IReadOnlyDictionary<string, string> Variables { get; init; } = new Dictionary<string, string>();
         public bool AllowCli { get; init; }
         public string? ClaudeCliPath { get; init; }
+
+        /// <summary>Папка, подменяющая общий ресурс WSL (\\wsl.localhost): внутри — папки дистрибутивов.</summary>
+        public string? WslRoot { get; init; }
+
+        /// <summary>Дистрибутивы WSL песочницы: имя → домашняя папка Linux (wsl.exe в песочнице не запускается).</summary>
+        public IReadOnlyDictionary<string, string> WslDistros { get; init; } = new Dictionary<string, string>();
     }
 
     private static readonly AsyncLocal<Sandbox?> LocalSandbox = new();
@@ -98,7 +104,8 @@ internal static class IntegrationEnvironment
         string root,
         IReadOnlyDictionary<string, string>? variables = null,
         bool allowCli = false,
-        string? claudeCliPath = null)
+        string? claudeCliPath = null,
+        IReadOnlyDictionary<string, string>? wslDistros = null)
     {
         var full = Path.GetFullPath(root);
         var vars = new Dictionary<string, string>(variables ?? new Dictionary<string, string>(), StringComparer.OrdinalIgnoreCase);
@@ -114,6 +121,8 @@ internal static class IntegrationEnvironment
             Variables = vars,
             AllowCli = allowCli,
             ClaudeCliPath = claudeCliPath,
+            WslRoot = Path.Combine(full, "wsl"),
+            WslDistros = wslDistros ?? new Dictionary<string, string>(),
         };
         var previous = LocalSandbox.Value;
         LocalSandbox.Value = sandbox;

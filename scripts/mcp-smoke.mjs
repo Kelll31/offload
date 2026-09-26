@@ -8,10 +8,14 @@
 //   node scripts/mcp-smoke.mjs .\publish\Offload.exe
 //   node scripts/mcp-smoke.mjs .\publish\Offload.exe local_status '{}'
 //   node scripts/mcp-smoke.mjs .\publish\Offload.exe local_ask_files '{"paths":["src"],"question":"Кратко опиши архитектуру"}'
+//   node scripts/mcp-smoke.mjs .\publish\Offload.exe resources/read '{"uri":"offload://project/map"}'   # чтение ресурса
+//   node scripts/mcp-smoke.mjs --strict .\publish\Offload.exe      # для CI: код выхода 1, если в stdout не JSON или нет инструментов
 import { spawn } from 'node:child_process';
 import { createInterface } from 'node:readline';
 
-const [exe, ...rest] = process.argv.slice(2);
+const argv = process.argv.slice(2);
+const strict = argv.includes('--strict');
+const [exe, ...rest] = argv.filter(a => a !== '--strict');
 if (!exe) {
   console.error('Укажите путь к Offload.exe');
   process.exit(2);
@@ -29,7 +33,11 @@ const rl = createInterface({ input: child.stdout });
 rl.on('line', line => {
   if (!line.trim()) return;
   let msg;
-  try { msg = JSON.parse(line); } catch { console.error('[не JSON в stdout!]', line); return; }
+  try { msg = JSON.parse(line); } catch {
+    console.error('[не JSON в stdout!]', line);
+    if (strict) process.exitCode = 1;
+    return;
+  }
   if (msg.id !== undefined && pending.has(msg.id)) {
     const { resolve } = pending.get(msg.id);
     pending.delete(msg.id);
@@ -50,8 +58,10 @@ function request(method, params, timeoutMs = 30 * 60 * 1000) {
   const payload = { jsonrpc: '2.0', id, method, params };
   child.stdin.write(JSON.stringify(payload) + '\n');
   return new Promise((resolve, reject) => {
-    pending.set(id, { resolve });
-    setTimeout(() => { if (pending.has(id)) { pending.delete(id); reject(new Error(`таймаут ${method}`)); } }, timeoutMs);
+    // Таймер не должен держать процесс после ответа: сбрасываем его, а на всякий случай — unref.
+    const timer = setTimeout(() => { if (pending.has(id)) { pending.delete(id); reject(new Error(`таймаут ${method}`)); } }, timeoutMs);
+    timer.unref();
+    pending.set(id, { resolve: msg => { clearTimeout(timer); resolve(msg); } });
   });
 }
 const notify = (method, params) => child.stdin.write(JSON.stringify({ jsonrpc: '2.0', method, params }) + '\n');
@@ -68,16 +78,39 @@ try {
   notify('notifications/initialized', {});
 
   const tools = await request('tools/list', {}, 60000);
+  if (strict && !(tools.result?.tools?.length > 0)) {
+    console.error('Сбой: сервер не вернул ни одного инструмента');
+    process.exitCode = 1;
+  }
+  const prompts = await request('prompts/list', {}, 60000);
+  console.log(`prompts: ${(prompts.result?.prompts ?? []).map(p => p.name).join(', ') || '(нет)'}`);
+  const resources = await request('resources/list', {}, 60000);
+  console.log(`resources: ${(resources.result?.resources ?? []).map(r => r.uri).join(', ') || '(нет)'}`);
+  const templates = await request('resources/templates/list', {}, 60000);
+  console.log(`resource templates: ${(templates.result?.resourceTemplates ?? []).map(r => r.uriTemplate).join(', ') || '(нет)'}`);
   for (const t of tools.result?.tools ?? []) {
     console.log(`- ${t.name}: ${(t.description ?? '').split('\n')[0].slice(0, 120)}`);
     console.log(`    params: ${Object.keys(t.inputSchema?.properties ?? {}).join(', ')}; annotations: ${JSON.stringify(t.annotations ?? {})}`);
+    if (t.outputSchema) console.log(`    output: ${Object.keys(t.outputSchema.properties ?? {}).join(', ')}`);
   }
 
   for (const [name, args] of calls) {
     const t1 = Date.now();
     console.log(`\n=== ${name} ${JSON.stringify(args)}`);
+    if (name === 'resources/read') {
+      const rr = await request('resources/read', args);
+      if (rr.error) {
+        console.log('ОШИБКА JSON-RPC:', JSON.stringify(rr.error));
+        if (strict) process.exitCode = 1;
+      }
+      for (const c of rr.result?.contents ?? []) console.log(`[${c.uri} ${c.mimeType ?? ''}]\n` + (c.text ?? `(${(c.blob ?? '').length} base64)`).slice(0, 4000));
+      continue;
+    }
     const r = await request('tools/call', { name, arguments: args, _meta: { progressToken: `p${nextId}` } });
-    if (r.error) console.log('ОШИБКА JSON-RPC:', JSON.stringify(r.error));
+    if (r.error) {
+      console.log('ОШИБКА JSON-RPC:', JSON.stringify(r.error));
+      if (strict) process.exitCode = 1;
+    }
     else {
       console.log(`isError=${r.result.isError ?? false} (${Date.now() - t1} мс)`);
       for (const c of r.result.content ?? []) console.log(c.type === 'text' ? c.text : JSON.stringify(c));

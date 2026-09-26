@@ -18,19 +18,23 @@ internal static partial class ProjectMapTool
         if (!Sections.Contains(sec)) throw new ToolException("section must be one of: " + string.Join(", ", Sections) + ".");
         maxResults = Math.Clamp(maxResults <= 0 ? 80 : maxResults, 5, 500);
         ctx.Progress.Report("Mapping the project…");
-        var (map, index) = await ProjectMap.BuildAsync(ctx, ctx.Ct).ConfigureAwait(false);
+        // Карта — из постоянного индекса и кэша манифестов; текст всех исходников читается только для разделов, которые его сканируют.
+        var map = await ProjectMap.GetAsync(ctx, ctx.Ct).ConfigureAwait(false);
+        var index = sec is "overview" or "ci" or "docker" or "rules" ? null : await CodeIndex.LoadAsync(ctx, null, codeOnly: true, ctx.Ct).ConfigureAwait(false);
+        if (index is not null) ctx.Stats.AddScanned(index.Files);
+        else ctx.Stats.AddScanned(map.ScannedChars, map.ScannedFiles);
         return sec switch
         {
             "overview" => Overview(map),
-            "entrypoints" => EntryPoints(map, index, maxResults),
-            "routes" => Scan(index, RouteRules, maxResults, "HTTP routes"),
-            "config" => await ConfigAsync(ctx, index, maxResults).ConfigureAwait(false),
-            "env" => Env(ctx, index, maxResults),
-            "cli" => Scan(index, CliRules, maxResults, "CLI commands/options"),
+            "entrypoints" => EntryPoints(map, index!, maxResults),
+            "routes" => Scan(index!, RouteRules, maxResults, "HTTP routes"),
+            "config" => await ConfigAsync(ctx, index!, maxResults).ConfigureAwait(false),
+            "env" => Env(ctx, index!, maxResults),
+            "cli" => Scan(index!, CliRules, maxResults, "CLI commands/options"),
             "ci" => FilesDigest(ctx, map.CiFiles, CiLine(), maxResults, "CI pipelines"),
             "docker" => FilesDigest(ctx, map.DockerFiles, DockerLine(), maxResults, "Docker"),
             "rules" => Rules(ctx, map),
-            "conventions" => Conventions(index),
+            "conventions" => Conventions(index!),
             _ => "",
         };
     }
@@ -374,7 +378,7 @@ internal static partial class ProjectMapTool
         if (names.Count == 0) return "n/a";
         var pascal = names.Count(n => char.IsUpper(n[0]) && !n.Contains('_'));
         var camel = names.Count(n => char.IsLower(n[0]) && !n.Contains('_') && n.Any(char.IsUpper));
-        var snake = names.Count(n => n.Contains('_') && n == n.ToLowerInvariant());
+        var snake = names.Count(n => n.Contains('_') && !n.Any(char.IsUpper));
         var best = new[] { ("PascalCase", pascal), ("camelCase", camel), ("snake_case", snake) }.OrderByDescending(x => x.Item2).First();
         return $"{best.Item1} ({best.Item2 * 100 / names.Count}%)";
     }

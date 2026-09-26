@@ -56,7 +56,7 @@ public class ModelManagerTests
             Assert.Equal(data, File.ReadAllBytes(expectedPath));
             Assert.False(File.Exists(expectedPath + ".part"));
             Assert.Contains(hub.Log, l => l.Contains("/resolve/f6d5376be1edb4d416d56da11e5397a961aca8ae/Fake-Q4_K_M.gguf"));
-            Assert.Contains(hub.Log, l => l.StartsWith("GET /cdn/"));
+            Assert.Contains(hub.Log, l => l.StartsWith("GET /cdn/", StringComparison.Ordinal));
 
             var cfg = ConfigStore.Reload();
             Assert.Equal(9999, cfg.Server.Port);
@@ -71,8 +71,8 @@ public class ModelManagerTests
             Assert.NotSame(model.Sampling, installed.Sampling);
 
             Assert.Equal("Поиск файлов модели на Hugging Face…", reports[0].Stage);
-            Assert.Contains(reports, r => r.Stage.StartsWith("Загрузка модели Тестовая модель"));
-            Assert.Contains(reports, r => r.Stage.StartsWith("Проверка целостности"));
+            Assert.Contains(reports, r => r.Stage.StartsWith("Загрузка модели Тестовая модель", StringComparison.Ordinal));
+            Assert.Contains(reports, r => r.Stage.StartsWith("Проверка целостности", StringComparison.Ordinal));
             Assert.Equal(1.0, reports[^1].Fraction);
             Assert.Equal("Модель установлена", reports[^1].Stage);
 
@@ -102,7 +102,7 @@ public class ModelManagerTests
             var installed = await ModelManager.DownloadAsync(FakeModel("test/Fake-GGUF", "Fake-Q4_K_M.gguf", data), ct: TestContext.Current.CancellationToken);
             Assert.Equal(data, File.ReadAllBytes(installed.FilePath));
             // Вторая попытка идёт через тот же resolve-URL и продолжает с места обрыва (Range сохраняется после 302).
-            Assert.Contains(hub.Log, l => l.StartsWith("GET /cdn/") && l.Contains("range=bytes="));
+            Assert.Contains(hub.Log, l => l.StartsWith("GET /cdn/", StringComparison.Ordinal) && l.Contains("range=bytes="));
         }
         finally
         {

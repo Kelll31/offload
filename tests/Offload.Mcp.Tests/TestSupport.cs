@@ -97,7 +97,7 @@ internal sealed class TestEnv : IDisposable
 }
 
 /// <summary>
-/// Поддельный llama-server: /health, /props, /tokenize, /v1/chat/completions (SSE с usage и timings), проверка ключа API.
+/// Поддельный llama-server: /health, /props, /tokenize (Tokenizer), /v1/chat/completions (SSE с usage и timings), проверка ключа API.
 /// </summary>
 internal sealed class FakeLlamaServer : IDisposable
 {
@@ -107,8 +107,26 @@ internal sealed class FakeLlamaServer : IDisposable
 
     public int Port { get; }
     public int ContextSize { get; set; } = 8192;
+
+    /// <summary>total_slots в /props (при -kvu ContextSize — весь общий буфер).</summary>
+    public int TotalSlots { get; set; } = 1;
+
+    /// <summary>Ошибка вместо ответа модели: (HTTP-код, тело) по номеру запроса к chat/completions (с 1); null — обычный ответ.</summary>
+    public Func<int, (int Status, string Body)?>? ErrorResponder { get; set; }
+
     public string FinishReason { get; set; } = "stop";
+
+    /// <summary>Псевдоним модели в публичном /v1/models (null — путь требует ключ и отвечает 401, как старые сборки).</summary>
+    public string? ModelsAlias { get; set; }
     public TimeSpan Delay { get; set; } = TimeSpan.Zero;
+
+    /// <summary>Число токенов для /tokenize по тексту (null — /tokenize отвечает 404, как сервер без этого эндпоинта).</summary>
+    public Func<string, int>? Tokenizer { get; set; } = text => Math.Max(1, text.Length / 4);
+
+    private int _tokenizeCalls;
+
+    /// <summary>Сколько раз вызывали /tokenize.</summary>
+    public int TokenizeCalls => Volatile.Read(ref _tokenizeCalls);
 
     /// <summary>Ответ модели по JSON запроса (messages, max_tokens…).</summary>
     public Func<JsonElement, string> Responder { get; set; } = _ => "ok";
@@ -147,6 +165,12 @@ internal sealed class FakeLlamaServer : IDisposable
                 await WriteJson(ctx, 200, "{\"status\":\"ok\"}");
                 return;
             }
+            // Как у llama-server: /v1/models — публичный путь (без ключа), id — псевдоним модели (--alias).
+            if (path == "/v1/models" && ModelsAlias is { } alias)
+            {
+                await WriteJson(ctx, 200, JsonSerializer.Serialize(new { @object = "list", data = new[] { new { id = alias, @object = "model" } } }));
+                return;
+            }
             if (ctx.Request.Headers["Authorization"] != "Bearer " + TestEnv.ApiKey)
             {
                 await WriteJson(ctx, 401, "{\"error\":{\"code\":401,\"message\":\"Invalid API Key\",\"type\":\"authentication_error\"}}");
@@ -157,13 +181,33 @@ internal sealed class FakeLlamaServer : IDisposable
             switch (path)
             {
                 case "/props":
-                    await WriteJson(ctx, 200, $"{{\"default_generation_settings\":{{\"n_ctx\":{ContextSize}}},\"total_slots\":1,\"model_alias\":\"offload\"}}");
+                    await WriteJson(ctx, 200, $"{{\"default_generation_settings\":{{\"n_ctx\":{ContextSize}}},\"total_slots\":{TotalSlots},\"model_alias\":\"offload\"}}");
                     return;
                 case "/tokenize":
-                    await WriteJson(ctx, 200, "{\"tokens\":[1,2,3]}");
+                {
+                    Interlocked.Increment(ref _tokenizeCalls);
+                    if (Tokenizer is not { } tokenizer)
+                    {
+                        await WriteJson(ctx, 404, "{}");
+                        return;
+                    }
+                    using var doc = JsonDocument.Parse(body);
+                    var n = tokenizer(doc.RootElement.GetProperty("content").GetString() ?? "");
+                    await WriteJson(ctx, 200, "{\"tokens\":[" + string.Join(",", Enumerable.Repeat("1", n)) + "]}");
                     return;
+                }
                 case "/v1/chat/completions":
-                    lock (_requests) _requests.Add(body);
+                    int number;
+                    lock (_requests)
+                    {
+                        _requests.Add(body);
+                        number = _requests.Count;
+                    }
+                    if (ErrorResponder?.Invoke(number) is { } error)
+                    {
+                        await WriteJson(ctx, error.Status, error.Body);
+                        return;
+                    }
                     using (var doc = JsonDocument.Parse(body))
                     {
                         var content = Responder(doc.RootElement.Clone());

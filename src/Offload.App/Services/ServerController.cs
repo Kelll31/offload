@@ -9,9 +9,14 @@ namespace Offload.App.Services;
 
 /// <summary>
 /// Единственный владелец процесса llama-server в трее: запуск/остановка (последовательно, через SemaphoreSlim),
-/// проверка готовности конфигурации, автоперезапуск после падения (до 3 раз за 10 минут),
-/// выгрузка при простое. События StateChanged и Notification приходят в поток интерфейса.
+/// проверка готовности конфигурации, автоперезапуск после падения или зависания (до 3 раз за 10 минут),
+/// сторож /health и состояние сна. События StateChanged и Notification приходят в поток интерфейса.
 /// </summary>
+/// <remarks>
+/// Выгрузку при простое делает сам llama-server (--sleep-idle-seconds): процесс остаётся жив, веса выгружаются
+/// и загружаются снова при следующем запросе. Контроллер процесс по простою не останавливает, а только читает
+/// is_sleeping из /props для отображения.
+/// </remarks>
 internal sealed class ServerController : IDisposable
 {
     public const int MaxAutoRestarts = 3;
@@ -20,9 +25,11 @@ internal sealed class ServerController : IDisposable
     private readonly SynchronizationContext _ui;
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly object _lock = new();
-    private readonly LlamaServerProcess _process = new();
+    // Режим «Авто»: контекст и выгрузка экспертов MoE — по той же оценке, что показывает интерфейс (ServerFit).
+    private readonly LlamaServerProcess _process = new() { PlacementProvider = ServerAutoPlacement.ResolveAsync };
     private readonly RestartBudget _budget = new(MaxAutoRestarts, RestartWindow);
-    private readonly System.Threading.Timer _idleTimer;
+    private readonly HealthWatchdog _watchdog = new();
+    private readonly System.Threading.Timer _watchdogTimer;
 
     private ServerState _state = ServerState.Stopped;
     private string? _lastError;
@@ -31,16 +38,22 @@ internal sealed class ServerController : IDisposable
     private bool _inOperation;
     private bool _disposed;
     private DateTime _lastActivityUtc = DateTime.UtcNow;
+    private bool _sleeping;
+    private int _watchdogBusy;
 
     public ServerController(SynchronizationContext ui)
     {
         _ui = ui;
         _process.StateChanged += OnProcessStateChanged;
-        _idleTimer = new System.Threading.Timer(_ => CheckIdle(), null, TimeSpan.FromMinutes(1), TimeSpan.FromMinutes(1));
+        Aux.Changed += RaiseChanged;
+        _watchdogTimer = new System.Threading.Timer(_ => _ = WatchdogTickAsync(), null, HealthWatchdog.Interval, HealthWatchdog.Interval);
     }
 
-    /// <summary>Смена состояния (в потоке интерфейса).</summary>
+    /// <summary>Смена состояния (в потоке интерфейса), в том числе серверов ролей.</summary>
     public event EventHandler? StateChanged;
+
+    /// <summary>Вспомогательные серверы ролей fast / embed / rerank (запуск по запросу из IDE).</summary>
+    public AuxServers Aux { get; } = new();
 
     /// <summary>Запрос на всплывающее уведомление: заголовок, текст, значок (в потоке интерфейса).</summary>
     public event Action<string, string, ToolTipIcon>? Notification;
@@ -71,7 +84,7 @@ internal sealed class ServerController : IDisposable
         }
     }
 
-    /// <summary>Пояснение к состоянию Stopped (например, «выгружен после простоя»).</summary>
+    /// <summary>Пояснение к состоянию Stopped, переданное в StopAsync.</summary>
     public string? Notice
     {
         get
@@ -82,7 +95,22 @@ internal sealed class ServerController : IDisposable
 
     public bool IsBusy => State is ServerState.Starting or ServerState.Stopping;
 
-    public InstalledModel? Model => ConfigStore.Current.ActiveModel();
+    /// <summary>
+    /// Сервер работает, но модель выгружена по простою (is_sleeping из /props) и загрузится при следующем запросе.
+    /// Обновляется сторожем раз в <see cref="HealthWatchdog.Interval"/>.
+    /// </summary>
+    public bool IsSleeping
+    {
+        get
+        {
+            lock (_lock) return _sleeping && _state == ServerState.Running;
+        }
+    }
+
+    /// <summary>Последнее обращение к серверу из IDE (запись статистики, запуск по запросу) или его запуск.</summary>
+    public DateTime LastActivityUtc => _lastActivityUtc;
+
+    public static InstalledModel? Model => ConfigStore.Current.ActiveModel();
 
     public ServerLaunchPlan? Plan => Ui.Try(() => _process.CurrentPlan, null, "CurrentPlan");
 
@@ -101,6 +129,7 @@ internal sealed class ServerController : IDisposable
             var text = Texts.State(s);
             return s switch
             {
+                ServerState.Running when IsSleeping => L.F("{0}: {1} (модель выгружена после простоя)", text, Texts.ModelName(Model)),
                 ServerState.Running or ServerState.Starting => $"{text}: {Texts.ModelName(Model)}",
                 ServerState.Failed or ServerState.NotConfigured when !string.IsNullOrWhiteSpace(LastError) => $"{text}: {LastError}",
                 ServerState.Stopped when !string.IsNullOrWhiteSpace(Notice) => $"{text} — {Notice}",
@@ -109,7 +138,7 @@ internal sealed class ServerController : IDisposable
         }
     }
 
-    /// <summary>Отметить обращение к серверу (для выгрузки при простое).</summary>
+    /// <summary>Отметить обращение к серверу из IDE (для отображения; выгрузкой при простое управляет llama-server).</summary>
     public void MarkActivity() => _lastActivityUtc = DateTime.UtcNow;
 
     /// <summary>Пересчитать «Не настроен/Остановлен», если сервер сейчас не работает.</summary>
@@ -135,11 +164,58 @@ internal sealed class ServerController : IDisposable
 
     /// <summary>
     /// Запустить сервер и дождаться готовности. true — сервер работает.
+    /// Если это первый запуск после обновления llama.cpp и он не удался, установщик откатывается на прежнюю сборку
+    /// (<see cref="LlamaInstaller.ReportServerStartAsync"/>) — и запуск повторяется один раз на ней.
     /// </summary>
     /// <param name="manual">Запуск по команде пользователя (сбрасывает счётчик автоперезапусков).</param>
     public async Task<bool> StartAsync(bool manual = true, CancellationToken ct = default)
     {
+        // Весь цикл «запуск → отчёт установщику → повтор после отката» — под одной блокировкой: иначе параллельный
+        // запуск (IPC из IDE, автоперезапуск) увидел бы промежуточное состояние отката и вернул бы новую сборку.
         await _gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var ok = await StartOnceAsync(manual, ct).ConfigureAwait(false);
+            if (!ShouldReportToInstaller(ok)) return ok;
+            var rolledBack = await ReportStartSafeAsync(ok, ct).ConfigureAwait(false);
+            if (rolledBack is null) return ok;
+
+            Log.Warn("llama", $"Новая сборка llama.cpp не запустила сервер — откат на {rolledBack.Tag} ({rolledBack.InstallDir})");
+            Notify(L.T("Откат llama.cpp"), L.F("Новая сборка не запустила сервер. Возвращена сборка {0}.", rolledBack.Tag), ToolTipIcon.Warning);
+            ok = await StartOnceAsync(manual, ct).ConfigureAwait(false);
+            if (ShouldReportToInstaller(ok)) await ReportStartSafeAsync(ok, ct).ConfigureAwait(false);
+            return ok;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>
+    /// Сообщать установщику llama.cpp об исходе запуска: успех — всегда (подтверждает новую сборку); неудачу — только
+    /// если виновата сборка (не память, не модель, не порт, не VC++ Runtime, не «не настроен» и не выход из программы).
+    /// </summary>
+    private bool ShouldReportToInstaller(bool ok) =>
+        ok || (!_disposed && State == ServerState.Failed && _lastException is not LlamaVcRuntimeMissingException
+               && Ui.Try(() => _process.LastFailureBlamesBuild, false, "LastFailureBlamesBuild"));
+
+    private static async Task<LlamaInstallResult?> ReportStartSafeAsync(bool ok, CancellationToken ct)
+    {
+        try
+        {
+            return await LlamaInstaller.ReportServerStartAsync(ok, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            Log.Warn("llama", $"Проверка отката llama.cpp после запуска: {ex.Message}");
+            return null;
+        }
+    }
+
+    /// <summary>Одна попытка запуска. Вызывать под <see cref="_gate"/>.</summary>
+    private async Task<bool> StartOnceAsync(bool manual, CancellationToken ct)
+    {
         try
         {
             if (_disposed) return false;
@@ -208,13 +284,16 @@ internal sealed class ServerController : IDisposable
         finally
         {
             lock (_lock) _inOperation = false;
-            _gate.Release();
         }
     }
 
-    /// <summary>Остановить сервер. notice — пояснение для состояния «Остановлен».</summary>
+    /// <summary>
+    /// Остановить сервер. notice — пояснение для состояния «Остановлен». Серверы ролей останавливаются тоже
+    /// (при необходимости они снова запустятся по запросу из IDE).
+    /// </summary>
     public async Task StopAsync(string? notice = null)
     {
+        await Aux.StopAllAsync().ConfigureAwait(false);
         await _gate.WaitAsync().ConfigureAwait(false);
         try
         {
@@ -285,6 +364,7 @@ internal sealed class ServerController : IDisposable
             ["modelId"] = model?.Id ?? "",
             ["baseUrl"] = cfg.Server.BaseUrl,
             ["lastError"] = LastError ?? "",
+            ["sleeping"] = IsSleeping ? "true" : "false",
             ["setupCompleted"] = cfg.SetupCompleted ? "true" : "false",
         };
     }
@@ -294,16 +374,28 @@ internal sealed class ServerController : IDisposable
         try
         {
             // Порт мог смениться (был занят) — конфиг OpenCode должен указывать на актуальный адрес.
+            // Контекст — фактический из плана запуска: режим «Авто» мог уменьшить его под свободную память.
             var cfg = ConfigStore.Reload();
-            OpenCodeConfigWriter.WriteManagedConfig(cfg);
-            if (cfg.OpenCode.RegisterInGlobalConfig && cfg.Server.Port != portBefore)
-                OpenCodeConfigWriter.RegisterGlobal(cfg);
+            var context = Plan?.ContextSize;
+            OpenCodeConfigWriter.WriteManagedConfig(cfg, context);
+            if (ShouldUpdateGlobalOpenCode(cfg, portBefore))
+            {
+                Log.Info("server", $"Порт llama-server сменился ({portBefore} → {cfg.Server.Port}) — обновляется запись Offload в глобальном конфиге OpenCode");
+                OpenCodeConfigWriter.RegisterGlobal(cfg, context);
+            }
         }
         catch (Exception ex)
         {
-            Log.Debug("server", $"Конфигурация OpenCode не обновлена: {ex.Message}");
+            Log.Warn("server", $"Конфигурация OpenCode не обновлена: {ex.Message}");
         }
     }
+
+    /// <summary>
+    /// Глобальный конфиг OpenCode трогаем только если пользователь сам включил регистрацию в нём
+    /// и только когда адрес сервера действительно изменился.
+    /// </summary>
+    internal static bool ShouldUpdateGlobalOpenCode(AppConfig cfg, int portBefore) =>
+        cfg.OpenCode.RegisterInGlobalConfig && cfg.Server.Port != portBefore;
 
     private void OnProcessStateChanged(ServerState s)
     {
@@ -324,14 +416,14 @@ internal sealed class ServerController : IDisposable
         if (crash) HandleCrash();
     }
 
-    private void HandleCrash()
+    private void HandleCrash(string? title = null)
     {
         if (_disposed) return;
         var err = LastError ?? L.T("Процесс llama-server неожиданно завершился.");
         if (_budget.TryTake(out var attempt))
         {
             Log.Warn("server", $"llama-server упал: {err}. Автоперезапуск {attempt}/{MaxAutoRestarts}");
-            Notify(L.T("Сервер llama.cpp остановился"), L.F("{0}{1}Перезапуск ({2} из {3})…", err, Environment.NewLine, attempt, MaxAutoRestarts), ToolTipIcon.Warning);
+            Notify(title ?? L.T("Сервер llama.cpp остановился"), L.F("{0}{1}Перезапуск ({2} из {3})…", err, Environment.NewLine, attempt, MaxAutoRestarts), ToolTipIcon.Warning);
             _ = Task.Run(async () =>
             {
                 await Task.Delay(TimeSpan.FromSeconds(3)).ConfigureAwait(false);
@@ -353,39 +445,123 @@ internal sealed class ServerController : IDisposable
         }
     }
 
-    private void CheckIdle()
+    /// <summary>
+    /// Сторож: /health раз в <see cref="HealthWatchdog.Interval"/>. Зависший сервер (процесс жив, но не отвечает
+    /// <see cref="HealthWatchdog.DefaultThreshold"/> раза подряд) перезапускается через общий счётчик автоперезапусков.
+    /// Заодно читает is_sleeping из /props (этот запрос не будит сервер и не сбрасывает таймер простоя).
+    /// </summary>
+    private async Task WatchdogTickAsync()
     {
+        if (_disposed || Interlocked.Exchange(ref _watchdogBusy, 1) == 1) return;
         try
         {
-            if (_disposed || State != ServerState.Running) return;
-            var minutes = ConfigStore.Current.Server.IdleUnloadMinutes;
-            if (minutes <= 0) return;
-            var last = _lastActivityUtc;
-            if (StartedAtUtc is DateTime s && s > last) last = s;
-            last = Max(last, FileTimeUtc(AppPaths.UsageFile));
-            last = Max(last, FileTimeUtc(Path.Combine(AppPaths.LogsDir, "llama-server.log")));
-            if (DateTime.UtcNow - last < TimeSpan.FromMinutes(minutes)) return;
-            Log.Info("server", $"Простой {minutes} мин — модель выгружается из памяти");
-            _ = StopAsync(L.F("модель выгружена после простоя ({0} мин), запустится при следующем обращении из IDE", minutes));
+            if (!CanProbe(out var state, out var alive, out var inOperation))
+            {
+                _watchdog.Observe(state, alive, inOperation, HealthState.Down);
+                lock (_lock) _sleeping = false;
+                return;
+            }
+
+            // Адрес и ключ запущенного процесса: после ручной правки config.json они могут отличаться от настроек.
+            var client = _process.CreateRunningClient();
+            if (client is null) return;
+            var probedPid = ProcessId;
+            var health = await ProbeHealthAsync(client).ConfigureAwait(false);
+
+            // За время запроса могли начаться остановка или перезапуск — решение по свежему состоянию.
+            CanProbe(out state, out alive, out inOperation);
+            switch (_watchdog.Observe(state, alive, inOperation, health))
+            {
+                case WatchdogVerdict.Healthy:
+                    SetSleeping(await ProbeSleepingAsync(client).ConfigureAwait(false));
+                    break;
+                case WatchdogVerdict.Suspect:
+                    Log.Warn("server", $"llama-server не ответил на /health ({_watchdog.Failures} из {_watchdog.Threshold} подряд)");
+                    break;
+                case WatchdogVerdict.Restart:
+                    await RestartHungAsync(probedPid).ConfigureAwait(false);
+                    break;
+            }
         }
         catch (Exception ex)
         {
-            Log.Debug("server", $"Проверка простоя: {ex.Message}");
+            Log.Debug("server", $"Сторож llama-server: {ex.Message}");
+        }
+        finally
+        {
+            Volatile.Write(ref _watchdogBusy, 0);
         }
     }
 
-    private static DateTime Max(DateTime a, DateTime b) => a > b ? a : b;
-
-    private static DateTime FileTimeUtc(string path)
+    private bool CanProbe(out ServerState state, out bool alive, out bool inOperation)
     {
+        lock (_lock) inOperation = _inOperation;
+        state = State;
+        alive = SafeProcessState() == ServerState.Running;
+        return !_disposed && state == ServerState.Running && alive && !inOperation;
+    }
+
+    private static async Task<HealthState> ProbeHealthAsync(LlamaClient client)
+    {
+        using var cts = new CancellationTokenSource(HealthWatchdog.ProbeTimeout);
         try
         {
-            return File.Exists(path) ? File.GetLastWriteTimeUtc(path) : DateTime.MinValue;
+            return await client.GetHealthAsync(cts.Token).ConfigureAwait(false);
         }
-        catch
+        catch (OperationCanceledException)
         {
-            return DateTime.MinValue;
+            return HealthState.Down;
         }
+    }
+
+    private static async Task<bool> ProbeSleepingAsync(LlamaClient client)
+    {
+        using var cts = new CancellationTokenSource(HealthWatchdog.ProbeTimeout);
+        try
+        {
+            var props = await client.GetPropsAsync(cts.Token).ConfigureAwait(false);
+            return props?.IsSleeping == true;
+        }
+        catch (OperationCanceledException)
+        {
+            return false;
+        }
+    }
+
+    private void SetSleeping(bool sleeping)
+    {
+        bool changed;
+        lock (_lock)
+        {
+            changed = _sleeping != sleeping;
+            _sleeping = sleeping;
+        }
+        if (!changed) return;
+        Log.Info("server", sleeping ? "llama-server выгрузил модель после простоя (сон)" : "llama-server вышел из сна");
+        RaiseChanged();
+    }
+
+    /// <summary>Процесс жив, но не отвечает: остановить и перезапустить через общий счётчик автоперезапусков.</summary>
+    /// <param name="probedPid">Процесс, который не отвечал: если за время ожидания его уже перезапустили, свежий не трогаем.</param>
+    private async Task RestartHungAsync(int? probedPid)
+    {
+        var stopped = false;
+        await _gate.WaitAsync().ConfigureAwait(false);
+        try
+        {
+            if (_disposed || State != ServerState.Running || ProcessId != probedPid) return;
+            lock (_lock) _inOperation = true;
+            Log.Error("server", $"llama-server не отвечает на /health {_watchdog.Threshold} раза подряд (раз в {HealthWatchdog.Interval.TotalSeconds:0} с) — процесс завис, принудительный перезапуск");
+            await SafeStopProcessAsync().ConfigureAwait(false);
+            SetState(ServerState.Failed, L.T("Сервер llama.cpp перестал отвечать на запросы."));
+            stopped = true;
+        }
+        finally
+        {
+            lock (_lock) _inOperation = false;
+            _gate.Release();
+        }
+        if (stopped) HandleCrash(L.T("Сервер llama.cpp завис"));
     }
 
     private ServerState SafeProcessState() => Ui.Try(() => _process.State, ServerState.Stopped, "process.State");
@@ -413,6 +589,7 @@ internal sealed class ServerController : IDisposable
         lock (_lock)
         {
             _state = state;
+            if (state != ServerState.Running) _sleeping = false;
             if (state is ServerState.Failed or ServerState.NotConfigured) _lastError = error;
             else if (state is ServerState.Running or ServerState.Starting or ServerState.Stopped) _lastError = null;
         }
@@ -443,8 +620,10 @@ internal sealed class ServerController : IDisposable
     {
         if (_disposed) return;
         _disposed = true;
-        _idleTimer.Dispose();
+        _watchdogTimer.Dispose();
         _process.StateChanged -= OnProcessStateChanged;
+        Aux.Changed -= RaiseChanged;
+        Aux.Dispose();
         try { _process.Dispose(); } catch (Exception ex) { Log.Warn("server", $"Освобождение llama-server: {ex.Message}"); }
     }
 }

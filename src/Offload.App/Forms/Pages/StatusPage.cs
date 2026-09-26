@@ -12,12 +12,24 @@ namespace Offload.App.Forms.Pages;
 
 /// <summary>
 /// Вкладка «Состояние» — дашборд: карточка сервера с управлением, плитки показателей (экономия, вызовы, видеопамять),
-/// график экономии по дням, распределение по инструментам и клиентам, лента последних вызовов.
+/// график экономии по дням за выбранный период, распределение по инструментам и клиентам, ошибки по инструментам,
+/// лента последних вызовов, экспорт статистики в CSV. Пока статистика пуста — карточка проверки подключения IDE.
 /// </summary>
 internal sealed class StatusPage : PageBase
 {
-    private const int HistoryDays = 14;
     private const int FeedSize = 60;
+
+    /// <summary>Периоды графика (дней).</summary>
+    internal static readonly int[] PeriodOptions = [7, 14, 30, 90];
+
+    /// <summary>Выбранный период — общий для окон (сохраняется при пересоздании окна).</summary>
+    private static int _historyDays = 14;
+
+    /// <summary>Опрос видеопамяти (запуск nvidia-smi) — не чаще раза в 10 с; результат общий для всех окон.</summary>
+    private static readonly ThrottledValue<(long Used, long Total)?> Vram = new(TimeSpan.FromSeconds(10));
+
+    /// <summary>Статистика читается инкрементально: из usage.jsonl — только дописанные записи.</summary>
+    private static readonly UsageReader UsageData = new();
 
     private readonly StatusDot _dot = new(16);
     private readonly Label _state = Kit.Label("", Theme.Semibold(16f));
@@ -41,6 +53,14 @@ internal sealed class StatusPage : PageBase
     private readonly BarChart _daily = new() { EmptyText = L.T("Обращений за эти дни не было") };
     private readonly BarList _byTool = new() { EmptyText = L.T("Пока нет вызовов") };
     private readonly BarList _byClient = new() { EmptyText = L.T("Пока нет вызовов") };
+    private readonly BarList _errors = new() { EmptyText = L.T("Ошибок за этот период не было") };
+    private readonly ComboBox _period = Kit.Combo(150);
+    private readonly Label _dailyHint = Kit.Label("", Theme.Regular(8.5f), Theme.TextMuted);
+    private readonly Label _toolsHint = Kit.Label("", Theme.Regular(8.5f), Theme.TextMuted);
+    private readonly Label _clientsHint = Kit.Label("", Theme.Regular(8.5f), Theme.TextMuted);
+    private readonly Label _errorsHint = Kit.Label("", Theme.Regular(8.5f), Theme.TextMuted);
+    private readonly OnboardingCard _onboarding;
+    private IReadOnlyList<UsageRecord> _records = [];
     private readonly ListView _feed = Kit.List((L.T("Время"), 11), (L.T("Инструмент"), 22), (L.T("Клиент"), 16), (L.T("Токенов"), 11), (L.T("Сэкономлено"), 12), (L.T("Длительность"), 12), (L.T("Итог"), 9));
     private readonly Label _summary = Kit.Hint("");
 
@@ -77,18 +97,32 @@ internal sealed class StatusPage : PageBase
 
         var root = Kit.Table();
         root.AddRow(BuildServerCard());
+        _onboarding = new OnboardingCard(shell);
+        _onboarding.Card.Visible = false;
+        root.AddRow(_onboarding.Card);
         root.AddRow(BuildTiles());
 
-        root.AddRow(ChartCard(L.T("Экономия по дням"), L.T("Оценка облачных токенов, которые не пришлось обработать, за последние 14 дней"), _daily, 200));
+        foreach (var days in PeriodOptions) _period.Items.Add(L.F("За {0}", Ui.Plural(days, "день", "дня", "дней")));
+        _period.SelectedIndex = Math.Max(0, Array.IndexOf(PeriodOptions, _historyDays));
+        _period.AccessibleName = L.T("Период статистики");
+        _period.SelectionChangeCommitted += (_, _) => ChangePeriod(PeriodOptions[Math.Max(0, _period.SelectedIndex)]);
+        root.AddRow(ChartCard(L.T("Экономия по дням"), _dailyHint, _daily, 200, _period));
 
         var split = Kit.Table(50, 50);
-        var toolsCard = ChartCard(L.T("По инструментам"), L.T("Число вызовов"), _byTool, 210);
-        var clientsCard = ChartCard(L.T("По клиентам"), L.T("Какие IDE обращались к Offload"), _byClient, 210);
+        var toolsCard = ChartCard(L.T("По инструментам"), _toolsHint, _byTool, 210);
+        var clientsCard = ChartCard(L.T("По клиентам"), _clientsHint, _byClient, 210);
         toolsCard.Dock = clientsCard.Dock = DockStyle.Fill;
         toolsCard.Margin = new Padding(0, 0, 6, 12);
         clientsCard.Margin = new Padding(6, 0, 0, 12);
         split.AddRow(toolsCard, clientsCard);
         root.AddRow(split);
+        root.AddRow(ChartCard(L.T("Ошибки по инструментам"), _errorsHint, _errors, 150));
+        UpdatePeriodTexts();
+
+        _daily.AccessibleName = L.T("Экономия по дням");
+        _byTool.AccessibleName = L.T("Вызовы по инструментам");
+        _byClient.AccessibleName = L.T("Вызовы по клиентам");
+        _errors.AccessibleName = L.T("Ошибки по инструментам");
 
         _feed.Margin = new Padding(0, 4, 0, 0);
         root.AddRow(ChartCard(L.T("Последние вызовы"), L.T("Самые свежие обращения IDE к локальной модели"), _feed, 250));
@@ -97,13 +131,46 @@ internal sealed class StatusPage : PageBase
         root.AddRow(_summary);
         root.AddRow(Kit.Hint(L.T(
             "Когда Claude Code или другая IDE поручает задачу Offload, файлы читает и текст пишет локальная модель — облачной модели достаётся только короткий ответ. «Сэкономлено» — оценка токенов, которые облачной модели не пришлось обработать; сумма в долларах — приблизительный расчёт по ценам, указанным на вкладке «Промпт».")));
-        root.AddRow(Kit.Flow(Kit.Button(L.T("Сбросить статистику"), (_, _) => ResetStats(), 150)));
+        root.AddRow(Kit.Flow(
+            Kit.Button(L.T("Экспорт в CSV…"), (_, _) => ExportCsv(), 140),
+            Kit.Button(L.T("Сбросить статистику"), (_, _) => ResetStats(), 150)));
 
         Controls.Add(Kit.Scroll(root, new Padding(16, 4, 28, 16)));
 
         _refreshTimer = CreateTimer(5000, () => _ = RefreshDynamicAsync());
-        _vramTimer = CreateTimer(3000, () => _ = RefreshVramAsync());
+        _vramTimer = CreateTimer((int)Vram.Ttl.TotalMilliseconds, () => _ = RefreshVramAsync());
+        // Первый вызов из IDE: сразу обновить статистику (не ждать таймера).
+        Shell.UsageRecorded += OnUsageRecorded;
         UpdateState();
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) Shell.UsageRecorded -= OnUsageRecorded;
+        base.Dispose(disposing);
+    }
+
+    private void OnUsageRecorded(object? sender, UsageRecord record)
+    {
+        if (IsActive && !IsDisposed) _ = RefreshUsageAsync();
+    }
+
+    private void ChangePeriod(int days)
+    {
+        if (days == _historyDays) return;
+        _historyDays = days;
+        UpdatePeriodTexts();
+        _usageSignature = null;
+        _ = RefreshUsageAsync();
+    }
+
+    private void UpdatePeriodTexts()
+    {
+        var period = Ui.Plural(_historyDays, "день", "дня", "дней");
+        _dailyHint.Text = L.F("Оценка облачных токенов, которые не пришлось обработать, за последние {0}", period);
+        _toolsHint.Text = L.F("Число вызовов за {0}", period);
+        _clientsHint.Text = L.F("Какие IDE обращались к Offload за {0}", period);
+        _errorsHint.Text = L.F("Вызовы, завершившиеся ошибкой, за {0}", period);
     }
 
     public override string Key => Tabs.Status;
@@ -123,7 +190,7 @@ internal sealed class StatusPage : PageBase
         return l;
     }
 
-    private static Control Fact(string caption, Control value)
+    private static TableLayoutPanel Fact(string caption, Control value)
     {
         var t = Kit.Table();
         t.Dock = DockStyle.Fill;
@@ -180,18 +247,29 @@ internal sealed class StatusPage : PageBase
         return t;
     }
 
-    private static CardPanel ChartCard(string title, string hint, Control body, int height)
+    private static CardPanel ChartCard(string title, string hint, Control body, int height) =>
+        ChartCard(title, Kit.Label(hint, Theme.Regular(8.5f), Theme.TextMuted), body, height);
+
+    /// <summary>Карточка графика: заголовок (и справа — необязательный элемент, например выбор периода), пояснение, график.</summary>
+    private static CardPanel ChartCard(string title, Label sub, Control body, int height, Control? headerRight = null)
     {
-        var card = new CardPanel { ColumnCount = 1, Margin = new Padding(0, 0, 0, 12), Padding = new Padding(20, 14, 20, 12) };
+        var card = new CardPanel { ColumnCount = 2, Margin = new Padding(0, 0, 0, 12), Padding = new Padding(20, 14, 20, 12) };
         card.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        card.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         var head = Kit.Label(title, Theme.Semibold(10.5f));
         head.Margin = new Padding(0, 0, 0, 0);
-        card.AddRow(head);
-        var sub = Kit.Label(hint, Theme.Regular(8.5f), Theme.TextMuted);
+        if (headerRight is not null)
+        {
+            headerRight.Anchor = AnchorStyles.Right | AnchorStyles.Top;
+            headerRight.Margin = new Padding(8, 0, 0, 0);
+        }
+        card.AddRow(head, headerRight);
         sub.Margin = new Padding(0, 1, 0, 8);
         card.AddRow(sub);
+        card.SetColumnSpan(sub, 2);
         body.Dock = DockStyle.Fill;
         card.AddFixedRow(height, body);
+        card.SetColumnSpan(body, 2);
         return card;
     }
 
@@ -238,6 +316,7 @@ internal sealed class StatusPage : PageBase
         var s = server.State;
         _dot.DotColor = Theme.StateColor(s);
         _state.Text = Texts.State(s);
+        _dot.AccessibleName = L.F("Состояние сервера: {0}", _state.Text);
         _model.Text = Texts.ModelName(cfg.ActiveModel()) + ModelSuffix(cfg.ActiveModel());
 
         var tag = cfg.Llama.InstalledTag;
@@ -324,11 +403,12 @@ internal sealed class StatusPage : PageBase
     private sealed record UsageView(
         IReadOnlyList<UsageStats.Period> Periods,
         UsageSummary All,
+        UsageSummary InPeriod,
+        IReadOnlyDictionary<string, int> ErrorsByTool,
         IReadOnlyList<BarChart.Bar> Daily,
         IReadOnlyList<double> CallsPerDay,
         IReadOnlyList<double> Cumulative,
-        IReadOnlyList<UsageRecord> Recent,
-        string Signature);
+        IReadOnlyList<UsageRecord> Recent);
 
     private async Task RefreshUsageAsync()
     {
@@ -337,10 +417,21 @@ internal sealed class StatusPage : PageBase
         try
         {
             var prices = ConfigStore.Current.Mcp;
-            var view = await Task.Run(() => BuildUsageView(UsageLog.ReadAll(), prices));
+            var (version, records) = await Task.Run(() =>
+            {
+                UsageData.Refresh();
+                return (UsageData.Version, UsageData.Records);
+            });
             if (IsDisposed) return;
-            if (view.Signature == _usageSignature) return; // без изменений — не перерисовывать
-            _usageSignature = view.Signature;
+            // Без новых записей (и смены дня/цен) — ни пересчёта, ни перерисовки.
+            var days = _historyDays;
+            var signature = string.Join("|", version, DateTime.Now.ToString("yyyyMMdd", System.Globalization.CultureInfo.InvariantCulture),
+                prices.CloudInputPricePerMTok, prices.CloudOutputPricePerMTok, L.Culture.Name, days);
+            if (signature == _usageSignature) return;
+            var view = await Task.Run(() => BuildUsageView(records, prices, days));
+            if (IsDisposed) return;
+            _usageSignature = signature;
+            _records = records;
             ApplyUsage(view);
         }
         catch (Exception ex)
@@ -353,14 +444,15 @@ internal sealed class StatusPage : PageBase
         }
     }
 
-    private static UsageView BuildUsageView(IReadOnlyList<UsageRecord> records, McpSettings prices)
+    private static UsageView BuildUsageView(IReadOnlyList<UsageRecord> records, McpSettings prices, int historyDays)
     {
         var culture = L.Culture;
         var today = DateTime.Now.Date;
         var byDay = records.GroupBy(r => r.TimestampUtc.ToLocalTime().Date).ToDictionary(g => g.Key, g => g.ToList());
         var daily = new List<BarChart.Bar>();
         var calls = new List<double>();
-        for (var d = today.AddDays(-(HistoryDays - 1)); d <= today; d = d.AddDays(1))
+        var start = today.AddDays(-(historyDays - 1));
+        for (var d = start; d <= today; d = d.AddDays(1))
         {
             var list = byDay.TryGetValue(d, out var l) ? l : [];
             var s = UsageLog.Summarize(list);
@@ -379,10 +471,10 @@ internal sealed class StatusPage : PageBase
             cumulative.Add(acc);
         }
 
+        var inPeriod = records.Where(r => r.TimestampUtc.ToLocalTime().Date >= start).ToList();
         var recent = records.OrderByDescending(r => r.TimestampUtc).Take(FeedSize).ToList();
-        var last = records.Count == 0 ? "" : records[^1].TimestampUtc.Ticks.ToString(culture);
-        return new UsageView(UsageStats.Build(records, prices), UsageLog.Summarize(records), daily, calls, cumulative, recent,
-            $"{records.Count}|{last}|{today:yyyyMMdd}");
+        return new UsageView(UsageStats.Build(records, prices), UsageLog.Summarize(records), UsageLog.Summarize(inPeriod),
+            UsageStats.ErrorsByTool(inPeriod), daily, calls, cumulative, recent);
     }
 
     private void ApplyUsage(UsageView v)
@@ -399,9 +491,12 @@ internal sealed class StatusPage : PageBase
         _tileTotal.SetHistory(v.Cumulative);
 
         _daily.SetData(v.Daily);
-        _byTool.SetData(v.All.CallsByTool.Select(kv => new BarList.Row(ShortToolName(kv.Key), kv.Value, Ui.N(kv.Value))));
-        _byClient.SetData(v.All.CallsByClient.Select(kv => new BarList.Row(kv.Key, kv.Value, Ui.N(kv.Value))));
+        _byTool.SetData(v.InPeriod.CallsByTool.Select(kv => new BarList.Row(ShortToolName(kv.Key), kv.Value, Ui.N(kv.Value))));
+        _byClient.SetData(v.InPeriod.CallsByClient.Select(kv => new BarList.Row(ClientName(kv.Key), kv.Value, Ui.N(kv.Value))));
+        _errors.SetData(v.ErrorsByTool.Select(kv => new BarList.Row(ShortToolName(kv.Key), kv.Value, Ui.N(kv.Value))));
         FillFeed(v.Recent);
+        // Пустая статистика — показать проверку подключения IDE; после первого вызова карточка остаётся с отметкой.
+        _onboarding.Card.Visible = v.All.Calls == 0 || _onboarding.Connected;
 
         var all = v.All;
         _summary.Text = all.Calls == 0
@@ -410,6 +505,9 @@ internal sealed class StatusPage : PageBase
                   Ui.N(all.PromptTokens), Ui.N(all.CompletionTokens), FileUtil.FormatDuration(all.TotalDuration)) +
               (all.Failed > 0 ? L.F(", с ошибкой завершились {0} вызовов.", Ui.N(all.Failed)) : ".");
     }
+
+    /// <summary>Имя клиента для показа: ключ «неизвестно» из статистики переводится только здесь.</summary>
+    internal static string ClientName(string key) => key == UsageLog.UnknownClient ? L.T("неизвестно") : key;
 
     private static string ShortToolName(string tool)
     {
@@ -454,7 +552,8 @@ internal sealed class StatusPage : PageBase
         _vramLoading = true;
         try
         {
-            var mem = await Task.Run(() => HardwareDetector.QueryNvidiaMemoryAsync());
+            // Кэш моложе 10 с отдаётся сразу; иначе nvidia-smi запускается в фоновом потоке (не чаще раза в 10 с на все окна).
+            var mem = Vram.TryGetFresh(out var cached) ? cached : await Vram.GetAsync(() => HardwareDetector.QueryNvidiaMemoryAsync());
             if (IsDisposed) return;
             if (mem is (long used, long total) && total > 0)
             {
@@ -558,10 +657,37 @@ internal sealed class StatusPage : PageBase
             Ui.Warn(Owner, L.T("Не удалось скопировать ключ в буфер обмена."));
     }
 
+    private void ExportCsv()
+    {
+        var records = _records;
+        if (records.Count == 0)
+        {
+            Ui.Info(Owner, L.T("Статистика пуста — экспортировать нечего."));
+            return;
+        }
+        using var dialog = new SaveFileDialog
+        {
+            Title = L.T("Экспорт статистики"),
+            Filter = L.T("Таблица CSV (*.csv)|*.csv"),
+            FileName = UsageCsv.DefaultFileName(DateTime.Now),
+            DefaultExt = "csv",
+            AddExtension = true,
+            OverwritePrompt = true,
+        };
+        if (dialog.ShowDialog(Owner) != DialogResult.OK) return;
+        var path = dialog.FileName;
+        _ = RunBusyAsync(async () =>
+        {
+            await Task.Run(() => UsageCsv.Write(path, records));
+            Shell.Notify(L.T("Статистика экспортирована"), Ui.Plural(records.Count, "запись", "записи", "записей") + ": " + path, force: true);
+        }, L.T("Не удалось экспортировать статистику"));
+    }
+
     private void ResetStats()
     {
         if (!Ui.Confirm(Owner, L.T("Удалить всю накопленную статистику обращений к локальной модели?"), warning: true)) return;
         Ui.RunSafe(Owner, UsageLog.Clear, L.T("Не удалось сбросить статистику"));
+        UsageData.Invalidate();
         _usageSignature = null;
         _ = RefreshUsageAsync();
     }

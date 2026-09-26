@@ -29,7 +29,7 @@ public class FileGathererTests
         var names = dir.Files.Select(f => f.Display).ToList();
         Assert.Contains("src/readme.md", names);
         Assert.DoesNotContain(names, n => n.Contains("node_modules"));
-        Assert.DoesNotContain(names, n => n.EndsWith(".env"));
+        Assert.DoesNotContain(names, n => n.EndsWith(".env", StringComparison.Ordinal));
         Assert.Contains(dir.Skipped, s => s.Display == "src/.env" && s.Reason == "secret");
         Assert.Contains(dir.Skipped, s => s.Display == "src/blob.dat.txt" && s.Reason == "binary");
         Assert.Contains(dir.Skipped, s => s.Display == "src/logo.png" && s.Reason == "binary");

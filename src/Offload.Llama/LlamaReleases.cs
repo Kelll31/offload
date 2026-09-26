@@ -33,9 +33,15 @@ public static class LlamaReleaseResolver
     /// <summary>
     /// Рекомендуемая сборка: NVIDIA → CUDA 12.4 (RTX 30/40 с драйвером ≥ 527.41, прочие ≥ 551.78),
     /// Blackwell (RTX 50) → CUDA 13 (драйвер ≥ 580), старый драйвер → Vulkan; AMD и Intel → Vulkan
-    /// (ROCm/SYCL — вручную), нет дискретной видеокарты → CPU.
+    /// (ROCm/SYCL/OpenVINO — вручную), нет дискретной видеокарты → CPU.
     /// </summary>
-    public static BackendRecommendation Recommend(HardwareInfo hw) => BackendAdvisor.Recommend(hw);
+    /// <param name="hw">Оборудование.</param>
+    /// <param name="modelHasIqTensors">
+    /// Есть ли IQ-тензоры в выбранной модели (<c>ModelCatalog.HasIqTensors</c>); null — неизвестно. Влияет на пояснение
+    /// про ошибку CUDA 13.x с IQ-квантами (llama.cpp #21255).
+    /// </param>
+    public static BackendRecommendation Recommend(HardwareInfo hw, bool? modelHasIqTensors = null) =>
+        BackendAdvisor.Recommend(hw, modelHasIqTensors);
 
     /// <summary>Выбор архивов релиза для указанной сборки. null — такой сборки в релизе нет.</summary>
     public static LlamaBuildSelection? Select(LlamaRelease release, LlamaBackend backend, bool arm64 = false) =>
@@ -50,7 +56,26 @@ public static class LlamaReleaseResolver
 
 public sealed record LlamaInstallResult(string Tag, LlamaBackend Backend, string InstallDir, string ServerExePath);
 
-public sealed record LlamaUpdateInfo(bool UpdateAvailable, string? InstalledTag, string LatestTag);
+/// <param name="UpdateAvailable">Есть более новая сборка того же типа (не бывает при закреплённой версии).</param>
+/// <param name="InstalledTag">Установленный тег или null.</param>
+/// <param name="LatestTag">Последний тег (при закреплении — закреплённый).</param>
+/// <param name="Pinned">Версия закреплена (<c>Llama.PinnedTag</c>): обновления не проверялись.</param>
+public sealed record LlamaUpdateInfo(bool UpdateAvailable, string? InstalledTag, string LatestTag, bool Pinned = false);
+
+/// <summary>Сохранённая на диске сборка llama.cpp (текущая, закреплённая или одна из предыдущих).</summary>
+public sealed record LlamaInstalledBuild(string Tag, LlamaBackend Backend, string InstallDir, DateTime InstalledAtUtc, bool IsCurrent, bool IsPinned);
+
+/// <summary>
+/// Новая сборка не прошла проверку запуска: текущей осталась (или стала) прежняя сборка. Сообщение — для пользователя.
+/// </summary>
+public sealed class LlamaInstallRolledBackException : InvalidOperationException
+{
+    public LlamaInstallRolledBackException(string message, LlamaInstallResult? switchedTo, Exception inner) : base(message, inner) =>
+        SwitchedTo = switchedTo;
+
+    /// <summary>Сборка, на которую переключился конфиг; null — конфиг не менялся (прежняя сборка так и осталась текущей).</summary>
+    public LlamaInstallResult? SwitchedTo { get; }
+}
 
 /// <summary>
 /// Установка llama.cpp в %LOCALAPPDATA%\Offload\llama.cpp\&lt;tag&gt;-&lt;backend&gt;.
@@ -78,9 +103,42 @@ public static class LlamaInstaller
     /// <summary>Путь к llama-server.exe установленной сборки или null.</summary>
     public static string? GetServerExePath(AppConfig cfg) => InstallerImpl.GetServerExePath(cfg);
 
-    /// <summary>Есть ли более новая сборка того же типа (сравниваются номера bNNNNN).</summary>
+    /// <summary>
+    /// Есть ли более новая сборка того же типа (сравниваются номера bNNNNN). При закреплённой версии сеть не используется
+    /// и обновление не предлагается; сборка, которая уже не запустилась (<c>Llama.FailedTag</c>), тоже не предлагается.
+    /// </summary>
     public static Task<LlamaUpdateInfo> CheckUpdateAsync(AppConfig cfg, CancellationToken ct = default) =>
         InstallerImpl.CheckUpdateAsync(cfg, ct);
+
+    /// <summary>Сколько предыдущих сборок хранится сверх текущей и закреплённой.</summary>
+    public const int KeepPreviousBuilds = InstallerImpl.KeepPreviousBuilds;
+
+    /// <summary>Сохранённые на диске сборки (новые первыми). Читает файловую систему — вызывать не в UI-потоке.</summary>
+    public static IReadOnlyList<LlamaInstalledBuild> ListInstalledBuilds(AppConfig cfg)
+    {
+        ArgumentNullException.ThrowIfNull(cfg);
+        return InstallerImpl.ListBuildsCore(cfg);
+    }
+
+    /// <summary>
+    /// Сделать текущей сохранённую сборку (откат или возврат) без загрузки: проверка «--version» и обновление конфига.
+    /// Перезапуск сервера — забота вызывающего.
+    /// </summary>
+    public static Task<LlamaInstallResult> SwitchToAsync(string installDir, CancellationToken ct = default) =>
+        InstallerImpl.SwitchToAsync(installDir, ct);
+
+    /// <summary>Закрепить версию (тег bNNNNN) или снять закрепление (null): установка ставит закреплённую версию.</summary>
+    public static void SetPinnedTag(string? tag) => InstallerImpl.SetPinnedTag(tag);
+
+    /// <summary>
+    /// Сообщить результат запуска сервера. Нужен после обновления: если новая сборка ни разу не запустила сервер и запуск
+    /// не удался, конфиг переключается на прежнюю сборку и возвращается она — сервер нужно запустить ещё раз.
+    /// Если и с прежней сборкой запуск не удался, возвращается новая (дело не в сборке) и результат — null.
+    /// Без незавершённого обновления вызов ничего не делает и не обращается к диску.
+    /// </summary>
+    /// <returns>Сборка, на которую выполнен откат (повторить запуск), или null.</returns>
+    public static Task<LlamaInstallResult?> ReportServerStartAsync(bool started, CancellationToken ct = default) =>
+        InstallerImpl.ReportServerStartAsync(started, ct);
 }
 
 /// <summary>

@@ -1,0 +1,5 @@
+{
+  "Найти в WSL": "Find in WSL",
+  "Дистрибутивы WSL не запущены: {0}. Offload не запускает их сам — нажмите «Найти в WSL», чтобы запустить их и проверить Claude Code внутри.": "WSL distributions are not running: {0}. Offload doesn't start them on its own — click “Find in WSL” to start them and check Claude Code inside.",
+  "Не удалось проверить дистрибутивы WSL": "Could not check WSL distributions"
+}

@@ -56,7 +56,7 @@ internal static class CommitMessageTool
         ctx.Stats.FilesRead = set.Files.Count;
         ctx.Stats.TokensRead = set.Files.Sum(f => (long)Tokens.Estimate(f.Text));
 
-        await using var slot = await GpuQueue.AcquireAsync(ctx.Cfg.Server.Parallel, ctx.Progress, ctx.Ct).ConfigureAwait(false);
+        await using var slot = await GpuQueue.AcquireAsync(ctx, ctx.Ct).ConfigureAwait(false);
         var reply = await model.ChatAsync(system, summary + diff.ToString(), 400, "writing commit message", ctx.Ct).ConfigureAwait(false);
         var msg = Clean(reply.Text);
         if (msg.Length == 0) throw new ToolException("The local model returned an empty commit message; write it yourself.");
@@ -91,7 +91,7 @@ internal static class CommitMessageTool
         }
         ctx.Stats.FilesRead = set.Files.Count;
         ctx.Stats.TokensRead = set.Files.Sum(f => (long)Tokens.Estimate(f.Text));
-        await using var slot = await GpuQueue.AcquireAsync(ctx.Cfg.Server.Parallel, ctx.Progress, ctx.Ct).ConfigureAwait(false);
+        await using var slot = await GpuQueue.AcquireAsync(ctx, ctx.Ct).ConfigureAwait(false);
         var reply = await model.ChatAsync(system, summary + diff.ToString(), 900, kind == "pr" ? "writing PR description" : "planning commits", ctx.Ct).ConfigureAwait(false);
         var answer = OutputCleaner.StripFence(reply.Text.Trim(), allowInnerBlock: false).Trim();
         if (answer.Length == 0) throw new ToolException("The local model returned an empty answer; write it yourself.");

@@ -16,11 +16,36 @@ internal static class ServerEnsurer
     public const string NotSetUpMessage =
         "Offload is not set up yet: open the Offload tray app and finish the setup wizard (it installs llama.cpp and a local model). Until then, do this task yourself.";
 
-    public static async Task<LlamaClient> EnsureAsync(AppConfig cfg, SessionState state, ProgressReporter progress, CancellationToken ct)
+    /// <summary>
+    /// Сервер роли по маршруту: вспомогательный (fast…) — если он запускается; при любой неудаче (трей старой версии,
+    /// модель не загрузилась, роль снята) — основной сервер. Возвращает клиента и фактическую роль.
+    /// </summary>
+    public static async Task<(LlamaClient Client, ModelRole Role)> EnsureRoutedAsync(AppConfig cfg, SessionState state, ProgressReporter progress,
+        ModelRole role, CancellationToken ct)
     {
-        var client = LlamaClient.FromConfig(cfg);
+        if (role != ModelRole.Quality)
+        {
+            try
+            {
+                return (await EnsureAsync(cfg, state, progress, ct, role).ConfigureAwait(false), role);
+            }
+            catch (ToolException ex)
+            {
+                Log.Warn("mcp", $"Сервер роли {role.Key()} недоступен, используется основная модель: {ex.Message}");
+                progress.Report($"The {role.Key()} model is unavailable; using the main local model");
+            }
+        }
+        return (await EnsureAsync(cfg, state, progress, ct).ConfigureAwait(false), ModelRole.Quality);
+    }
+
+    /// <summary>Сервер роли <paramref name="role"/> готов (при необходимости запускается через трей) — клиент к нему.</summary>
+    public static async Task<LlamaClient> EnsureAsync(AppConfig cfg, SessionState state, ProgressReporter progress, CancellationToken ct,
+        ModelRole role = ModelRole.Quality)
+    {
+        if (role != ModelRole.Quality) return await EnsureAuxAsync(cfg, state, progress, role, ct).ConfigureAwait(false);
+        var client = LlamaClient.ForRole(cfg, role);
         var health = await client.GetHealthAsync(ct).ConfigureAwait(false);
-        if (health == HealthState.Ready) return client;
+        if (health == HealthState.Ready) return await VerifiedAsync(client, role, fromTray: false, ct).ConfigureAwait(false);
 
         if (!cfg.SetupCompleted || cfg.ActiveModel() is null)
         {
@@ -32,29 +57,21 @@ internal static class ServerEnsurer
         try
         {
             health = await client.GetHealthAsync(ct).ConfigureAwait(false);
-            if (health == HealthState.Ready) return client;
+            if (health == HealthState.Ready) return await VerifiedAsync(client, role, fromTray: false, ct).ConfigureAwait(false);
 
             var timeout = TimeSpan.FromSeconds(Math.Clamp(cfg.Mcp.ServerStartTimeoutSeconds, 10, 1800));
             var sw = Stopwatch.StartNew();
+            progress.Warn(health == HealthState.Loading
+                ? "Offload: the local model is still loading; this call waits for it."
+                : $"Offload: the local model server is not running; starting it (up to {timeout.TotalSeconds:0} s).");
             Task<IpcResponse?>? startTask = null;
 
             if (health == HealthState.Down)
             {
-                if (!IpcClient.IsTrayRunning())
-                {
-                    progress.Report("Starting Offload tray app…");
-                    if (!LaunchTray(state))
-                        throw new ToolException(
-                            "The local model server is not running and the Offload tray app could not be started. Start Offload from the Start menu, then retry.");
-                    // Ждём, пока трей поднимет IPC (он сам может запустить сервер при старте).
-                    while (!IpcClient.IsTrayRunning() && sw.Elapsed < TimeSpan.FromSeconds(30))
-                    {
-                        await Task.Delay(500, ct).ConfigureAwait(false);
-                        if (await client.GetHealthAsync(ct).ConfigureAwait(false) == HealthState.Ready) return client;
-                    }
-                }
+                if (await EnsureTrayAsync(state, progress, sw, () => client.GetHealthAsync(ct), ct).ConfigureAwait(false))
+                    return await VerifiedAsync(client, role, fromTray: false, ct).ConfigureAwait(false);
                 progress.Report("Starting local model…");
-                startTask = IpcClient.SendAsync(new IpcRequest(IpcCommands.StartServer), timeout, ct);
+                startTask = SendAsync(state, new IpcRequest(IpcCommands.StartServer), timeout, ct);
             }
 
             while (sw.Elapsed < timeout)
@@ -64,21 +81,14 @@ internal static class ServerEnsurer
                 if (health == HealthState.Ready)
                 {
                     progress.Report($"Local model ready ({sw.Elapsed.TotalSeconds:0} s)");
-                    return client;
+                    return await VerifiedAsync(client, role, fromTray: false, ct).ConfigureAwait(false);
                 }
                 if (startTask is { IsCompleted: true })
                 {
                     var resp = await startTask.ConfigureAwait(false);
                     startTask = null;
-                    if (resp is null)
-                    {
-                        Log.Warn("mcp", "Трей не ответил на start-server");
-                    }
-                    else if (!resp.Ok)
-                    {
-                        throw new ToolException(
-                            $"The Offload tray app could not start the local model: {resp.Message}. Open Offload to see details; meanwhile do this task yourself.");
-                    }
+                    if (resp is null) Log.Warn("mcp", "Трей не ответил на start-server");
+                    else if (!resp.Ok) throw TrayFailed(resp);
                 }
                 progress.Report(health == HealthState.Loading
                     ? $"Loading local model… {sw.Elapsed.TotalSeconds:0} s"
@@ -91,6 +101,144 @@ internal static class ServerEnsurer
         finally
         {
             state.EnsureLock.Release();
+        }
+    }
+
+    /// <summary>
+    /// Сервер вспомогательной роли — только по адресу, который вернул трей (IPC start-server с ролью): порт роли (основной + 1…3)
+    /// мог занять чужой процесс, и опрос адреса из конфига до ответа трея отдал бы ему код и ключ API. Затем — сверка
+    /// псевдонима модели (offload-&lt;роль&gt;) по /v1/models без ключа. Любая неудача — ToolException (вызывающий перейдёт на основную).
+    /// </summary>
+    private static async Task<LlamaClient> EnsureAuxAsync(AppConfig cfg, SessionState state, ProgressReporter progress, ModelRole role, CancellationToken ct)
+    {
+        if (!cfg.SetupCompleted || cfg.ActiveModel() is null) throw new ToolException(NotSetUpMessage);
+        if (cfg.RoleModel(role) is null) throw new ToolException($"No model is assigned to the '{role.Key()}' role in Offload.");
+
+        await state.EnsureLock.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var timeout = TimeSpan.FromSeconds(Math.Clamp(cfg.Mcp.ServerStartTimeoutSeconds, 10, 1800));
+            var sw = Stopwatch.StartNew();
+            await EnsureTrayAsync(state, progress, sw, null, ct).ConfigureAwait(false);
+            progress.Report($"Starting the {role.Key()} local model…");
+            var args = new Dictionary<string, string> { [IpcRoleArgs.Role] = role.Key() };
+            var resp = await SendAsync(state, new IpcRequest(IpcCommands.StartServer, args), timeout, ct).ConfigureAwait(false)
+                       ?? throw new ToolException("The Offload tray app did not answer the request to start the auxiliary model.");
+            if (!resp.Ok) throw TrayFailed(resp);
+            var client = CheckRoleResponse(resp, role, LlamaClient.ForRole(cfg, role));
+            // Трей отвечает после готовности сервера; короткое ожидание — на случай гонки с перезапуском.
+            while (await client.GetHealthAsync(ct).ConfigureAwait(false) != HealthState.Ready)
+            {
+                if (sw.Elapsed >= timeout)
+                    throw new ToolException($"The {role.Key()} model server did not become ready within {timeout.TotalSeconds:0} s.");
+                await Task.Delay(500, ct).ConfigureAwait(false);
+            }
+            return await VerifiedAsync(client, role, fromTray: true, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            state.EnsureLock.Release();
+        }
+    }
+
+    /// <summary>Трей запущен (при необходимости — запустить и дождаться IPC). true — сервер уже ответил Ready, пока ждали.</summary>
+    private static async Task<bool> EnsureTrayAsync(SessionState state, ProgressReporter progress, Stopwatch sw,
+        Func<Task<HealthState>>? health, CancellationToken ct)
+    {
+        if (IsTrayRunning(state)) return false;
+        progress.Report("Starting Offload tray app…");
+        if (!LaunchTray(state))
+            throw new ToolException(
+                "The local model server is not running and the Offload tray app could not be started. Start Offload from the Start menu, then retry.");
+        // Ждём, пока трей поднимет IPC (он сам может запустить сервер при старте).
+        while (!IsTrayRunning(state) && sw.Elapsed < TimeSpan.FromSeconds(30))
+        {
+            await Task.Delay(500, ct).ConfigureAwait(false);
+            if (health is not null && await health().ConfigureAwait(false) == HealthState.Ready) return true;
+        }
+        return false;
+    }
+
+    private static bool IsTrayRunning(SessionState state) => state.IpcOverride is not null || IpcClient.IsTrayRunning();
+
+    private static Task<IpcResponse?> SendAsync(SessionState state, IpcRequest request, TimeSpan timeout, CancellationToken ct) =>
+        state.IpcOverride is { } over ? over(request, ct) : IpcClient.SendAsync(request, timeout, ct);
+
+    /// <summary>Отказ трея: его текст локализован для пользователя — в ответ модели попадает только английская подробность.</summary>
+    private static ToolException TrayFailed(IpcResponse resp)
+    {
+        Log.Warn("mcp", $"Трей не запустил сервер: {resp.Message}");
+        var why = LocalModel.EnglishDetail(resp.Message) is { } d ? ": " + d.TrimEnd('.') : " (see the Offload log)";
+        return new ToolException($"The Offload tray app could not start the local model{why}. Open Offload to see details; meanwhile do this task yourself.");
+    }
+
+    /// <summary>
+    /// Ответ трея на запуск сервера роли: трей старой версии роль не знает (запустил основной сервер и не вернул Data["role"]) —
+    /// ToolException, вызывающий перейдёт на основную модель. Адрес сервера роли — только из ответа трея и только петлевой
+    /// http: адрес из конфига не используется (порт мог занять чужой процесс), ответ трея не уводит запросы с ключом на чужой хост.
+    /// </summary>
+    internal static LlamaClient CheckRoleResponse(IpcResponse resp, ModelRole role, LlamaClient client)
+    {
+        if (resp.Data?.GetValueOrDefault(IpcRoleArgs.Role) != role.Key())
+            throw new ToolException("The running Offload tray app does not support auxiliary model roles. Restart Offload to use them.");
+        var url = resp.Data?.GetValueOrDefault(IpcRoleArgs.BaseUrl);
+        if (string.IsNullOrWhiteSpace(url)
+            || !Uri.TryCreate(url, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttp || !uri.IsLoopback
+            || uri.AbsolutePath != "/" || !string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.UserInfo))
+            throw new ToolException($"The Offload tray app did not report a local address for the {role.Key()} model server.");
+        return new LlamaClient(uri.GetLeftPart(UriPartial.Authority), client.ApiKey) { Model = client.Model };
+    }
+
+    /// <summary>
+    /// Сверка, что по адресу отвечает наш llama-server: GET /v1/models без ключа (публичный путь llama-server) и псевдоним
+    /// модели offload / offload-&lt;роль&gt;. Другой псевдоним — отказ (порт занят чужим сервером), код и ключ туда не уходят.
+    /// Сервер без публичного /v1/models (401/404, старые сборки) принимается: для роли адрес всё равно из трея, для основного
+    /// сервера — прежнее поведение. Защита от случайного конфликта портов, а не от процесса, подделывающего ответ.
+    /// </summary>
+    internal static async Task<LlamaClient> VerifiedAsync(LlamaClient client, ModelRole role, bool fromTray, CancellationToken ct)
+    {
+        var expected = AuxServerArgs.AliasFor(role);
+        var aliases = await ModelAliasesAsync(client.BaseUrl, ct).ConfigureAwait(false);
+        if (aliases is null || aliases.Count == 0 || aliases.Contains(expected, StringComparer.Ordinal)) return client;
+        Log.Warn("mcp", $"По адресу {client.BaseUrl} отвечает не сервер Offload ({string.Join(", ", aliases.Take(3))} вместо {expected}; адрес {(fromTray ? "от трея" : "из конфига")})");
+        throw new ToolException(
+            $"Another program answers on {client.BaseUrl} instead of the Offload {(role == ModelRole.Quality ? "local model" : role.Key() + " model")} server " +
+            "(port conflict). Offload did not send anything to it. Restart Offload or change the server port in Offload settings; do this task yourself for now.");
+    }
+
+    private static readonly HttpClient ProbeHttp = new(new SocketsHttpHandler { UseProxy = false, AllowAutoRedirect = false })
+    {
+        Timeout = TimeSpan.FromSeconds(5),
+    };
+
+    /// <summary>Идентификаторы моделей из GET /v1/models (без ключа). null — сервер не отдал список (401, 404, ошибка).</summary>
+    private static async Task<List<string>?> ModelAliasesAsync(string baseUrl, CancellationToken ct)
+    {
+        try
+        {
+            using var resp = await ProbeHttp.GetAsync(baseUrl.TrimEnd('/') + "/v1/models", ct).ConfigureAwait(false);
+            if (!resp.IsSuccessStatusCode) return null;
+            var text = await resp.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
+            if (text.Length > 1_000_000) return null;
+            using var doc = System.Text.Json.JsonDocument.Parse(text);
+            if (!doc.RootElement.TryGetProperty("data", out var data) || data.ValueKind != System.Text.Json.JsonValueKind.Array) return null;
+            var list = new List<string>();
+            foreach (var m in data.EnumerateArray())
+            {
+                if (m.ValueKind == System.Text.Json.JsonValueKind.Object && m.TryGetProperty("id", out var id)
+                    && id.ValueKind == System.Text.Json.JsonValueKind.String && id.GetString() is { } s)
+                    list.Add(s);
+            }
+            return list;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or IOException or System.Text.Json.JsonException)
+        {
+            Log.Debug("mcp", $"/v1/models недоступен: {ex.Message}");
+            return null;
         }
     }
 

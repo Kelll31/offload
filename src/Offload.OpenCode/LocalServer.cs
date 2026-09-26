@@ -79,11 +79,20 @@ internal static class LocalServer
             await Task.Delay(TimeSpan.FromSeconds(2), ct);
         }
 
-        return new ServerProbe(true, await TryGetContextAsync(baseUrl, cfg.Server.ApiKey, ct), null);
+        return new ServerProbe(true, await TryGetContextAsync(baseUrl, cfg.Server.ApiKey, UsesUnifiedKv(cfg.Server), ct), null);
     }
 
-    /// <summary>Контекст одного слота из /props (default_generation_settings.n_ctx).</summary>
-    private static async Task<int?> TryGetContextAsync(string baseUrl, string apiKey, CancellationToken ct)
+    /// <summary>
+    /// Слоты делят общий KV-кэш: Offload запускает llama-server с -kvu при нескольких слотах
+    /// (если -no-kvu / --no-kv-unified не передан доп. аргументом). То же правило — в LlamaServerArgs.UsesUnifiedKv.
+    /// </summary>
+    internal static bool UsesUnifiedKv(ServerSettings s) =>
+        Math.Clamp(s.Parallel, 1, ServerSettings.MaxParallel) > 1
+        && !(s.ExtraArgs ?? "").Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
+            .Any(a => a.Trim('"') is "-no-kvu" or "--no-kv-unified");
+
+    /// <summary>Контекст одного запроса из /props (default_generation_settings.n_ctx; при общем KV — доля слота).</summary>
+    private static async Task<int?> TryGetContextAsync(string baseUrl, string apiKey, bool unifiedKv, CancellationToken ct)
     {
         try
         {
@@ -93,7 +102,7 @@ internal static class LocalServer
             if (!string.IsNullOrEmpty(apiKey)) req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey);
             using var resp = await ClientLazy.Value.SendAsync(req, cts.Token);
             if (!resp.IsSuccessStatusCode) return null;
-            return ParseContext(await resp.Content.ReadAsStringAsync(cts.Token));
+            return ParseContext(await resp.Content.ReadAsStringAsync(cts.Token), unifiedKv);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -106,15 +115,21 @@ internal static class LocalServer
         }
     }
 
-    internal static int? ParseContext(string json)
+    /// <param name="unifiedKv">Общий KV-кэш (-kvu): n_ctx из /props — весь буфер, запросу гарантирована доля n_ctx / total_slots.</param>
+    internal static int? ParseContext(string json, bool unifiedKv = false)
     {
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
         if (root.ValueKind != JsonValueKind.Object) return null;
+        int? ctx = null;
         if (root.TryGetProperty("default_generation_settings", out var dgs) && dgs.ValueKind == JsonValueKind.Object
             && GetInt(dgs, "n_ctx") is > 0 and var n)
-            return n;
-        return GetInt(root, "n_ctx") is > 0 and var m ? m : null;
+            ctx = n;
+        else if (GetInt(root, "n_ctx") is > 0 and var m)
+            ctx = m;
+        if (ctx is null) return null;
+        var slots = GetInt(root, "total_slots") ?? 1;
+        return unifiedKv && slots > 1 ? Math.Max(1, ctx.Value / slots) : ctx;
     }
 
     private static int? GetInt(JsonElement e, string name) =>

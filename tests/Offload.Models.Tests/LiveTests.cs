@@ -125,7 +125,7 @@ public class LiveTests
                 var sw = System.Diagnostics.Stopwatch.StartNew();
                 var resume = new InlineProgress(p =>
                 {
-                    if (firstReported < 0 && p.Stage.StartsWith("Загрузка модели") && p.Fraction is { } fr)
+                    if (firstReported < 0 && p.Stage.StartsWith("Загрузка модели", StringComparison.Ordinal) && p.Fraction is { } fr)
                     {
                         firstReported = (long)(fr * model.ApproxSizeBytes);
                         firstDetail = p.Detail;

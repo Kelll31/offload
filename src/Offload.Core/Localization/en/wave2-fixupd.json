@@ -1,0 +1,6 @@
+{
+  "Недопустимое имя файла обновления ({0}) — оно не будет загружено.": "Invalid update file name ({0}) — it will not be downloaded.",
+  "Не удалось определить издателя подписи текущей копии Offload — обновление не будет установлено.": "Could not determine the signature publisher of this copy of Offload — the update will not be installed.",
+  "Файл обновления изменился после проверки — оно не будет установлено.": "The update file changed after it was verified — it will not be installed.",
+  "Не удалось установить обновление Offload, прежний файл программы не восстановлен — скачайте Offload со страницы релиза": "Could not install the Offload update and the previous program file was not restored — download Offload from the release page"
+}

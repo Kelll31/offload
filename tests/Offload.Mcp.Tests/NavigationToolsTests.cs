@@ -236,7 +236,7 @@ public class NavigationToolsTests
         var lines = Lines(r);
         Assert.Equal("OrderService.Validate  src/OrderService.cs:11", lines[0]);
         Assert.Equal("  ← OrderService.Submit  src/OrderService.cs:5", lines[1]);
-        Assert.Contains("callers are textual references inside functions", r);
+        Assert.Contains("callers are call sites", r);
     }
 
     [Fact]

@@ -86,6 +86,7 @@ internal sealed class NavigationRail : Control
             _selected = i;
             _focusIndex = i;
             Invalidate();
+            NotifyAccessibleSelection(i);
             SelectedChanged?.Invoke(this, _items[i].Key);
         }
     }
@@ -292,13 +293,8 @@ internal sealed class NavigationRail : Control
         {
             >= 0 when _collapsed => _items[h].Title,
             -2 => _collapsed ? $"{_statusTitle}\n{_statusDetail}" : null,
-            -3 => Theme.Mode switch
-            {
-                Theme.ModeLight => L.T("Тема: светлая (щелчок — тёмная)"),
-                Theme.ModeDark => L.T("Тема: тёмная (щелчок — как в Windows)"),
-                _ => L.T("Тема: как в Windows (щелчок — светлая)"),
-            },
-            -4 => _collapsed ? L.T("Развернуть панель") : L.T("Свернуть панель"),
+            -3 => ThemeTip,
+            -4 => ToggleTip,
             _ => null,
         };
         if (tip != _tipShownFor)
@@ -306,6 +302,118 @@ internal sealed class NavigationRail : Control
             _tipShownFor = tip;
             if (tip is null) _tip.Hide(this);
             else _tip.Show(tip, this, e.X + Px(16), e.Y + Px(12), 3000);
+        }
+    }
+
+    private static string ThemeTip => Theme.Mode switch
+    {
+        Theme.ModeLight => L.T("Тема: светлая (щелчок — тёмная)"),
+        Theme.ModeDark => L.T("Тема: тёмная (щелчок — как в Windows)"),
+        _ => L.T("Тема: как в Windows (щелчок — светлая)"),
+    };
+
+    private string ToggleTip => _collapsed ? L.T("Развернуть панель") : L.T("Свернуть панель");
+
+    // ---- Доступность: пункты — вкладки (PageTab), кнопки сворачивания и темы, блок состояния ----
+
+    protected override AccessibleObject CreateAccessibilityInstance() => new RailAccessibleObject(this);
+
+    /// <summary>Сообщить экранному диктору о смене выбранного пункта.</summary>
+    private void NotifyAccessibleSelection(int index)
+    {
+        if (!IsHandleCreated || index < 0) return;
+        AccessibilityNotifyClients(AccessibleEvents.Selection, index);
+        if (Focused) AccessibilityNotifyClients(AccessibleEvents.Focus, index);
+    }
+
+    private sealed class RailAccessibleObject(NavigationRail rail) : ControlAccessibleObject(rail)
+    {
+        // Дочерние: пункты навигации, затем кнопка сворачивания, кнопка темы и блок состояния.
+        public override int GetChildCount() => rail._items.Count + 3;
+
+        public override AccessibleObject? GetChild(int index) =>
+            index >= 0 && index < GetChildCount() ? new RailPartAccessibleObject(rail, this, index) : null;
+
+        public override AccessibleObject? GetFocused() =>
+            rail.Focused && rail._focusIndex >= 0 ? GetChild(rail._focusIndex) : base.GetFocused();
+
+        public override AccessibleObject? GetSelected() => rail._selected >= 0 ? GetChild(rail._selected) : base.GetSelected();
+    }
+
+    private sealed class RailPartAccessibleObject(NavigationRail rail, AccessibleObject parent, int index) : AccessibleObject
+    {
+        private bool IsItem => index < rail._items.Count;
+        private int Extra => index - rail._items.Count;
+
+        public override AccessibleObject Parent => parent;
+
+        public override AccessibleRole Role => IsItem ? AccessibleRole.PageTab : Extra == 2 ? AccessibleRole.StaticText : AccessibleRole.PushButton;
+
+        public override string? Name => IsItem
+            ? rail._items[index].Title
+            : Extra switch
+            {
+                0 => rail.ToggleTip,
+                1 => ThemeTip,
+                _ => string.IsNullOrWhiteSpace(rail._statusDetail) ? rail._statusTitle : $"{rail._statusTitle}. {rail._statusDetail}",
+            };
+
+        public override string? Description => IsItem ? rail._items[index].Group : null;
+
+        public override string? DefaultAction => IsItem ? L.T("Открыть раздел") : Extra == 2 ? L.T("Открыть раздел «Состояние»") : L.T("Нажать");
+
+        public override AccessibleStates State
+        {
+            get
+            {
+                var s = AccessibleStates.Focusable;
+                if (IsItem)
+                {
+                    s |= AccessibleStates.Selectable;
+                    if (index == rail._selected) s |= AccessibleStates.Selected;
+                    if (rail.Focused && index == rail._focusIndex) s |= AccessibleStates.Focused;
+                }
+                return s;
+            }
+        }
+
+        public override Rectangle Bounds
+        {
+            get
+            {
+                if (!rail.IsHandleCreated) return Rectangle.Empty;
+                Rectangle r;
+                if (IsItem) r = rail.LayoutItems().FirstOrDefault(x => x.Index == index).Rect;
+                else r = Extra switch { 0 => rail.ToggleRect, 1 => rail.ThemeRect, _ => rail.StatusRect };
+                return r.IsEmpty ? Rectangle.Empty : rail.RectangleToScreen(r);
+            }
+        }
+
+        public override void DoDefaultAction()
+        {
+            if (IsItem)
+            {
+                rail.SelectedKey = rail._items[index].Key;
+                return;
+            }
+            switch (Extra)
+            {
+                case 0:
+                    rail.Collapsed = !rail.Collapsed;
+                    rail.CollapsedChanged?.Invoke(rail, EventArgs.Empty);
+                    break;
+                case 1:
+                    rail.ThemeClicked?.Invoke(rail, EventArgs.Empty);
+                    break;
+                default:
+                    rail.StatusClicked?.Invoke(rail, EventArgs.Empty);
+                    break;
+            }
+        }
+
+        public override void Select(AccessibleSelection flags)
+        {
+            if (IsItem && flags.HasFlag(AccessibleSelection.TakeSelection)) rail.SelectedKey = rail._items[index].Key;
         }
     }
 
@@ -359,6 +467,7 @@ internal sealed class NavigationRail : Control
             default: return;
         }
         e.Handled = true;
+        if (IsHandleCreated) AccessibilityNotifyClients(AccessibleEvents.Focus, _focusIndex);
         Invalidate();
     }
 

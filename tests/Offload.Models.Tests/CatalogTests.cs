@@ -177,7 +177,10 @@ public class CatalogTests
     {
         Assert.False(ModelCatalog.Find("qwen3.5-4b-q4")!.GoodToolCalling);
         Assert.False(ModelCatalog.Find("qwen3.5-2b-q8")!.GoodToolCalling);
-        Assert.All(ModelCatalog.All.Where(m => m.Id is not ("qwen3.5-4b-q4" or "qwen3.5-2b-q8")), m => Assert.True(m.GoodToolCalling, m.Id));
+        Assert.All(ModelCatalog.All.Where(m => m.IsChat && m.Id is not ("qwen3.5-4b-q4" or "qwen3.5-2b-q8")),
+            m => Assert.True(m.GoodToolCalling, m.Id));
+        // У эмбеддингов и реранкеров вызова инструментов нет вовсе.
+        Assert.All(ModelCatalog.All.Where(m => !m.IsChat), m => Assert.False(m.GoodToolCalling, m.Id));
     }
 
     [Fact]

@@ -1,0 +1,20 @@
+name: Поддержка IDE / IDE support
+description: Новая IDE или агент, либо подключение перестало работать / New IDE or a broken connection
+labels: [integration]
+body:
+  - type: input
+    id: ide
+    attributes:
+      label: IDE или агент и версия / IDE or agent and version
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Где и как она хранит MCP-серверы / Where it stores MCP servers
+      description: Путь к конфигу, формат, ссылка на документацию. / Config path, format, docs link.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Что не работает / What is broken
+      description: Если подключение было и пропало — после какого обновления. / If it used to work, after which update it broke.

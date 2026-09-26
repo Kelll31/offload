@@ -44,7 +44,7 @@ internal static partial class LogPrefilter
         var cr = s.LastIndexOf('\r');
         if (cr >= 0 && cr < s.Length - 1) s = s[(cr + 1)..];
         s = s.TrimEnd('\r', ' ', '\t');
-        if (s.IndexOf('\x1B') >= 0) s = AnsiEscape().Replace(s, "");
+        if (s.Contains('\x1B')) s = AnsiEscape().Replace(s, "");
         if (s.Length > maxChars) s = s[..maxChars] + "…";
         return s;
     }

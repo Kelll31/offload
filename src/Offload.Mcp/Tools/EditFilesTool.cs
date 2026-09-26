@@ -2,6 +2,7 @@ using System.Text;
 using Offload.Core.Logging;
 using Offload.Mcp.Infrastructure;
 using Offload.OpenCode;
+using static Offload.Mcp.Infrastructure.TextUtil;
 
 namespace Offload.Mcp.Tools;
 
@@ -79,45 +80,55 @@ internal static class EditFilesTool
         job.VerifyCommand = verify;
         foreach (var t in targets) JobStore.Snapshot(job, t.Path, t.Display);
 
+        var dl = new TaskDeadline(deadline);
         using var deadlineCts = CancellationTokenSource.CreateLinkedTokenSource(ctx.Ct);
         deadlineCts.CancelAfter(deadline);
         var ct = deadlineCts.Token;
         var summary = new List<string>();
         VerifyResult? lastVerify = null;
         var attempt = 0;
+        var noTimeForVerify = false;
         var notes = new List<string>();
         try
         {
-            await using (await GpuQueue.AcquireAsync(ctx.Cfg.Server.Parallel, ctx.Progress, ct).ConfigureAwait(false))
+            await using (await GpuQueue.AcquireAsync(ctx, ct, effectiveMode == "rewrite" ? GpuPriority.Normal : GpuPriority.Agent).ConfigureAwait(false))
             {
                 if (effectiveMode == "rewrite")
                     await RewriteAllAsync(ctx, model, spec, targets, refFiles, null, summary, ct).ConfigureAwait(false);
                 else
-                    await RunAgentAsync(ctx, job, spec, targets, refFiles, root, null, deadline, summary, notes, ct).ConfigureAwait(false);
+                    await RunAgentAsync(ctx, job, spec, targets, refFiles, root, null, dl, summary, notes, ct).ConfigureAwait(false);
             }
 
             var anyChange = targets.Any(t => t.CurrentText != t.OriginalText) || JobStore.ChangedFromSnapshot(job).Count > 0;
             while (verify is not null && anyChange)
             {
                 attempt++;
-                lastVerify = await VerifyCommand.RunAsync(verify, root, deadline, ctx.Progress, ct).ConfigureAwait(false);
+                // Проверке — остаток срока (не меньше минуты); она не прерывается по сроку задачи, её ограничивает свой таймаут.
+                if (dl.ForStep(TaskDeadline.MinVerifyTime) is not { } verifyTimeout)
+                {
+                    noTimeForVerify = true;
+                    throw new OperationCanceledException(ct);
+                }
+                lastVerify = await VerifyCommand.RunAsync(verify, root, verifyTimeout, ctx.Progress, ctx.Ct).ConfigureAwait(false);
                 if (lastVerify.Passed || attempt > fixAttempts) break;
                 ctx.Progress.Report($"verify failed (exit {lastVerify.ExitCode}); fix round {attempt}/{fixAttempts}");
                 var feedback = $"The check `{verify}` FAILED (exit {lastVerify.ExitCode}) after your edit. Relevant output:\n{lastVerify.ForModel(5000)}\n" +
                                "Fix the problem while still fulfilling the task.";
-                await using (await GpuQueue.AcquireAsync(ctx.Cfg.Server.Parallel, ctx.Progress, ct).ConfigureAwait(false))
+                await using (await GpuQueue.AcquireAsync(ctx, ct, effectiveMode == "rewrite" ? GpuPriority.Normal : GpuPriority.Agent).ConfigureAwait(false))
                 {
                     if (effectiveMode == "rewrite")
                         await RewriteAllAsync(ctx, model, spec, targets, refFiles, feedback, summary, ct).ConfigureAwait(false);
                     else
-                        await RunAgentAsync(ctx, job, spec, targets, refFiles, root, feedback, deadline, summary, notes, ct).ConfigureAwait(false);
+                        await RunAgentAsync(ctx, job, spec, targets, refFiles, root, feedback, dl, summary, notes, ct).ConfigureAwait(false);
                 }
             }
         }
         catch (OperationCanceledException) when (!ctx.Ct.IsCancellationRequested)
         {
             JobStore.Finish(job, JobStatus.Failed);
-            throw new ToolException($"local_edit_files hit timeout_minutes={deadline.TotalMinutes:0}. Changes made so far are kept in job {job.Id}; " +
+            throw new ToolException($"local_edit_files hit timeout_minutes={deadline.TotalMinutes:0}" +
+                                    (noTimeForVerify ? " before the verify command could run (no time left; raise timeout_minutes)." : ".") +
+                                    $" Changes made so far are kept in job {job.Id}; " +
                                     $"inspect with local_job action=diff or undo with local_job action=revert job_id={job.Id}.");
         }
         catch (OperationCanceledException)
@@ -240,8 +251,10 @@ internal static class EditFilesTool
                 var bytes = TextCodec.Encode(outcome.NewText, t.Format, out var fallback);
                 if (fallback) t.Note += " (saved as UTF-8 with BOM: characters not representable in windows-1251)";
                 JobStore.WriteBytesAtomic(t.Path, bytes);
+                var before = t.CurrentText;
                 t.CurrentText = TextCodec.Decode(bytes).Text;
-                ctx.Stats.TokensWritten += Tokens.Estimate(outcome.NewText);
+                // Облаку пришлось бы написать только вставленные/изменённые строки, а не весь файл.
+                ctx.Stats.TokensWritten += Savings.InsertedTokens(before, t.CurrentText);
                 var bullet = DescribeChange(t);
                 if (bullet is not null)
                 {
@@ -291,8 +304,10 @@ internal static class EditFilesTool
 
     /// <summary>Режим agent: OpenCode правит файлы; всё, что изменено вне списка, откатывается.</summary>
     private static async Task RunAgentAsync(ToolContext ctx, JobInfo job, string spec, List<EditTarget> targets, List<GatheredFile> refs,
-        string root, string? feedback, TimeSpan deadline, List<string> summary, List<string> notes, CancellationToken ct)
+        string root, string? feedback, TaskDeadline deadline, List<string> summary, List<string> notes, CancellationToken ct)
     {
+        // Раунду агента — остаток срока задачи (сам срок всё равно обрывает ct).
+        if (deadline.Exhausted) throw new OperationCanceledException(ct);
         var allow = new HashSet<string>(targets.Select(t => t.Path), StringComparer.OrdinalIgnoreCase);
         var guard = await StrayGuard.CaptureAsync(ctx, job, root, allow, ct).ConfigureAwait(false);
 
@@ -315,7 +330,10 @@ internal static class EditFilesTool
         try
         {
             res = await OpenCodeRunner.RunAsync(ctx.Cfg, prompt.ToString(), root,
-                new OpenCodeRunOptions(ctx.Cfg.OpenCode.AllowShellCommands, deadline, "build"),
+                new OpenCodeRunOptions(ctx.Cfg.OpenCode.AllowShellCommands, deadline.ForStep(TimeSpan.FromSeconds(1)) ?? TimeSpan.FromSeconds(1), "build")
+                {
+                    LogPath = AgentTaskTool.AgentLogPath(job),
+                },
                 msg =>
                 {
                     if (DateTime.UtcNow - lastProgress < TimeSpan.FromSeconds(2)) return;
@@ -347,7 +365,7 @@ internal static class EditFilesTool
                 continue;
             }
             var (text, _) = TextCodec.Decode(JobStore.ReadAllBytesShared(t.Path));
-            if (text != t.CurrentText) ctx.Stats.TokensWritten += Tokens.Estimate(text);
+            if (text != t.CurrentText) ctx.Stats.TokensWritten += Savings.InsertedTokens(t.CurrentText, text);
             t.CurrentText = text;
             t.Note = text == t.OriginalText ? "unchanged" : "edited";
         }
@@ -366,7 +384,6 @@ internal static class EditFilesTool
         catch { return null; }
     }
 
-    private static string Short(string s, int max) => s.Length <= max ? s : s[..max] + "…";
 
     private static string Render(JobInfo job, string status, string mode, VerifyResult? verify, int attempt, List<string> summary,
         List<string> notes, bool dryRun)

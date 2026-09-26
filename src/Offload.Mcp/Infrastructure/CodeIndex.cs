@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Text.RegularExpressions;
+using Offload.Mcp.Index;
 
 namespace Offload.Mcp.Infrastructure;
 
@@ -13,6 +14,9 @@ internal sealed class SourceFile
     public required string[] Lines { get; init; }
     public required CodeLang Lang { get; init; }
     public bool Truncated { get; init; }
+
+    /// <summary>Сколько значений секретов замаскировано при чтении (0 — текст как в файле или секретов нет).</summary>
+    public int RedactedCount { get; init; }
 
     public IReadOnlyList<CodeSymbol> Symbols => _symbols ??= Infrastructure.Symbols.Parse(FullPath, Lines);
 
@@ -40,6 +44,10 @@ internal sealed class CodeIndexResult
 /// <summary>
 /// Индекс исходников рабочей папки для поиска, символов, контекста и анализа влияния. Файлы перечисляются через
 /// FileGatherer (учёт .gitignore, без секретов, двоичных и служебных папок) и кэшируются в процессе по (размер, время изменения).
+/// При Mcp.RedactSecrets текст маскируется при загрузке (<see cref="SecretRedactor"/> с путём файла — действуют и правила
+/// конфигов «password: …»): поиск regex, files_only, символы и фрагменты работают по замаскированному тексту, и значение
+/// секрета нельзя подобрать по наличию совпадения. Незамаскированный текст — только для проверок, которые сами ищут
+/// секреты (code_scan secrets, security_review) или пишут файлы (rename), и в ответ он не попадает.
 /// </summary>
 internal static partial class CodeIndex
 {
@@ -47,12 +55,13 @@ internal static partial class CodeIndex
     public const long MaxIndexChars = 160L * 1024 * 1024;
     private const int MaxCacheEntries = 60_000;
 
-    private static readonly ConcurrentDictionary<string, (long Length, DateTime Mtime, SourceFile File)> Cache = new(StringComparer.OrdinalIgnoreCase);
+    /// <summary>Ключ — «флаг маскирования|полный путь»: замаскированная и исходная версии файла кэшируются раздельно.</summary>
+    private static readonly ConcurrentDictionary<string, (long Length, DateTime Mtime, int MaxBytes, SourceFile File)> Cache = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Текстовые файлы, которые полезно искать помимо кода (конфигурация, документация, разметка).</summary>
     private static readonly HashSet<string> TextExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
-        ".md", ".txt", ".json", ".jsonc", ".xml", ".yml", ".yaml", ".toml", ".ini", ".cfg", ".conf", ".props", ".targets", ".csproj",
+        ".md", ".txt", ".json", ".jsonc", ".xml", ".yml", ".yaml", ".toml", ".ini", ".cfg", ".conf", ".properties", ".props", ".targets", ".csproj",
         ".fsproj", ".vbproj", ".sln", ".slnx", ".html", ".htm", ".css", ".scss", ".less", ".sql", ".sh", ".ps1", ".psm1", ".bat", ".cmd",
         ".gradle", ".cmake", ".proto", ".graphql", ".razor", ".cshtml", ".xaml", ".resx", ".dfm", ".fmx", ".dproj", ".rst", ".adoc",
         ".editorconfig", ".gitignore", ".dockerignore", ".env.example", ".lua", ".r", ".scala", ".dart", ".fs", ".vb", ".m", ".mm",
@@ -82,9 +91,14 @@ internal static partial class CodeIndex
     [GeneratedRegex(@"/(tests?|__tests__|specs?|testing|[\w.-]*\.tests?)/", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
     private static partial Regex TestDir();
 
-    /// <summary>Загрузить файлы области (пути/папки/glob; по умолчанию — вся рабочая папка). codeOnly — только исходники.</summary>
-    public static async Task<CodeIndexResult> LoadAsync(ToolContext ctx, IReadOnlyList<string>? scope, bool codeOnly, CancellationToken ct)
+    /// <summary>
+    /// Загрузить файлы области (пути/папки/glob; по умолчанию — вся рабочая папка). codeOnly — только исходники.
+    /// unredacted — текст как в файле, даже при Mcp.RedactSecrets (только для поиска секретов и записи; не для показа).
+    /// </summary>
+    public static async Task<CodeIndexResult> LoadAsync(ToolContext ctx, IReadOnlyList<string>? scope, bool codeOnly, CancellationToken ct,
+        bool unredacted = false)
     {
+        var redact = ctx.Cfg.Mcp.RedactSecrets && !unredacted;
         var result = new CodeIndexResult();
         var specs = scope is { Count: > 0 } ? scope.Where(s => !string.IsNullOrWhiteSpace(s)).ToList() : [ctx.Roots[0]];
         if (specs.Count == 0) specs = [ctx.Roots[0]];
@@ -94,7 +108,7 @@ internal static partial class CodeIndex
 
         var loaded = new SourceFile?[wanted.Count];
         Parallel.For(0, wanted.Count, new ParallelOptions { CancellationToken = ct, MaxDegreeOfParallelism = Math.Min(8, Environment.ProcessorCount) },
-            i => loaded[i] = Load(wanted[i], ctx.Roots, opts.MaxFileBytes));
+            i => loaded[i] = TryLoad(wanted[i], ctx.Roots, opts.MaxFileBytes, redact, out _));
         long chars = 0;
         foreach (var f in loaded)
         {
@@ -111,31 +125,81 @@ internal static partial class CodeIndex
         return result;
     }
 
-    /// <summary>Один файл (для явного пути): с проверками чтения. null — не текст или недоступен.</summary>
-    public static SourceFile? LoadOne(ToolContext ctx, string raw)
+    /// <summary>Один файл (для явного пути): с проверками чтения. null — не текст или недоступен. unredacted — как в <see cref="LoadAsync"/>.</summary>
+    public static SourceFile? LoadOne(ToolContext ctx, string raw, bool unredacted = false)
     {
         var full = ctx.ResolveRead(raw);
         if (!File.Exists(full)) throw new ToolException(Directory.Exists(full) ? $"'{raw}' is a directory; pass a file." : $"File '{raw}' not found.");
         if (FileGatherer.CheckFile(full, ctx.GatherOptions, ctx.Roots, isExplicit: true) is { } why) throw new ToolException($"Cannot read '{raw}': {why}.");
-        return Load(full, ctx.Roots, Math.Max(ctx.GatherOptions.MaxFileBytes, 2 * 1024 * 1024))
+        return TryLoad(full, ctx.Roots, Math.Max(ctx.GatherOptions.MaxFileBytes, 2 * 1024 * 1024), ctx.Cfg.Mcp.RedactSecrets && !unredacted, out _)
                ?? throw new ToolException($"'{raw}' is not a readable text file.");
     }
 
-    private static SourceFile? Load(string full, IReadOnlyList<string> roots, int maxBytes)
+    /// <summary>
+    /// Открыть постоянный индекс (<see cref="IndexStore"/>) для области: файлы перечисляются и проверяются как в <see cref="LoadAsync"/>
+    /// (FileGatherer/PathGuard на каждом вызове), изменившиеся с прошлого раза разбираются заново, текст читается лениво — только
+    /// для файлов, которые реально нужно показать или проверить. codeOnly — в представлении только исходники.
+    /// </summary>
+    public static async Task<IndexView> OpenAsync(ToolContext ctx, IReadOnlyList<string>? scope, bool codeOnly, CancellationToken ct)
     {
+        var info = new GatherResult();
+        var specs = scope is { Count: > 0 } ? scope.Where(s => !string.IsNullOrWhiteSpace(s)).ToList() : [ctx.Roots[0]];
+        if (specs.Count == 0) specs = [ctx.Roots[0]];
+        var opts = ctx.GatherOptions with { MaxFiles = MaxIndexFiles, MaxEntriesVisited = 120_000 };
+        var all = await FileGatherer.ListFilesAsync(specs, ctx.Roots, opts, info, ct).ConfigureAwait(false);
+        var searchable = all.Where(IsSearchable).ToList();
+        // Удалять из базы пропавшие файлы можно, только если перечислен весь корень без обрезки по лимиту.
+        var prune = IsWholeRoot(specs, ctx.Roots) && info.LimitNote is null;
+        var session = await IndexStore.OpenAsync(new IndexRequest(ctx.Roots[0], ctx.Roots, searchable, opts.MaxFileBytes, prune), ct)
+            .ConfigureAwait(false);
+        return new IndexView(session, searchable, all, info, ctx.Roots, codeOnly, opts.MaxFileBytes, ctx.Cfg.Mcp.RedactSecrets);
+    }
+
+    private static bool IsWholeRoot(List<string> specs, IReadOnlyList<string> roots)
+    {
+        if (specs.Count != 1) return false;
+        try
+        {
+            return string.Equals(Path.GetFullPath(PathGuard.Resolve(specs[0], roots)).TrimEnd('\\', '/'), Path.GetFullPath(roots[0]).TrimEnd('\\', '/'),
+                StringComparison.OrdinalIgnoreCase);
+        }
+        catch (ToolException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Только для тестов: сбросить кэш текста процесса (имитация нового MCP-процесса).</summary>
+    internal static void ClearCache() => Cache.Clear();
+
+    /// <summary>
+    /// Прочитать текстовый файл (с кэшем процесса по размеру и времени изменения). null — не текст (binary = true) или
+    /// временно недоступен. Путь должен быть уже проверен FileGatherer/PathGuard.
+    /// </summary>
+    internal static SourceFile? TryLoad(string full, IReadOnlyList<string> roots, int maxBytes, bool redact, out bool binary)
+    {
+        binary = false;
         try
         {
             var info = new FileInfo(full);
             if (!info.Exists) return null;
-            if (Cache.TryGetValue(full, out var c) && c.Length == info.Length && c.Mtime == info.LastWriteTimeUtc) return c.File;
+            var key = (redact ? "r|" : "u|") + full;
+            if (Cache.TryGetValue(key, out var c) && c.Length == info.Length && c.Mtime == info.LastWriteTimeUtc && c.MaxBytes == maxBytes) return c.File;
             var toRead = (int)Math.Min(info.Length, maxBytes);
             var buffer = new byte[toRead];
             int read;
             using (var fs = new FileStream(full, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
                 read = fs.ReadAtLeast(buffer, toRead, throwOnEndOfStream: false);
             var data = buffer.AsSpan(0, read);
-            if (TextCodec.LooksBinary(data)) return null;
+            if (TextCodec.LooksBinary(data))
+            {
+                binary = true;
+                return null;
+            }
             var (text, _) = TextCodec.Decode(data, truncated: info.Length > read);
+            // Маскирование — до разбиения на строки и до кэша: число строк сохраняется, path:line остаются верными.
+            var redacted = 0;
+            if (redact) text = SecretRedactor.Redact(text, full, out redacted);
             var file = new SourceFile
             {
                 FullPath = full,
@@ -143,8 +207,9 @@ internal static partial class CodeIndex
                 Lines = TextCodec.SplitLines(text),
                 Lang = Symbols.LangOf(full),
                 Truncated = info.Length > read,
+                RedactedCount = redacted,
             };
-            Cache[full] = (info.Length, info.LastWriteTimeUtc, file);
+            Cache[key] = (info.Length, info.LastWriteTimeUtc, maxBytes, file);
             return file;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)

@@ -1,3 +1,5 @@
+using Offload.Core.Ipc;
+
 namespace Offload.Mcp.Infrastructure;
 
 /// <summary>
@@ -29,6 +31,20 @@ public sealed class SessionState
     /// Для тестов: заменить запуск трея (Process.Start Offload.exe --background). Возвращает true, если запущен.
     /// </summary>
     internal Func<bool>? TrayLauncherOverride { get; set; }
+
+    /// <summary>
+    /// Для тестов: заменить IPC с треем (запрос → ответ; null — трей не ответил). Если задано, трей считается запущенным.
+    /// </summary>
+    internal Func<IpcRequest, CancellationToken, Task<IpcResponse?>>? IpcOverride { get; set; }
+
+    /// <summary>
+    /// Корни, закреплённые при запуске (<c>--mcp-http --root &lt;папка&gt;</c>): корни клиента (roots/list) игнорируются.
+    /// null — обычный stdio-режим, корни сообщает IDE.
+    /// </summary>
+    internal IReadOnlyList<string>? PinnedRoots { get; init; }
+
+    /// <summary>Сессия MCP по HTTP: ответы elicitation может давать агент, а не человек (одноразовое разрешение команд отключено).</summary>
+    internal bool IsHttpTransport { get; init; }
 
     public long SavedTokens => Interlocked.Read(ref _savedTokens);
     public int ModelCalls => Volatile.Read(ref _modelCalls);

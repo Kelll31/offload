@@ -20,11 +20,59 @@ public static class IpcCommands
 
     /// <summary>Записать UsageRecord (Args["record"] — JSON). MCP-процессы передают статистику трею.</summary>
     public const string RecordUsage = "record-usage";
+
+    /// <summary>
+    /// Создать Mcp.HttpToken и случайный Mcp.HttpPort, если их ещё нет (MCP-процесс в режиме --mcp-http конфиг не пишет).
+    /// Токен в ответе не передаётся — процесс перечитывает config.json.
+    /// </summary>
+    public const string EnsureMcpHttpToken = "ensure-mcp-http-token";
+
+    /// <summary>
+    /// Заменить Mcp.HttpToken новым (отзыв утёкшего токена). Работающий --mcp-http подхватывает новый токен из config.json
+    /// за несколько секунд; клиентам нужно передать новый. Токен в ответе не передаётся.
+    /// </summary>
+    public const string RotateMcpHttpToken = "rotate-mcp-http-token";
+
+    /// <summary>
+    /// Выполнить фоновую задачу агента в трее (Args["spec"] — JSON описания задачи). Трей заново проверяет описание и запускает
+    /// только движок задач агента; старый трей без этой команды отвечает отказом — MCP выполняет задачу сам.
+    /// </summary>
+    public const string JobStart = "job-start";
 }
 
-public sealed record IpcRequest(string Command, Dictionary<string, string>? Args = null);
+/// <param name="V">Мажорная версия протокола отправителя (JSON «v»). Нет поля — клиент до введения версий, это v1.</param>
+public sealed record IpcRequest(string Command, Dictionary<string, string>? Args = null, int? V = null);
 
-public sealed record IpcResponse(bool Ok, string? Message = null, Dictionary<string, string>? Data = null);
+/// <param name="V">Версия протокола трея, ответившего на запрос.</param>
+public sealed record IpcResponse(bool Ok, string? Message = null, Dictionary<string, string>? Data = null, int? V = null);
+
+/// <summary>
+/// Версия протокола IPC. Меняется (мажорная) только при несовместимом изменении формата команд: старый MCP-процесс после
+/// обновления трея получает понятный отказ, а не молча неверный ответ. Добавление команд и полей версию не меняет.
+/// </summary>
+public static class IpcProtocol
+{
+    /// <summary>Текущая мажорная версия, которую отправляет клиент и понимает сервер.</summary>
+    public const int Version = 1;
+
+    /// <summary>Версии, которые понимает этот трей.</summary>
+    public const int MinSupported = 1;
+
+    /// <summary>Версия запроса: отсутствие поля «v» — клиент до введения версий (v1).</summary>
+    public static int VersionOf(IpcRequest request) => request.V ?? 1;
+
+    /// <summary>Отказ для неподдерживаемой версии или null, если запрос можно обрабатывать.</summary>
+    public static IpcResponse? CheckVersion(IpcRequest request)
+    {
+        var v = VersionOf(request);
+        if (v is >= MinSupported and <= Version) return null;
+        return new IpcResponse(false,
+            L.F("Неподдерживаемая версия протокола IPC: {0} (трей Offload понимает {1}–{2}). Перезапустите IDE или обновите Offload, чтобы версии совпали.",
+                v, MinSupported, Version),
+            new Dictionary<string, string> { ["error"] = "unsupported-version", ["supported"] = $"{MinSupported}-{Version}" },
+            Version);
+    }
+}
 
 public static class IpcNames
 {
@@ -59,7 +107,8 @@ public static class IpcClient
             await pipe.ConnectAsync(cts.Token);
             using var reader = new StreamReader(pipe, FileUtil.Utf8NoBom, false, 4096, leaveOpen: true);
             await using var writer = new StreamWriter(pipe, FileUtil.Utf8NoBom, 4096, leaveOpen: true) { AutoFlush = true };
-            await writer.WriteLineAsync(JsonSerializer.Serialize(request, Json.Compact).AsMemory(), cts.Token);
+            var versioned = request.V is null ? request with { V = IpcProtocol.Version } : request;
+            await writer.WriteLineAsync(JsonSerializer.Serialize(versioned, Json.Compact).AsMemory(), cts.Token);
             var line = await reader.ReadLineAsync(cts.Token);
             return line is null ? null : JsonSerializer.Deserialize<IpcResponse>(line, Json.Compact);
         }
@@ -147,11 +196,17 @@ public sealed class IpcServer : IDisposable
                 {
                     resp = new IpcResponse(false, L.T("Пустой запрос"));
                 }
+                else if (IpcProtocol.CheckVersion(req) is { } rejected)
+                {
+                    Log.Warn("ipc", $"Запрос '{req.Command}' с неподдерживаемой версией протокола {IpcProtocol.VersionOf(req)} отклонён");
+                    resp = rejected;
+                }
                 else
                 {
                     try { resp = await _handler(req); }
                     catch (Exception ex) { resp = new IpcResponse(false, ex.Message); }
                 }
+                resp = resp with { V = IpcProtocol.Version };
                 await writer.WriteLineAsync(JsonSerializer.Serialize(resp, Json.Compact).AsMemory(), ct);
             }
             catch (Exception ex) when (ex is IOException or OperationCanceledException or JsonException)

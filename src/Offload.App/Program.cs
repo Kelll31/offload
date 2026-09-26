@@ -13,6 +13,10 @@ internal static class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        // Режим MCP по Streamable HTTP (только 127.0.0.1, токен Bearer) — тоже до WinForms и только при явном запуске.
+        if (HasArg(args, Offload.Mcp.McpEntry.HttpArg))
+            return Offload.Mcp.McpEntry.RunHttpAsync(args).GetAwaiter().GetResult();
+
         // Режим MCP-сервера — первым и без инициализации WinForms: stdout принадлежит протоколу.
         if (HasArg(args, AppInfo.McpArg))
             return Offload.Mcp.McpEntry.RunAsync(args).GetAwaiter().GetResult();
@@ -21,6 +25,7 @@ internal static class Program
             return UninstallCleanup.Run();
 
         Log.Init("app");
+        Log.ApplyLevel(ConfigStore.Current.Ui.VerboseLog);
         ApplicationConfiguration.Initialize();
         // Сначала обработчики: SetColorMode(Dark) создаёт служебное окно, а после этого режим исключений потока менять нельзя.
         InstallExceptionHandlers();
@@ -62,6 +67,15 @@ internal static class Program
 
         GC.KeepAlive(installerMutex);
         Log.Info("app", "Offload завершён");
+
+        if (AppUpdater.HasPendingLaunch)
+        {
+            // Обновление: сначала освободить мьютексы (установщик проверяет AppMutex, новая копия — мьютекс экземпляра).
+            try { instance.ReleaseMutex(); } catch (ApplicationException) { }
+            instance.Dispose();
+            installerMutex.Dispose();
+            AppUpdater.LaunchPending();
+        }
         return 0;
     }
 

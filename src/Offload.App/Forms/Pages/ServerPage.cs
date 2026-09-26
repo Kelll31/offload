@@ -1,3 +1,4 @@
+using System.Globalization;
 using Offload.App.Controls;
 using Offload.App.Services;
 using Offload.App.Util;
@@ -5,6 +6,7 @@ using Offload.Core.Config;
 using Offload.Core.Hardware;
 using Offload.Core.Logging;
 using Offload.Llama;
+using Offload.Models;
 
 namespace Offload.App.Forms.Pages;
 
@@ -39,7 +41,7 @@ internal sealed class ServerPage : PageBase
     private readonly NumericUpDown _port = Kit.Number(1024, 65535, 8765, 100);
     private readonly ComboBox _context = Kit.Combo(250);
     private readonly List<int> _contextValues = [];
-    private readonly NumericUpDown _parallel = Kit.Number(1, 4, 1, 70);
+    private readonly NumericUpDown _parallel = Kit.Number(1, ServerSettings.MaxParallel, 1, 70);
     private readonly OptionalNumberBox _gpuLayers = new([(L.T("Авто (все слои)"), -1), (L.T("Своё число"), null)], 0, 999, 99);
     private readonly OptionalNumberBox _cpuMoe = new([(L.T("Авто"), -1), (L.T("Выключено"), 0), (L.T("Своё число"), null)], 1, 999, 8);
     private readonly ComboBox _flash = Kit.Combo(170);
@@ -61,12 +63,18 @@ internal sealed class ServerPage : PageBase
     private readonly Button _reinstall;
     private readonly Label _updateStatus = Kit.Wrap("");
     private readonly ProgressPanel _llamaProgress = new();
+    private readonly TableLayoutPanel _builds = Kit.Table();
+    private readonly List<(Button Switch, Button Pin, LlamaInstalledBuild Build)> _buildButtons = [];
+    private string? _buildsSignature;
+    private int _buildsVersion;
 
     private readonly Label _vcStatus = Kit.Label("");
     private readonly Button _vcInstall;
     private readonly ProgressPanel _vcProgress = new(withCancel: false);
 
     private readonly CheckBox _llamaCheckUpdates = Kit.Check(L.T("Проверять обновления llama.cpp при запуске"));
+
+    private readonly ServerPerformanceSection _performance;
 
     private bool _loading;
     private bool _dirty;
@@ -88,6 +96,7 @@ internal sealed class ServerPage : PageBase
         _reinstall = Kit.Button(L.T("Переустановить / обновить"), async (_, _) => await ReinstallAsync(confirm: true), 170);
         _vcInstall = Kit.Button(L.T("Установить"), async (_, _) => await InstallVcAsync());
         _llamaProgress.CancelRequested += (_, _) => _installCts?.Cancel();
+        _performance = new ServerPerformanceSection(shell, this, ApplyRecommendedParallelAsync, (a, t, c) => RunBusyAsync(a, t, c));
 
         var root = Kit.Table();
 
@@ -113,6 +122,9 @@ internal sealed class ServerPage : PageBase
         applyRow.Margin = new Padding(0, 8, 0, 4);
         root.AddRow(applyRow);
 
+        // Слоты, размещение «Авто» и замер скорости.
+        _performance.AddTo(root);
+
         // llama.cpp.
         root.AddRow(Kit.Section("llama.cpp"));
         var llamaGrid = Kit.Grid();
@@ -124,6 +136,10 @@ internal sealed class ServerPage : PageBase
         root.AddRow(_llamaCheckUpdates);
         root.AddRow(_updateStatus);
         root.AddRow(_llamaProgress);
+        var buildsHint = Kit.Hint(L.T("Сохранённые сборки: текущая, закреплённая и две предыдущие. На них можно переключиться без загрузки; если новая сборка не запустится, Offload сам вернётся на прежнюю. Закреплённая версия не обновляется."));
+        buildsHint.Margin = new Padding(0, 10, 0, 2);
+        root.AddRow(buildsHint);
+        root.AddRow(_builds);
 
         root.AddRow(Kit.Section("Microsoft Visual C++ Redistributable"));
         root.AddRow(Kit.Hint(L.T("Библиотеки MSVCP140.dll и VCRUNTIME140.dll нужны для работы llama.cpp. Установка запросит права администратора.")));
@@ -158,7 +174,7 @@ internal sealed class ServerPage : PageBase
 
     public override string Title => L.T("Сервер");
 
-    public override string Subtitle => L.T("Параметры llama-server, сборка llama.cpp и поведение программы");
+    public override string Subtitle => L.T("Параметры llama-server, сборка llama.cpp и Visual C++ Runtime");
 
     public override string Glyph => Glyphs.Server;
 
@@ -178,6 +194,7 @@ internal sealed class ServerPage : PageBase
                 catch (Exception ex) { Log.Warn("ui", $"Оборудование не определено: {ex.Message}"); }
                 if (!IsDisposed) FillBackends();
             }
+            _ = _performance.RefreshAsync();
         }
         catch (Exception ex)
         {
@@ -190,9 +207,14 @@ internal sealed class ServerPage : PageBase
         if (!_dirty && !IsBusy) LoadSettings(ConfigStore.Current.Server);
         LoadProgramSettings();
         UpdateLlamaInfo();
+        if (IsActive) _ = _performance.RefreshAsync();
     }
 
-    public override void OnServerStateChanged() => UpdateUiState();
+    public override void OnServerStateChanged()
+    {
+        UpdateUiState();
+        if (IsActive && Shell.Server.State is ServerState.Running or ServerState.Stopped) _ = _performance.RefreshAsync();
+    }
 
     protected override void UpdateUiState()
     {
@@ -202,6 +224,12 @@ internal sealed class ServerPage : PageBase
         _backend.Enabled = !installing && _backendValues.Count > 0;
         _vcInstall.Enabled = !IsBusy;
         _apply.Enabled = !installing;
+        _performance.UpdateUiState(IsBusy);
+        foreach (var (sw, pin, build) in _buildButtons)
+        {
+            sw.Enabled = !IsBusy && !build.IsCurrent;
+            pin.Enabled = !IsBusy;
+        }
     }
 
     // ---------- Параметры сервера ----------
@@ -227,7 +255,7 @@ internal sealed class ServerPage : PageBase
             }
             _context.SelectedIndex = Math.Max(0, _contextValues.IndexOf(Math.Max(0, s.ContextSize)));
 
-            _parallel.Value = Math.Clamp(s.Parallel, 1, 4);
+            _parallel.Value = Math.Clamp(s.Parallel, 1, ServerSettings.MaxParallel);
             _gpuLayers.Value = s.GpuLayers < 0 ? -1 : s.GpuLayers;
             _cpuMoe.Value = s.CpuMoeLayers < 0 ? -1 : s.CpuMoeLayers;
             _flash.SelectedIndex = Math.Max(0, Array.FindIndex(FlashOptions, o => string.Equals(o.Value, s.FlashAttention, StringComparison.OrdinalIgnoreCase)));
@@ -278,21 +306,12 @@ internal sealed class ServerPage : PageBase
     private async Task ApplyAsync()
     {
         var extra = _extra.Text.Trim();
-        if (extra.Length > 0)
+        // Разбор аргументов не бросает исключений: незакрытую кавычку он молча дотягивает до конца строки.
+        if (LlamaServerArgs.HasUnclosedQuote(extra))
         {
-            try
-            {
-                LlamaServerArgs.SplitArgs(extra);
-            }
-            catch (NotImplementedException)
-            {
-                // Проверка разбора недоступна в этой сборке — сохраняем как есть.
-            }
-            catch (Exception ex)
-            {
-                Ui.ShowError(Owner, L.T("Некорректные дополнительные аргументы"), ex);
-                return;
-            }
+            Ui.Warn(Owner, L.T("В дополнительных аргументах есть незакрытая кавычка — проверьте строку."));
+            _extra.Focus();
+            return;
         }
 
         var saved = Ui.RunSafe(Owner, () => ConfigStore.Update(c =>
@@ -330,6 +349,17 @@ internal sealed class ServerPage : PageBase
         }
     }
 
+    /// <summary>
+    /// «Применить» рекомендацию слотов: подставить в «Параллельные запросы»; если других несохранённых правок нет —
+    /// сразу сохранить (с предложением перезапустить сервер), иначе сохранит общая кнопка «Применить».
+    /// </summary>
+    private async Task ApplyRecommendedParallelAsync(int parallel)
+    {
+        var hadChanges = _dirty;
+        _parallel.Value = Math.Clamp(parallel, (int)_parallel.Minimum, (int)_parallel.Maximum);
+        if (!hadChanges) await ApplyAsync();
+    }
+
     // ---------- llama.cpp ----------
 
     private void UpdateLlamaInfo()
@@ -338,7 +368,8 @@ internal sealed class ServerPage : PageBase
         var installed = Ui.Try(() => LlamaInstaller.IsInstalled(cfg), false, "IsInstalled");
         if (installed && !string.IsNullOrWhiteSpace(cfg.Llama.InstalledTag))
         {
-            _llamaInstalled.Text = $"{cfg.Llama.InstalledTag} · {Texts.Backend(cfg.Llama.InstalledBackend)}";
+            _llamaInstalled.Text = $"{cfg.Llama.InstalledTag} · {Texts.Backend(cfg.Llama.InstalledBackend)}"
+                                   + (string.Equals(cfg.Llama.PinnedTag, cfg.Llama.InstalledTag, StringComparison.OrdinalIgnoreCase) ? " · " + L.T("закреплена") : "");
             _llamaInstalled.ForeColor = Theme.TextPrimary;
             var exe = Ui.Try(() => LlamaInstaller.GetServerExePath(cfg), null, "GetServerExePath");
             _llamaPath.Text = exe ?? cfg.Llama.InstallDir ?? "";
@@ -360,6 +391,127 @@ internal sealed class ServerPage : PageBase
         _vcStatus.ForeColor = vc == true ? Theme.OkText : vc == false ? Theme.ErrorText : Theme.TextMuted;
         _vcInstall.Text = vc == true ? L.T("Переустановить") : L.T("Установить");
         UpdateUiState();
+        _ = RefreshBuildsAsync();
+    }
+
+    // ---------- Сохранённые сборки llama.cpp ----------
+
+    /// <summary>Список сохранённых сборок читается с диска в фоне; перестраивается только при изменении.</summary>
+    /// <summary>Обновить список сохранённых сборок llama.cpp (ошибки только в журнал — вызывается без ожидания).</summary>
+    private async Task RefreshBuildsAsync()
+    {
+        try
+        {
+            var cfg = ConfigStore.Current;
+            var version = ++_buildsVersion;
+            var list = await Task.Run(() => LlamaInstaller.ListInstalledBuilds(cfg));
+            if (IsDisposed || version != _buildsVersion) return;
+            var signature = string.Join("|", list.Select(b => $"{b.InstallDir}:{b.IsCurrent}:{b.IsPinned}"));
+            if (signature == _buildsSignature) return;
+            _buildsSignature = signature;
+            FillBuilds(list);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("ui", $"Список сборок llama.cpp: {ex.Message}");
+        }
+    }
+
+    private void FillBuilds(IReadOnlyList<LlamaInstalledBuild> list)
+    {
+        _builds.SuspendLayout();
+        try
+        {
+            foreach (Control c in _builds.Controls.Cast<Control>().ToList()) c.Dispose();
+            _builds.Controls.Clear();
+            _builds.RowStyles.Clear();
+            _builds.RowCount = 0;
+            _buildButtons.Clear();
+            if (list.Count == 0)
+            {
+                _builds.AddRow(Kit.Hint(L.T("Сохранённых сборок пока нет.")));
+                return;
+            }
+            foreach (var b in list)
+            {
+                var text = L.F("{0} · {1} · установлена {2}", b.Tag, Texts.Backend(b.Backend), b.InstalledAtUtc.ToLocalTime().ToString("d", CultureInfo.CurrentCulture));
+                if (b.IsCurrent) text += " · " + L.T("текущая");
+                if (b.IsPinned) text += " · " + L.T("закреплена");
+                var label = Kit.Label(text, b.IsCurrent ? Theme.Semibold(9f) : null);
+                label.Margin = new Padding(0, 8, 12, 4);
+                var build = b;
+                var sw = Kit.Button(L.T("Переключить"), async (_, _) => await SwitchBuildAsync(build), 110);
+                var pin = Kit.Button(b.IsPinned ? L.T("Открепить") : L.T("Закрепить"), (_, _) => TogglePin(build), 100);
+                _buildButtons.Add((sw, pin, build));
+                _builds.AddRow(Kit.Flow(label, sw, pin));
+            }
+        }
+        finally
+        {
+            _builds.ResumeLayout();
+        }
+        UpdateUiState();
+    }
+
+    private void TogglePin(LlamaInstalledBuild build)
+    {
+        if (IsBusy) return;
+        var tag = build.IsPinned ? null : build.Tag;
+        if (!Ui.RunSafe(Owner, () => LlamaInstaller.SetPinnedTag(tag), L.T("Не удалось сохранить настройку"))) return;
+        if (tag is not null)
+        {
+            Shell.PendingLlamaUpdate = null;
+            _updateStatus.ForeColor = Theme.TextMuted;
+            _updateStatus.Text = L.F("Версия llama.cpp закреплена на {0}: обновления не предлагаются, установка ставит эту версию.", tag);
+        }
+        else
+        {
+            _updateStatus.Text = "";
+        }
+        Shell.ConfigChanged();
+        UpdateLlamaInfo();
+    }
+
+    /// <summary>Переключиться на сохранённую сборку (откат/возврат) без загрузки и перезапустить сервер.</summary>
+    private async Task SwitchBuildAsync(LlamaInstalledBuild build)
+    {
+        if (IsBusy || build.IsCurrent) return;
+        var server = Shell.Server;
+        var wasRunning = server.State is ServerState.Running or ServerState.Starting;
+        if (!Ui.Confirm(Owner,
+                L.F("Переключиться на сохранённую сборку llama.cpp {0} ({1})? Загрузка не нужна.", build.Tag, Texts.Backend(build.Backend)) +
+                (wasRunning ? L.F("{0}{0}Сервер будет перезапущен с этой сборкой.", Environment.NewLine) : "")))
+            return;
+
+        _busyText = L.T("переключение сборки llama.cpp");
+        try
+        {
+            await RunBusyAsync(async () =>
+            {
+                if (wasRunning) await server.StopAsync();
+                var result = await LlamaInstaller.SwitchToAsync(build.InstallDir);
+                Shell.PendingLlamaUpdate = null;
+                _updateStatus.ForeColor = Theme.OkText;
+                _updateStatus.Text = L.F("Текущая сборка: llama.cpp {0} ({1}).", result.Tag, Texts.Backend(result.Backend));
+                Log.Info("llama", $"Переключено на сохранённую сборку llama.cpp {result.Tag} ({result.Backend})");
+            }, L.T("Не удалось переключить сборку llama.cpp"));
+        }
+        finally
+        {
+            _busyText = null;
+        }
+
+        Shell.ConfigChanged();
+        FillBackends();
+        UpdateLlamaInfo();
+        if (wasRunning || server.State == ServerState.Failed)
+        {
+            await RunBusyAsync(async () =>
+            {
+                if (!await server.StartAsync())
+                    Ui.ShowError(Owner, L.T("Сервер не запустился после переключения сборки llama.cpp"), server.LastError ?? "");
+            }, L.T("Не удалось запустить сервер"));
+        }
     }
 
     private void FillBackends()
@@ -370,7 +522,7 @@ internal sealed class ServerPage : PageBase
         IReadOnlyList<LlamaBackend> list = _hw is null
             ? [LlamaBackend.Cuda12, LlamaBackend.Cuda13, LlamaBackend.Vulkan, LlamaBackend.Rocm, LlamaBackend.Sycl, LlamaBackend.Cpu]
             : Texts.AvailableBackends(_hw);
-        var recommended = _hw is null ? (LlamaBackend?)null : Texts.RecommendBackend(_hw).Backend;
+        var recommended = _hw is null ? (LlamaBackend?)null : RecommendForActiveModel(_hw, cfg).Backend;
         foreach (var b in list)
         {
             _backendValues.Add(b);
@@ -385,9 +537,18 @@ internal sealed class ServerPage : PageBase
         UpdateUiState();
     }
 
+    /// <summary>Рекомендация сборки с учётом IQ-тензоров активной модели (поле каталога iqTensors).</summary>
+    private static BackendRecommendation RecommendForActiveModel(HardwareInfo hw, AppConfig cfg) =>
+        Ui.Try(() => LlamaReleaseResolver.Recommend(hw, ModelCatalog.HasIqTensors(cfg.ActiveModel())), Texts.RecommendBackend(hw), "Recommend");
+
     private void ShowUpdate(LlamaUpdateInfo info)
     {
-        if (info.UpdateAvailable)
+        if (info.Pinned)
+        {
+            _updateStatus.ForeColor = Theme.TextMuted;
+            _updateStatus.Text = L.F("Версия llama.cpp закреплена на {0}: обновления не предлагаются, установка ставит эту версию.", info.LatestTag);
+        }
+        else if (info.UpdateAvailable)
         {
             _updateStatus.ForeColor = Theme.WarnText;
             _updateStatus.Text = L.F("Доступна новая версия llama.cpp: {0} (установлена {1}). Нажмите «Переустановить / обновить».", info.LatestTag, info.InstalledTag ?? "—");
@@ -436,8 +597,11 @@ internal sealed class ServerPage : PageBase
         var name = Texts.Backend(backend);
         var server = Shell.Server;
         var wasRunning = server.State is ServerState.Running or ServerState.Starting;
+        var pinned = ConfigStore.Current.Llama.PinnedTag;
         if (confirm && !Ui.Confirm(Owner,
-                L.F("Скачать и установить последнюю версию llama.cpp (сборка «{0}»)?", name) +
+                (string.IsNullOrWhiteSpace(pinned)
+                    ? L.F("Скачать и установить последнюю версию llama.cpp (сборка «{0}»)?", name)
+                    : L.F("Установить закреплённую версию llama.cpp {0} (сборка «{1}»)?", pinned, name)) +
                 (wasRunning ? L.F("{0}{0}Сервер будет остановлен на время установки и запущен снова.", Environment.NewLine) : "")))
             return;
 

@@ -196,7 +196,7 @@ internal sealed class ChatStreamParser(Action<string>? onDelta = null)
         obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetDouble(out var d) ? d : null;
 }
 
-/// <summary>Русские тексты ошибок API llama-server.</summary>
+/// <summary>Русские тексты ошибок API llama-server (Message) и устойчивые признаки Kind/Detail для классификации.</summary>
 internal static class LlamaErrorText
 {
     public static string Unauthorized =>
@@ -207,11 +207,14 @@ internal static class LlamaErrorText
     public static string NotRunning(string baseUrl) =>
         L.F("Сервер не запущен: нет соединения с {0}. Запустите сервер в Offload.", baseUrl);
 
+    /// <summary>Тип ошибки llama-server при переполнении контекста (вместе с n_prompt_tokens и n_ctx).</summary>
+    public const string ExceedContextType = "exceed_context_size_error";
+
     /// <summary>Ошибка по HTTP-коду и телу ответа ({"error":{...}}).</summary>
     public static LlamaApiException FromResponse(int status, string? body)
     {
-        if (status == 401) return new LlamaApiException(Unauthorized, status);
-        if (status == 503) return new LlamaApiException(Loading, status);
+        if (status == 401) return new LlamaApiException(Unauthorized, status) { Kind = LlamaErrorKind.Unauthorized };
+        if (status == 503) return new LlamaApiException(Loading, status) { Kind = LlamaErrorKind.Loading };
         if (!string.IsNullOrWhiteSpace(body))
         {
             try
@@ -225,8 +228,9 @@ internal static class LlamaErrorText
                 // Не JSON — покажем как есть.
             }
         }
-        var tail = string.IsNullOrWhiteSpace(body) ? "" : ": " + Shorten(body.Trim(), 300);
-        return new LlamaApiException(L.F("llama-server вернул ошибку {0}{1}", status, tail), status);
+        var shortBody = string.IsNullOrWhiteSpace(body) ? null : Shorten(body.Trim(), 300);
+        var tail = shortBody is null ? "" : ": " + shortBody;
+        return new LlamaApiException(L.F("llama-server вернул ошибку {0}{1}", status, tail), status) { Detail = shortBody };
     }
 
     public static LlamaApiException FromErrorJson(JsonElement err, int? statusCode)
@@ -246,19 +250,45 @@ internal static class LlamaErrorText
             message = err.GetString();
         }
 
-        if (code == 401 || type == "authentication_error") return new LlamaApiException(Unauthorized, 401);
-        if (code == 503 || type == "unavailable_error") return new LlamaApiException(Loading, 503);
-        if (type == "exceed_context_size_error" || (message?.Contains("context size", StringComparison.OrdinalIgnoreCase) ?? false))
+        var detail = string.IsNullOrWhiteSpace(message) ? null : Shorten(message!.Trim(), 500);
+
+        if (code == 401 || type == "authentication_error")
+            return new LlamaApiException(Unauthorized, 401) { Kind = LlamaErrorKind.Unauthorized, Detail = detail };
+        if (code == 503 || type == "unavailable_error")
+            return new LlamaApiException(Loading, 503) { Kind = LlamaErrorKind.Loading, Detail = detail };
+        if (IsContextOverflow(type, message, nPrompt, nCtx))
         {
-            var detail = nPrompt is not null && nCtx is not null ? " " + L.F("({0} токенов при контексте {1})", nPrompt, nCtx) : "";
+            var sizes = nPrompt is not null && nCtx is not null ? " " + L.F("({0} токенов при контексте {1})", nPrompt, nCtx) : "";
             return new LlamaApiException(
-                L.F("Запрос не помещается в контекст модели{0}. Сократите объём передаваемых файлов или увеличьте размер контекста в настройках.", detail),
-                code ?? 400);
+                L.F("Запрос не помещается в контекст модели{0}. Сократите объём передаваемых файлов или увеличьте размер контекста в настройках.", sizes),
+                code ?? 400)
+            {
+                Kind = LlamaErrorKind.ContextExceeded,
+                Detail = detail,
+                PromptTokens = nPrompt,
+                ContextSize = nCtx,
+            };
         }
-        var text = string.IsNullOrWhiteSpace(message) ? L.T("неизвестная ошибка") : Shorten(message!, 500);
-        return code is >= 500
-            ? new LlamaApiException(L.F("Внутренняя ошибка llama-server: {0}", text), code)
-            : new LlamaApiException(L.F("llama-server отклонил запрос: {0}", text), code);
+        var text = detail ?? L.T("неизвестная ошибка");
+        if (code is >= 500 || type == "server_error")
+            return new LlamaApiException(L.F("Внутренняя ошибка llama-server: {0}", text), code) { Kind = LlamaErrorKind.ServerError, Detail = detail };
+        return new LlamaApiException(L.F("llama-server отклонил запрос: {0}", text), code)
+        {
+            Kind = code is >= 400 ? LlamaErrorKind.Rejected : LlamaErrorKind.Other,
+            Detail = detail,
+        };
+    }
+
+    /// <summary>
+    /// Переполнение контекста — по структурированным данным: тип exceed_context_size_error или n_prompt_tokens ≥ n_ctx.
+    /// Старые сборки llama-server присылали только текст «the request exceeds the available context size» —
+    /// узнаём его по точной фразе, а не по слову «context» (иначе любая ошибка с этим словом считалась бы переполнением).
+    /// </summary>
+    internal static bool IsContextOverflow(string? type, string? message, int? nPrompt, int? nCtx)
+    {
+        if (string.Equals(type, ExceedContextType, StringComparison.Ordinal)) return true;
+        if (nPrompt is > 0 && nCtx is > 0 && nPrompt >= nCtx) return true;
+        return message is not null && message.Contains("exceeds the available context size", StringComparison.OrdinalIgnoreCase);
     }
 
     private static string Shorten(string s, int max) => s.Length <= max ? s : s[..max] + "…";

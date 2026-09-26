@@ -49,7 +49,6 @@
   "Встроенный каталог моделей не найден в сборке Offload.Models.": "The built-in model catalog was not found in the Offload.Models assembly.",
   "ГБ": "GB",
   "Для модели {0} не указана квантизация.": "No quantization specified for model {0}.",
-  "Доступ к репозиторию {0} ограничен: нужен вход на Hugging Face (переменная окружения HF_TOKEN).": "Access to repository {0} is restricted: a Hugging Face login is required (HF_TOKEN environment variable).",
   "Заголовок GGUF обрывается — файл неполный или повреждён: {0}": "The GGUF header is truncated — the file is incomplete or corrupted: {0}",
   "Заголовок GGUF повреждён (файл неполный или повреждён): неверное значение ({0}: {1}).": "The GGUF header is corrupted (the file is incomplete or damaged): invalid value ({0}: {1}).",
   "Заголовок GGUF повреждён: неизвестный тип значения {0}.": "The GGUF header is corrupted: unknown value type {0}.",

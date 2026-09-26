@@ -18,6 +18,14 @@
     <EmbeddedResource Include="Assets\app-64.png" LogicalName="Offload.App.app-64.png" />
   </ItemGroup>
   <ItemGroup>
+    <InternalsVisibleTo Include="Offload.App.Tests" />
+  </ItemGroup>
+  <!-- Roslyn — вне composite ReadyToRun: иначе его нативный код раздувает single-file exe на ~19 МБ (замер: +22,7 → +11,8 МБ). -->
+  <ItemGroup>
+    <PublishReadyToRunCompositeExclusions Include="Microsoft.CodeAnalysis.dll" />
+    <PublishReadyToRunCompositeExclusions Include="Microsoft.CodeAnalysis.CSharp.dll" />
+  </ItemGroup>
+  <ItemGroup>
     <ProjectReference Include="..\Offload.Core\Offload.Core.csproj" />
     <ProjectReference Include="..\Offload.Llama\Offload.Llama.csproj" />
     <ProjectReference Include="..\Offload.Models\Offload.Models.csproj" />

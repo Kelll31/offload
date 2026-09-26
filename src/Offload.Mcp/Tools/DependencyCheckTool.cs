@@ -18,7 +18,7 @@ internal static partial class DependencyCheckTool
         var act = (action ?? "list").Trim().ToLowerInvariant();
         maxResults = Math.Clamp(maxResults <= 0 ? 80 : maxResults, 5, 500);
         ctx.Progress.Report("Reading project manifests…");
-        var (map, index) = await ProjectMap.BuildAsync(ctx, ctx.Ct).ConfigureAwait(false);
+        var map = await ProjectMap.GetAsync(ctx, ctx.Ct).ConfigureAwait(false);
         if (map.Projects.Count == 0) throw new ToolException("No package manifests found (csproj, package.json, pyproject/requirements, go.mod, Cargo.toml…).");
         return act switch
         {
@@ -27,7 +27,8 @@ internal static partial class DependencyCheckTool
             "outdated" => await OnlineAsync(ctx, map, vulnerable: false, maxResults).ConfigureAwait(false),
             "vulnerable" => await OnlineAsync(ctx, map, vulnerable: true, maxResults).ConfigureAwait(false),
             "licenses" => Licenses(ctx, map, maxResults),
-            "unused" => Unused(map, index, maxResults),
+            // Текст исходников нужен только поиску неиспользуемых пакетов.
+            "unused" => Unused(map, await CodeIndex.LoadAsync(ctx, null, codeOnly: true, ctx.Ct).ConfigureAwait(false), maxResults),
             _ => throw new ToolException("action must be list, graph, outdated, vulnerable, licenses or unused."),
         };
     }
@@ -88,30 +89,58 @@ internal static partial class DependencyCheckTool
         var sln = Directory.EnumerateFiles(root, "*.sln*").Where(f => f.EndsWith(".sln", StringComparison.OrdinalIgnoreCase) || f.EndsWith(".slnx", StringComparison.OrdinalIgnoreCase))
             .Select(Path.GetFileName).FirstOrDefault();
         var dotnetTarget = sln ?? map.Projects.FirstOrDefault(p => p.Kind == "dotnet")?.Manifest;
-        if (dotnetTarget is not null && SafeArg().IsMatch(dotnetTarget))
+        if (dotnetTarget is not null)
         {
-            var cmd = $"dotnet list {dotnetTarget} package {(vulnerable ? "--vulnerable --include-transitive" : "--outdated")} --format json";
-            var run = await VerifyTool.RunLoggedAsync(ctx, cmd, timeout).ConfigureAwait(false);
-            sb.Append(ParseDotnet(File.ReadAllText(run.LogPath), vulnerable, max, cmd));
+            var arg = dotnetTarget.Contains(' ') ? $"\"{dotnetTarget}\"" : dotnetTarget;
+            var cmd = InternalCommand(ctx, $"dotnet list {arg} package {(vulnerable ? "--vulnerable --include-transitive" : "--outdated")} --format json",
+                dotnetTarget, sb);
+            if (cmd is not null)
+            {
+                var run = await VerifyTool.RunLoggedAsync(ctx, cmd, timeout).ConfigureAwait(false);
+                sb.Append(ParseDotnet(File.ReadAllText(run.LogPath), vulnerable, max, cmd));
+            }
         }
         var node = map.Projects.FirstOrDefault(p => p.Kind == "node" && !p.Manifest.Contains('/'));
-        if (node is not null && (Directory.Exists(Path.Combine(root, "node_modules")) || vulnerable))
+        if (node is not null && (Directory.Exists(Path.Combine(root, "node_modules")) || vulnerable)
+            && InternalCommand(ctx, vulnerable ? "npm audit --json" : "npm outdated --json", null, sb) is { } npmCmd)
         {
-            var cmd = vulnerable ? "npm audit --json" : "npm outdated --json";
-            var run = await VerifyTool.RunLoggedAsync(ctx, cmd, timeout).ConfigureAwait(false);
-            sb.Append(ParseNpm(File.ReadAllText(run.LogPath), vulnerable, max, cmd));
+            var run = await VerifyTool.RunLoggedAsync(ctx, npmCmd, timeout).ConfigureAwait(false);
+            sb.Append(ParseNpm(File.ReadAllText(run.LogPath), vulnerable, max, npmCmd));
         }
-        if (map.Projects.Any(p => p.Kind == "python") && !vulnerable)
+        if (map.Projects.Any(p => p.Kind == "python") && !vulnerable
+            && InternalCommand(ctx, "pip list --outdated --format=json", null, sb) is { } pipCmd)
         {
-            var run = await VerifyTool.RunLoggedAsync(ctx, "pip list --outdated --format=json", timeout).ConfigureAwait(false);
+            var run = await VerifyTool.RunLoggedAsync(ctx, pipCmd, timeout).ConfigureAwait(false);
             sb.Append(ParsePip(File.ReadAllText(run.LogPath), map, max));
         }
         if (sb.Length == 0) return $"No supported package manager for action={(vulnerable ? "vulnerable" : "outdated")} (dotnet, npm, pip). Other ecosystems: run their tool via local_verify if allowlisted.";
         return sb.ToString().TrimEnd();
     }
 
-    [GeneratedRegex(@"^[\w.\-/]+$", RegexOptions.CultureInvariant)]
-    private static partial Regex SafeArg();
+    /// <summary>
+    /// Внутренняя команда — только через фиксированный белый список VerifyCommand.ValidateInternal; манифест из аргумента
+    /// ещё и проходит PathGuard (внутри проекта, не секрет, существует). null (и строка-пояснение в sb), если запускать нельзя.
+    /// </summary>
+    internal static string? InternalCommand(ToolContext ctx, string command, string? manifest, StringBuilder sb)
+    {
+        try
+        {
+            if (manifest is not null)
+            {
+                var full = PathGuard.Resolve(manifest, ctx.Roots);
+                if (PathGuard.FindRoot(full, ctx.Roots) is null) throw new ToolException("the manifest is outside the workspace");
+                if (PathGuard.CheckReadResolved(full, ctx.Roots, ctx.Cfg.Mcp.SecretFilePatterns) is { } why) throw new ToolException(why);
+                if (!File.Exists(full)) throw new ToolException("the manifest does not exist");
+            }
+            return VerifyCommand.ValidateInternal(command);
+        }
+        catch (ToolException ex)
+        {
+            var name = command.Split(' ', 3) is [var a, var b, ..] ? a + " " + b : command;
+            sb.Append($"`{name}` skipped: unsafe manifest name or command ({ex.Message.TrimEnd('.')}). Rename the file or run the check yourself.\n");
+            return null;
+        }
+    }
 
     private static JsonDocument? ParseJson(string text)
     {
@@ -125,7 +154,7 @@ internal static partial class DependencyCheckTool
     private static string ParseDotnet(string output, bool vulnerable, int max, string cmd)
     {
         using var doc = ParseJson(output);
-        if (doc is null) return $"`{cmd}`: could not parse the output (restore may have failed): {Short(output.Trim(), 300)}\n";
+        if (doc is null) return $"`{cmd}`: could not parse the output (restore may have failed): {TextUtil.Short(output.Trim(), 300)}\n";
         var sb = new StringBuilder($"`{cmd}`:\n");
         var n = 0;
         foreach (var proj in doc.RootElement.TryGetProperty("projects", out var ps) ? ps.EnumerateArray() : Enumerable.Empty<JsonElement>())
@@ -141,7 +170,7 @@ internal static partial class DependencyCheckTool
                         {
                             foreach (var v in pkg.TryGetProperty("vulnerabilities", out var vs) ? vs.EnumerateArray() : Enumerable.Empty<JsonElement>())
                             {
-                                sb.Append($"  [{Str(v, "severity")}] {name}: {id} {resolved}{(kind.StartsWith("trans") ? " (transitive)" : "")} {Str(v, "advisoryurl")}\n");
+                                sb.Append($"  [{Str(v, "severity")}] {name}: {id} {resolved}{(kind.StartsWith("trans", StringComparison.Ordinal) ? " (transitive)" : "")} {Str(v, "advisoryurl")}\n");
                                 if (++n >= max) return sb.ToString();
                             }
                         }
@@ -162,7 +191,7 @@ internal static partial class DependencyCheckTool
     private static string ParseNpm(string output, bool vulnerable, int max, string cmd)
     {
         using var doc = ParseJson(output);
-        if (doc is null) return output.Trim().Length == 0 || output.Contains("{}") ? $"`{cmd}`: nothing to report\n" : $"`{cmd}`: could not parse: {Short(output.Trim(), 300)}\n";
+        if (doc is null) return output.Trim().Length == 0 || output.Contains("{}") ? $"`{cmd}`: nothing to report\n" : $"`{cmd}`: could not parse: {TextUtil.Short(output.Trim(), 300)}\n";
         var sb = new StringBuilder($"`{cmd}`:\n");
         var n = 0;
         if (vulnerable)
@@ -193,7 +222,7 @@ internal static partial class DependencyCheckTool
     {
         var start = output.IndexOf('[');
         var end = output.LastIndexOf(']');
-        if (start < 0 || end <= start) return $"`pip list --outdated`: could not parse: {Short(output.Trim(), 200)}\n";
+        if (start < 0 || end <= start) return $"`pip list --outdated`: could not parse: {TextUtil.Short(output.Trim(), 200)}\n";
         try
         {
             using var doc = JsonDocument.Parse(output[start..(end + 1)]);
@@ -309,6 +338,4 @@ internal static partial class DependencyCheckTool
                || n is "typescript" or "eslint" or "prettier" or "vite" or "webpack" or "rollup" or "nodemon" or "ts-node" or "tsx" or "husky" or "lint-staged"
                || n.StartsWith("eslint-", StringComparison.Ordinal) || n.StartsWith("@eslint/", StringComparison.Ordinal) || n.StartsWith("@vitejs/", StringComparison.Ordinal);
     }
-
-    private static string Short(string s, int max) => s.Length <= max ? s : s[..max] + "…";
 }

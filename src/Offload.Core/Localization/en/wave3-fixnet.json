@@ -1,0 +1,6 @@
+{
+  "Зеркало GitHub API должно быть доверенным: оно выбирает, какие сборки llama.cpp и OpenCode ставить, и сообщает их контрольные суммы (файлы при этом берутся только из github.com/…/releases/download/ или через зеркало github.com). Модели проверяются по SHA-256 из каталога. Прокси применяется сразу, к новым соединениям.": "The GitHub API mirror must be trusted: it chooses which llama.cpp and OpenCode builds to install and reports their checksums (the files themselves are downloaded only from github.com/…/releases/download/ or via the github.com mirror). Models are verified by SHA-256 from the catalog. The proxy applies immediately, to new connections.",
+  "Удалённый каталог моделей версии {0} старше уже принятого ранее ({1}) — откат не принимается.": "The remote model catalog version {0} is older than the one already accepted ({1}) — rollback is not allowed.",
+  "Срок действия удалённого каталога моделей истёк {0} — он не применяется.": "The remote model catalog expired on {0} — it is not applied.",
+  "Сохранённый удалённый каталог моделей повреждён.": "The saved remote model catalog is corrupted."
+}

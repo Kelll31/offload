@@ -23,7 +23,7 @@ internal static class SummarizeLogTool
         var display = ctx.Display(full);
         if (!string.IsNullOrWhiteSpace(pattern)) return Grep(full, display, pattern!, tailLines, ctx.Ct);
 
-        ctx.Progress.Report($"Scanning {display}…");
+        ctx.Progress.Step(0, 2, $"Scanning {display}…");
         var (digest, bytesScanned, skippedHead) = ReadDigest(full, tailLines, ctx.Ct);
         ctx.Stats.FilesRead = 1;
         ctx.Stats.TokensRead = (long)(bytesScanned / 3.2);
@@ -50,7 +50,8 @@ internal static class SummarizeLogTool
         while (Tokens.Estimate(excerpt) > budget && excerpt.Length > 2000)
             excerpt = LogPrefilter.Render(digest, excerpt.Length * 3 / 4);
 
-        await using var slot = await GpuQueue.AcquireAsync(ctx.Cfg.Server.Parallel, ctx.Progress, ctx.Ct).ConfigureAwait(false);
+        await using var slot = await GpuQueue.AcquireAsync(ctx, ctx.Ct).ConfigureAwait(false);
+        ctx.Progress.Step(1, 2, "summarizing the filtered log");
         ModelReply reply;
         try
         {
@@ -64,6 +65,7 @@ internal static class SummarizeLogTool
         var text = reply.Text.Trim();
         if (text.Length == 0) throw new ToolException("The local model returned an empty summary; read the log tail yourself.");
         if (reply.Truncated) text += $"\n[summary cut at max_answer_tokens={maxAnswer}]";
+        ctx.Progress.EndSteps();
         var stats = $"log: {display} · {digest.TotalLines} lines · {digest.ErrorLines} error-pattern lines";
         return text + "\n\n" + stats;
     }

@@ -1,0 +1,26 @@
+name: Модель в каталог / Model request
+description: Предложить модель или квант для каталога / Suggest a model or quant
+labels: [catalog]
+body:
+  - type: input
+    id: repo
+    attributes:
+      label: Репозиторий Hugging Face / Hugging Face repo
+      placeholder: unsloth/Qwen3.8-27B-GGUF
+    validations:
+      required: true
+  - type: input
+    id: quants
+    attributes:
+      label: Кванты / Quants
+      placeholder: Q4_K_M, Q6_K
+  - type: textarea
+    id: why
+    attributes:
+      label: Почему эта модель / Why this model
+      description: Качество на коде, скорость, объём видеопамяти, ваш опыт. / Coding quality, speed, VRAM, your experience.
+  - type: textarea
+    id: bench
+    attributes:
+      label: Как работает у вас / Your results
+      description: Видеокарта, tok/s, контекст. / GPU, tokens per second, context size.

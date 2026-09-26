@@ -27,7 +27,8 @@ internal static class ServerInstructions
         "- Whole task: local_solve(task, kind) or local_agent_task - the agent codes in an isolated git worktree, runs the check and " +
         "merges only if it passes; background=true lets you keep working.\n" +
         "- local_apply_patch (your diff; atomic, rollback), local_refactor (rename everywhere), local_write_file, local_edit_files. " +
-        "Git text: local_commit_message (commit/pr/split). Jobs: local_job.\n\n" +
+        "Git text: local_commit_message (commit/pr/split). Jobs: local_job. Full logs and diffs: resources offload://runs/<id>, " +
+        "offload://jobs/<id>/diff (linked in results).\n\n" +
         "Brief it like it sees nothing: paths, acceptance criteria, an allowlisted verify command; one task per call. Results are " +
         "drafts: check the proof/diffstat and risky spots, not every line. Not for security-critical design or tasks quicker to do " +
         "yourself; if it fails twice, do it yourself. local_status: health and savings.\n\n" +

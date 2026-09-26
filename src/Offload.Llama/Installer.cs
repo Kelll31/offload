@@ -15,19 +15,28 @@ namespace Offload.Llama;
 
 /// <summary>
 /// Установка сборки llama.cpp: загрузка архивов (с проверкой SHA-256 из digest GitHub), распаковка во временную
-/// папку и атомарное переименование в llama.cpp\{tag}-{backend}, проверка запуска, обновление конфига, удаление старых версий.
+/// папку и атомарное переименование в llama.cpp\{tag}-{backend}, проверка запуска, обновление конфига, очистка.
+/// Хранятся текущая, закреплённая (<see cref="LlamaSettings.PinnedTag"/>) и <see cref="KeepPreviousBuilds"/> предыдущих
+/// сборок: на них можно переключиться без загрузки, на них же выполняется автоматический откат, если новая сборка
+/// не прошла проверку «--version» или не смогла впервые запустить сервер (<see cref="ReportServerStartAsync"/>).
 /// </summary>
 internal static class InstallerImpl
 {
     public const string ServerExeName = "llama-server.exe";
     internal const string MarkerFileName = ".offload-install.json";
 
-    /// <summary>Одновременно идёт только одна установка в процессе.</summary>
+    /// <summary>Сколько предыдущих сборок хранить сверх текущей и закреплённой.</summary>
+    public const int KeepPreviousBuilds = 2;
+
+    /// <summary>Одновременно идёт только одна установка или переключение в процессе.</summary>
     private static readonly SemaphoreSlim Gate = new(1, 1);
 
     /// <summary>Имена папок установок Offload (только их разрешено удалять при очистке).</summary>
     private static readonly Regex InstallDirName = new(
-        @"^b\d+-(cuda12|cuda13|vulkan|rocm|sycl|cpu)(-[0-9a-f]{6})?$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        @"^b\d+-(cuda12|cuda13|vulkan|rocm|sycl|cpu|openvino|opencladreno)(-[0-9a-f]{6})?$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    /// <summary>Проверка запуска сборки («llama-server --version»); тесты подменяют её, чтобы не требовать настоящую сборку.</summary>
+    internal static Func<string, CancellationToken, Task<string>> Validator = ValidateAsync;
 
     private static bool IsArm64 => RuntimeInformation.OSArchitecture == Architecture.Arm64;
 
@@ -57,11 +66,28 @@ internal static class InstallerImpl
             Log.Info("llama", $"Автовыбор сборки llama.cpp: {backend}");
         }
 
-        Report(progress, L.T("Поиск последней версии llama.cpp…"));
+        var pinned = ConfigStore.Current.Llama.PinnedTag;
+        if (!GitHubReleases.IsBuildTag(pinned)) pinned = null;
+
+        // Закреплённая сборка уже есть на диске — переключаемся без сети.
+        if (pinned is not null
+            && ListBuildsCore(ConfigStore.Current).FirstOrDefault(b => b.Backend == backend && TagEquals(b.Tag, pinned)) is { } local)
+        {
+            var localName = $"llama.cpp {local.Tag} ({BackendAdvisor.DisplayName(local.Backend)})";
+            if (!local.IsCurrent)
+            {
+                Report(progress, L.T("Проверка запуска llama-server…"), 0.96);
+                await SwitchCoreAsync(local, ct).ConfigureAwait(false);
+            }
+            Report(progress, L.F("{0} установлен", localName), 1);
+            return new LlamaInstallResult(local.Tag, local.Backend, local.InstallDir, Path.Combine(local.InstallDir, ServerExeName));
+        }
+
+        Report(progress, pinned is null ? L.T("Поиск последней версии llama.cpp…") : L.F("Поиск закреплённой версии llama.cpp {0}…", pinned));
         LlamaRelease release;
         try
         {
-            release = await FindReleaseAsync(backend, arm64, ct).ConfigureAwait(false);
+            release = await FindReleaseAsync(backend, arm64, pinned, ct).ConfigureAwait(false);
         }
         catch (LlamaBuildNotFoundException) when (backend == LlamaBackend.Cuda12)
         {
@@ -72,7 +98,7 @@ internal static class InstallerImpl
                     L.T("В последних релизах llama.cpp нет сборки CUDA 12, а сборка CUDA 13 не поддерживается этой видеокартой или драйвером. Выберите сборку Vulkan."));
             Log.Warn("llama", "В релизах llama.cpp нет сборки CUDA 12 — устанавливается CUDA 13");
             backend = LlamaBackend.Cuda13;
-            release = await FindReleaseAsync(backend, arm64, ct).ConfigureAwait(false);
+            release = await FindReleaseAsync(backend, arm64, pinned, ct).ConfigureAwait(false);
         }
 
         var sel = AssetSelector.Select(release, backend, arm64)
@@ -102,17 +128,34 @@ internal static class InstallerImpl
 
         var serverExe = Path.Combine(finalDir, ServerExeName);
         Report(progress, L.T("Проверка запуска llama-server…"), 0.96);
-        var version = await ValidateAsync(serverExe, ct).ConfigureAwait(false);
+        string version;
+        try
+        {
+            version = await Validator(serverExe, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException and not LlamaVcRuntimeMissingException)
+        {
+            // Нет VC++ Runtime — не вина сборки: пользователь поставит runtime и повторит. Остальное — откат.
+            var rolledBack = await RollbackFailedInstallAsync(finalDir, release.Tag, ex, ct).ConfigureAwait(false);
+            if (rolledBack is null) throw;
+            throw rolledBack;
+        }
         Log.Info("llama", $"Установлен {name}: {version}");
 
         var dir = finalDir;
         var installedBackend = backend;
+        // Прежняя рабочая сборка — цель автоматического отката, пока новая ни разу не запустила сервер.
+        var before = ConfigStore.Current.Llama.InstallDir;
+        var previous = !PathEquals(before, dir) && GetServerExePath(ConfigStore.Current) is not null ? Path.GetFullPath(before!) : null;
         ConfigStore.Update(c =>
         {
             c.Llama.InstalledTag = release.Tag;
             c.Llama.InstalledBackend = installedBackend;
             c.Llama.InstallDir = dir;
             if (c.Llama.Backend == LlamaBackend.Auto) c.Llama.Backend = installedBackend;
+            c.Llama.PreviousInstallDir = previous;
+            c.Llama.RolledBackFromDir = null;
+            if (TagEquals(c.Llama.FailedTag, release.Tag)) c.Llama.FailedTag = null;
         });
 
         CleanupDownloads(sel);
@@ -122,8 +165,204 @@ internal static class InstallerImpl
         return new LlamaInstallResult(release.Tag, backend, finalDir, serverExe);
     }
 
-    private static Task<LlamaRelease> FindReleaseAsync(LlamaBackend backend, bool arm64, CancellationToken ct) =>
-        GitHubReleases.GetLatestAsync(r => AssetSelector.Select(r, backend, arm64) is not null, BackendAdvisor.DisplayName(backend), ct);
+    private static async Task<LlamaRelease> FindReleaseAsync(LlamaBackend backend, bool arm64, string? pinned, CancellationToken ct)
+    {
+        if (pinned is null)
+            return await GitHubReleases.GetLatestAsync(r => AssetSelector.Select(r, backend, arm64) is not null, BackendAdvisor.DisplayName(backend), ct)
+                .ConfigureAwait(false);
+        var rel = await GitHubReleases.GetByTagAsync(pinned, ct).ConfigureAwait(false);
+        if (AssetSelector.Select(rel, backend, arm64) is null)
+            throw new LlamaBuildNotFoundException(
+                L.F("В закреплённой версии llama.cpp {0} нет сборки «{1}». Снимите закрепление или выберите другую сборку.", pinned, BackendAdvisor.DisplayName(backend)));
+        return rel;
+    }
+
+    // ---------- Сохранённые сборки, переключение и откат ----------
+
+    internal static bool TagEquals(string? a, string? b) => a is not null && b is not null && string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+
+    private static string FullDir(string dir) => Path.GetFullPath(dir).TrimEnd(Path.DirectorySeparatorChar);
+
+    /// <summary>Полностью установленные сборки в папке llama.cpp (есть метка и llama-server.exe), новые первыми.</summary>
+    internal static List<LlamaInstalledBuild> ListBuildsCore(AppConfig cfg)
+    {
+        var list = new List<LlamaInstalledBuild>();
+        try
+        {
+            if (!Directory.Exists(AppPaths.LlamaDir)) return list;
+            foreach (var dir in Directory.EnumerateDirectories(AppPaths.LlamaDir))
+            {
+                if (!InstallDirName.IsMatch(Path.GetFileName(dir)) || !File.Exists(Path.Combine(dir, ServerExeName))) continue;
+                if (ReadMarker(dir) is not { } m) continue;
+                list.Add(new LlamaInstalledBuild(m.Tag, m.Backend, FullDir(dir), m.InstalledAtUtc,
+                    PathEquals(dir, cfg.Llama.InstallDir), TagEquals(m.Tag, cfg.Llama.PinnedTag)));
+            }
+        }
+        catch (Exception ex)
+        {
+            Log.Debug("llama", $"Список сборок llama.cpp: {ex.Message}");
+        }
+        return list.OrderByDescending(b => GitHubReleases.BuildNumber(b.Tag)).ThenByDescending(b => b.InstalledAtUtc).ToList();
+    }
+
+    public static async Task<LlamaInstallResult> SwitchToAsync(string installDir, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(installDir);
+        await Gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var build = ListBuildsCore(ConfigStore.Current).FirstOrDefault(b => PathEquals(b.InstallDir, installDir))
+                        ?? throw new InvalidOperationException(L.F("Сборка llama.cpp в папке {0} не найдена или повреждена.", installDir));
+            return await SwitchCoreAsync(build, ct).ConfigureAwait(false);
+        }
+        finally
+        {
+            Gate.Release();
+        }
+    }
+
+    /// <summary>Проверить сохранённую сборку и сделать её текущей (без загрузки).</summary>
+    private static async Task<LlamaInstallResult> SwitchCoreAsync(LlamaInstalledBuild build, CancellationToken ct)
+    {
+        var exe = Path.Combine(build.InstallDir, ServerExeName);
+        var version = await Validator(exe, ct).ConfigureAwait(false);
+        ConfigStore.Update(c =>
+        {
+            c.Llama.InstalledTag = build.Tag;
+            c.Llama.InstalledBackend = build.Backend;
+            c.Llama.InstallDir = build.InstallDir;
+            c.Llama.Backend = build.Backend;
+            c.Llama.PreviousInstallDir = null;
+            c.Llama.RolledBackFromDir = null;
+        });
+        Log.Info("llama", $"Текущая сборка llama.cpp: {build.Tag} ({build.Backend}), {version}");
+        return new LlamaInstallResult(build.Tag, build.Backend, build.InstallDir, exe);
+    }
+
+    public static void SetPinnedTag(string? tag)
+    {
+        tag = string.IsNullOrWhiteSpace(tag) ? null : tag.Trim();
+        if (tag is not null && !GitHubReleases.IsBuildTag(tag))
+            throw new ArgumentException(L.F("Неверный тег сборки llama.cpp: «{0}».", tag), nameof(tag));
+        ConfigStore.Update(c => c.Llama.PinnedTag = tag);
+        Log.Info("llama", tag is null ? "Закрепление сборки llama.cpp снято" : $"Сборка llama.cpp закреплена: {tag}");
+    }
+
+    /// <summary>
+    /// Новая сборка не прошла проверку «--version». Если прежняя сборка из конфига цела — она остаётся текущей,
+    /// иначе — переключение на самую новую сохранённую. Сломанная папка удаляется, тег запоминается как неудачный.
+    /// </summary>
+    /// <returns>Исключение с объяснением отката или null — откатиться некуда (пробросить исходную ошибку).</returns>
+    private static async Task<Exception?> RollbackFailedInstallAsync(string failedDir, string tag, Exception error, CancellationToken ct)
+    {
+        Log.Warn("llama", $"Сборка llama.cpp {tag} не прошла проверку: {error.Message}");
+        var cfg = ConfigStore.Current;
+        ConfigStore.Update(c => c.Llama.FailedTag = tag);
+        var isCurrent = PathEquals(failedDir, cfg.Llama.InstallDir);
+        if (!isCurrent && TryRemoveDirectory(failedDir)) Log.Info("llama", $"Удалена непроверенная сборка: {failedDir}");
+
+        if (!isCurrent && GetServerExePath(cfg) is not null)
+        {
+            return new LlamaInstallRolledBackException(
+                L.F("Новая сборка llama.cpp {0} не запустилась, оставлена прежняя сборка {1}. Причина: {2}", tag, cfg.Llama.InstalledTag ?? "—", error.Message),
+                null, error);
+        }
+
+        foreach (var b in ListBuildsCore(ConfigStore.Current).Where(b => !PathEquals(b.InstallDir, failedDir)))
+        {
+            try
+            {
+                var r = await SwitchCoreAsync(b, ct).ConfigureAwait(false);
+                Log.Warn("llama", $"Откат llama.cpp на сохранённую сборку {b.Tag} ({b.Backend})");
+                return new LlamaInstallRolledBackException(
+                    L.F("Новая сборка llama.cpp {0} не запустилась, выполнен откат на сохранённую сборку {1}. Причина: {2}", tag, b.Tag, error.Message),
+                    r, error);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                Log.Warn("llama", $"Сохранённая сборка {b.Tag} тоже не запускается: {ex.Message}");
+            }
+        }
+        return null;
+    }
+
+    public static async Task<LlamaInstallResult?> ReportServerStartAsync(bool started, CancellationToken ct)
+    {
+        var l = ConfigStore.Current.Llama;
+        if (l.PreviousInstallDir is null && l.RolledBackFromDir is null) return null;
+
+        await Gate.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var cfg = ConfigStore.Current;
+            l = cfg.Llama;
+            if (started)
+            {
+                if (l.PreviousInstallDir is not null || l.RolledBackFromDir is not null)
+                {
+                    Log.Info("llama", $"Сборка llama.cpp {l.InstalledTag} запустила сервер — откат больше не нужен");
+                    ConfigStore.Update(c =>
+                    {
+                        c.Llama.PreviousInstallDir = null;
+                        c.Llama.RolledBackFromDir = null;
+                    });
+                }
+                return null;
+            }
+
+            if (l.RolledBackFromDir is { } from)
+            {
+                // Прежняя сборка тоже не запустилась — дело не в новой сборке: возвращаем её и повторять не предлагаем.
+                ConfigStore.Update(c => c.Llama.RolledBackFromDir = null);
+                if (ListBuildsCore(cfg).FirstOrDefault(b => PathEquals(b.InstallDir, from)) is not { } back) return null;
+                try
+                {
+                    await SwitchCoreAsync(back, ct).ConfigureAwait(false);
+                    ConfigStore.Update(c =>
+                    {
+                        if (TagEquals(c.Llama.FailedTag, back.Tag)) c.Llama.FailedTag = null;
+                    });
+                    Log.Warn("llama", $"Откат не помог (сервер не запускается и с прежней сборкой) — возвращена сборка {back.Tag}");
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    Log.Warn("llama", $"Не удалось вернуть сборку {back.Tag}: {ex.Message}");
+                }
+                return null;
+            }
+
+            var failedDir = l.InstallDir;
+            var failedTag = l.InstalledTag;
+            var target = ListBuildsCore(cfg).FirstOrDefault(b => PathEquals(b.InstallDir, l.PreviousInstallDir));
+            if (target is null)
+            {
+                Log.Warn("llama", $"Новая сборка llama.cpp {failedTag} не запустила сервер, а прежней сборки уже нет — откат невозможен");
+                ConfigStore.Update(c => c.Llama.PreviousInstallDir = null);
+                return null;
+            }
+            try
+            {
+                var result = await SwitchCoreAsync(target, ct).ConfigureAwait(false);
+                ConfigStore.Update(c =>
+                {
+                    c.Llama.RolledBackFromDir = failedDir;
+                    c.Llama.FailedTag = failedTag;
+                });
+                Log.Warn("llama", $"llama-server не запустился с новой сборкой {failedTag} — выполнен откат на {target.Tag} ({target.Backend})");
+                return result;
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                Log.Warn("llama", $"Откат на сборку {target.Tag} не удался: {ex.Message}");
+                ConfigStore.Update(c => c.Llama.PreviousInstallDir = null);
+                return null;
+            }
+        }
+        finally
+        {
+            Gate.Release();
+        }
+    }
 
     /// <returns>Итоговая папка установки.</returns>
     private static async Task<string> DownloadAndExtractAsync(
@@ -132,6 +371,9 @@ internal static class InstallerImpl
         var files = new List<(LlamaAsset Asset, string Stage)> { (sel.Main, L.F("Загрузка {0}", name)) };
         if (sel.CudaRuntime is { } rt)
             files.Add((rt, L.F("Загрузка библиотек NVIDIA CUDA {0}", AssetSelector.CudaVersionOf(rt))));
+
+        // Все контрольные суммы — до первой загрузки, чтобы не качать гигабайты зря.
+        foreach (var (asset, _) in files) DownloadPolicy.RequireChecksum(asset.Sha256, asset.Name, "llama.cpp");
 
         var totalBytes = files.Sum(f => Math.Max(0, f.Asset.Size));
         long doneBytes = 0;
@@ -292,26 +534,33 @@ internal static class InstallerImpl
         File.WriteAllText(Path.Combine(dir, MarkerFileName), JsonSerializer.Serialize(marker, Json.Options), FileUtil.Utf8NoBom);
     }
 
-    /// <summary>Папка полностью установлена (метка записывается последней перед переименованием) и в ней есть llama-server.exe.</summary>
-    internal static bool IsValidInstall(string dir, LlamaBuildSelection sel)
+    /// <summary>Метка установки или null (нет, повреждена, неизвестная сборка).</summary>
+    private static InstallMarker? ReadMarker(string dir)
     {
         try
         {
-            if (!File.Exists(Path.Combine(dir, ServerExeName))) return false;
             var path = Path.Combine(dir, MarkerFileName);
-            if (!File.Exists(path)) return false;
+            if (!File.Exists(path)) return null;
             var m = JsonSerializer.Deserialize<InstallMarker>(File.ReadAllText(path), Json.Options);
-            return m is not null
-                   && string.Equals(m.Tag, sel.Release.Tag, StringComparison.OrdinalIgnoreCase)
-                   && m.Backend == sel.Backend
-                   && string.Equals(m.MainAsset, sel.Main.Name, StringComparison.OrdinalIgnoreCase)
-                   && string.Equals(m.RuntimeAsset, sel.CudaRuntime?.Name, StringComparison.OrdinalIgnoreCase);
+            return m is not null && GitHubReleases.IsBuildTag(m.Tag) && m.Backend != LlamaBackend.Auto ? m : null;
         }
         catch (Exception ex)
         {
             Log.Debug("llama", $"Метка установки {dir}: {ex.Message}");
-            return false;
+            return null;
         }
+    }
+
+    /// <summary>Папка полностью установлена (метка записывается последней перед переименованием) и в ней есть llama-server.exe.</summary>
+    internal static bool IsValidInstall(string dir, LlamaBuildSelection sel)
+    {
+        if (!File.Exists(Path.Combine(dir, ServerExeName))) return false;
+        var m = ReadMarker(dir);
+        return m is not null
+               && string.Equals(m.Tag, sel.Release.Tag, StringComparison.OrdinalIgnoreCase)
+               && m.Backend == sel.Backend
+               && string.Equals(m.MainAsset, sel.Main.Name, StringComparison.OrdinalIgnoreCase)
+               && string.Equals(m.RuntimeAsset, sel.CudaRuntime?.Name, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>Запуск «llama-server --version». Возвращает строку версии.</summary>
@@ -371,16 +620,31 @@ internal static class InstallerImpl
         }
     }
 
-    /// <summary>Удалить прежние версии, кроме текущей и тех, из которых сейчас запущен llama-server.</summary>
+    /// <summary>
+    /// Удалить прежние версии, кроме текущей, закреплённой, цели отката, <see cref="KeepPreviousBuilds"/> самых новых
+    /// из остальных полных установок и тех, из которых сейчас запущен llama-server. Неполные установки (без метки) удаляются.
+    /// </summary>
     internal static void CleanupOldVersions(string keepDir)
     {
         try
         {
             var inUse = RunningServerDirs();
+            var cfg = ConfigStore.Current;
+            var keep = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { FullDir(keepDir) };
+            foreach (var d in new[] { cfg.Llama.InstallDir, cfg.Llama.PreviousInstallDir, cfg.Llama.RolledBackFromDir })
+            {
+                if (!string.IsNullOrWhiteSpace(d)) keep.Add(FullDir(d));
+            }
+            var builds = ListBuildsCore(cfg);
+            foreach (var b in builds.Where(b => b.IsPinned)) keep.Add(b.InstallDir);
+            // N предыдущих — самые новые из остальных (цель отката обычно среди них, но хранится в любом случае).
+            var previous = builds.Where(b => !b.IsCurrent && !b.IsPinned && !PathEquals(b.InstallDir, keepDir)).Take(KeepPreviousBuilds).ToList();
+            foreach (var b in previous) keep.Add(b.InstallDir);
+
             foreach (var dir in Directory.EnumerateDirectories(AppPaths.LlamaDir))
             {
                 var dirName = Path.GetFileName(dir);
-                if (PathEquals(dir, keepDir)) continue;
+                if (keep.Contains(FullDir(dir))) continue;
                 var ours = InstallDirName.IsMatch(dirName)
                            || dirName.StartsWith(".tmp-", StringComparison.Ordinal)
                            || dirName.StartsWith(".del-", StringComparison.Ordinal);
@@ -523,6 +787,9 @@ internal static class InstallerImpl
         ArgumentNullException.ThrowIfNull(cfg);
         var backend = cfg.Llama.InstalledBackend != LlamaBackend.Auto ? cfg.Llama.InstalledBackend : cfg.Llama.Backend;
         var installed = GetServerExePath(cfg) is not null ? cfg.Llama.InstalledTag : null;
+        // Закреплённая сборка: новые не предлагаются (и в сеть ходить незачем).
+        if (GitHubReleases.IsBuildTag(cfg.Llama.PinnedTag))
+            return new LlamaUpdateInfo(false, installed, cfg.Llama.PinnedTag!, Pinned: true);
         var arm64 = IsArm64;
         Func<LlamaRelease, bool> accept = backend == LlamaBackend.Auto
             ? GitHubReleases.HasWindowsBuild
@@ -538,6 +805,12 @@ internal static class InstallerImpl
             return new LlamaUpdateInfo(false, installed, installed);
         }
         var newer = installed is not null && GitHubReleases.BuildNumber(latest.Tag) > GitHubReleases.BuildNumber(installed);
+        if (newer && TagEquals(latest.Tag, cfg.Llama.FailedTag))
+        {
+            // Эта сборка уже не прошла проверку или первый запуск — повторно не предлагаем, ждём следующую.
+            Log.Info("llama", $"Обновление llama.cpp {latest.Tag} не предлагается: эта сборка ранее не запустилась");
+            newer = false;
+        }
         return new LlamaUpdateInfo(newer, installed, latest.Tag);
     }
 }

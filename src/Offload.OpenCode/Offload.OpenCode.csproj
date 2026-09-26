@@ -1,6 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <ItemGroup>
     <ProjectReference Include="..\Offload.Core\Offload.Core.csproj" />
+    <!-- Глобальный конфиг OpenCode пользователя правится так же, как конфиги IDE (JsoncEditor + ConfigFile). -->
+    <ProjectReference Include="..\Offload.Integrations\Offload.Integrations.csproj" />
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="Offload.OpenCode.Tests" />

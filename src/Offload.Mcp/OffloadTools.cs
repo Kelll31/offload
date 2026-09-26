@@ -17,6 +17,10 @@ public sealed class OffloadTools(SessionState state)
 {
     // ───────────────────────── описания (читает модель) ─────────────────────────
 
+    /// <summary>Параметр записывающих инструментов при включённом Mcp.ProtectBuildFiles.</summary>
+    internal const string AllowBuildFilesDescription =
+        "Only if Offload refused a build file (csproj/props/targets, package.json, Makefile, conftest.py…): pass true after reviewing that the change is intended.";
+
     internal const string StatusDescription =
         "Offload health check: whether the free local model is online (or how it will auto-start), model name and quant, " +
         "context size per request, measured speed, GPU queue, whether agent mode (OpenCode) is available for local_edit_files, " +
@@ -37,7 +41,8 @@ public sealed class OffloadTools(SessionState state)
         "the local model expands the query, e.g. Russian words to code identifiers, and reranks with reasons) and returns a compact " +
         "context pack that fits budget_tokens: why each file was chosen, its outline and the relevant code with line numbers, plus " +
         "related tests. mode=rank lists files with reasons only; mode=plan adds a draft implementation plan (files, steps, tests, " +
-        "risks). Read-only.";
+        "risks). With an embedding model assigned in Offload the search is hybrid (keywords + code vectors, embedded lazily; " +
+        "the footer shows ranking and vector coverage). Read-only.";
 
     internal const string SearchCodeDescription =
         "Search the project on the server and get compact results: mode=text (substring), regex, word (whole identifier) or file " +
@@ -46,8 +51,8 @@ public sealed class OffloadTools(SessionState state)
         "only need locations and short snippets. Read-only.";
 
     internal const string SymbolsDescription =
-        "IDE-style code navigation without reading whole files (heuristic parser for C#, TS/JS, Python, Go, Java, Kotlin, Rust, " +
-        "C/C++, Pascal, PHP, Ruby, Swift). action: outline (path: declarations with line ranges), find (name substring), definition, " +
+        "IDE-style code navigation without reading whole files (C# parsed with Roslyn syntax trees; heuristic parser for TS/JS, Python, Go, " +
+        "Java, Kotlin, Rust, C/C++, Pascal, PHP, Ruby, Swift; persistent on-disk index). action: outline (path: declarations with line ranges), find (name substring), definition, " +
         "references (textual, with the enclosing function), implementations (subtypes/implementers or same-named methods), callers / " +
         "callees (call graph, depth 1-4), tests (tests for a symbol or file), api (public API surface of paths), slice (just the body " +
         "of a function/class with line numbers). Names may be qualified: \"OrderService.Submit\". Read-only.";
@@ -163,7 +168,8 @@ public sealed class OffloadTools(SessionState state)
     internal const string MemoryDescription =
         "Persistent project memory across sessions, stored in Offload's data folder (not in the repo). action=store (text + kind: " +
         "fact | decision | convention | note | todo, optional tags) to remember facts, architectural decisions (mini-ADR) and " +
-        "conventions you discovered; recall (query) returns the most relevant entries; list; forget (id). Secrets are refused. " +
+        "conventions you discovered; recall (query) returns the most relevant entries (by meaning too, if an embedding model is " +
+        "assigned); list; forget (id). Secrets are refused. " +
         "Recall at the start of a task in a known project to avoid re-discovering things; store decisions and non-obvious facts " +
         "at the end. Entries are notes, not truth: verify against the code.";
 
@@ -186,13 +192,16 @@ public sealed class OffloadTools(SessionState state)
         "Manage Offload jobs (local_write_file / local_edit_files / local_agent_task / local_solve / local_apply_patch / " +
         "local_refactor): action=list (recent jobs in this workspace), status (summary; wait_seconds>0 waits for a background job), " +
         "diff (unified diff; for an unmerged agent sandbox - its branch vs the snapshot), merge (apply an unmerged agent sandbox; " +
-        "commit=true fast-forwards with a git commit), discard (drop an unmerged sandbox), cancel (stop a background job), revert " +
-        "(restore the pre-job snapshot; files created by the job are deleted; refuses if a file changed after the job unless force=true).";
+        "commit=true fast-forwards with a git commit), discard (drop an unmerged sandbox), cancel (stop a background job), " +
+        "retry (re-run an interrupted background job from its stored spec), revert " +
+        "(restore the pre-job snapshot; files created by the job are deleted; refuses if a file changed after the job unless force=true). " +
+        "Background jobs run in the Offload tray when it is running and survive the IDE closing; status 'interrupted' = its host process ended.";
 
     // ───────────────────────── состояние и чтение ─────────────────────────
 
     [McpServerTool(Name = McpToolNames.Status, Title = "Offload: состояние",
-        ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
+        ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false,
+        UseStructuredContent = true, OutputSchemaType = typeof(StatusOutput))]
     [McpMeta("anthropic/alwaysLoad", true)]
     [McpMeta("anthropic/searchHint", "offload local model status health speed queue tokens saved")]
     [Description(StatusDescription)]
@@ -212,7 +221,7 @@ public sealed class OffloadTools(SessionState state)
         [Description("Answer length limit, 64-4096 tokens.")] int max_answer_tokens = 800,
         CancellationToken cancellationToken = default) =>
         ToolRunner.RunAsync(McpToolNames.AskFiles, state, context,
-            ctx => AskFilesTool.RunAsync(ctx, paths, question, answer_format, max_answer_tokens), cancellationToken);
+            SecretRedactor.RedactingOutput(ctx => AskFilesTool.RunAsync(ctx, paths, question, answer_format, max_answer_tokens)), cancellationToken);
 
     [McpServerTool(Name = McpToolNames.FindContext, Title = "Offload: контекст под задачу",
         ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
@@ -229,7 +238,7 @@ public sealed class OffloadTools(SessionState state)
         [Description("Use the local model to expand the query and rerank (slower, better; auto-falls back if offline).")] bool use_model = true,
         CancellationToken cancellationToken = default) =>
         ToolRunner.RunAsync(McpToolNames.FindContext, state, context,
-            ctx => FindContextTool.RunAsync(ctx, task, paths, max_files, budget_tokens, mode, use_model), cancellationToken);
+            SecretRedactor.RedactingOutput(ctx => FindContextTool.RunAsync(ctx, task, paths, max_files, budget_tokens, mode, use_model)), cancellationToken);
 
     [McpServerTool(Name = McpToolNames.SearchCode, Title = "Offload: поиск по коду",
         ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
@@ -246,7 +255,7 @@ public sealed class OffloadTools(SessionState state)
         [Description("Only list files with match counts.")] bool files_only = false,
         CancellationToken cancellationToken = default) =>
         ToolRunner.RunAsync(McpToolNames.SearchCode, state, context,
-            ctx => SearchCodeTool.RunAsync(ctx, query, mode, paths, case_sensitive, context_lines, max_results, files_only), cancellationToken);
+            SecretRedactor.RedactingOutput(ctx => SearchCodeTool.RunAsync(ctx, query, mode, paths, case_sensitive, context_lines, max_results, files_only)), cancellationToken);
 
     [McpServerTool(Name = McpToolNames.Symbols, Title = "Offload: символы и граф вызовов",
         ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
@@ -262,7 +271,7 @@ public sealed class OffloadTools(SessionState state)
         [Description("Maximum results (for slice: roughly max lines / 3).")] int max_results = 50,
         CancellationToken cancellationToken = default) =>
         ToolRunner.RunAsync(McpToolNames.Symbols, state, context,
-            ctx => SymbolsTool.RunAsync(ctx, action, name, path, paths, depth, max_results), cancellationToken);
+            SecretRedactor.RedactingOutput(ctx => SymbolsTool.RunAsync(ctx, action, name, path, paths, depth, max_results)), cancellationToken);
 
     [McpServerTool(Name = McpToolNames.ProjectMap, Title = "Offload: карта проекта",
         ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
@@ -367,7 +376,8 @@ public sealed class OffloadTools(SessionState state)
     // ───────────────────────── запуск проверок ─────────────────────────
 
     [McpServerTool(Name = McpToolNames.Verify, Title = "Offload: сборка/тесты",
-        ReadOnly = false, Destructive = false, Idempotent = true, OpenWorld = false)]
+        ReadOnly = false, Destructive = false, Idempotent = true, OpenWorld = false,
+        UseStructuredContent = true, OutputSchemaType = typeof(VerifyOutput))]
     [McpMeta("anthropic/searchHint", "run build test lint format command summarize failures errors warnings")]
     [Description(VerifyDescription)]
     public Task<CallToolResult> LocalVerify(
@@ -383,7 +393,8 @@ public sealed class OffloadTools(SessionState state)
             ctx => VerifyTool.RunAsync(ctx, command, kind, timeout_sec, focus, analyze, max_answer_tokens), cancellationToken);
 
     [McpServerTool(Name = McpToolNames.Diagnostics, Title = "Offload: диагностика сборки",
-        ReadOnly = false, Destructive = false, Idempotent = true, OpenWorld = false)]
+        ReadOnly = false, Destructive = false, Idempotent = true, OpenWorld = false,
+        UseStructuredContent = true, OutputSchemaType = typeof(DiagnosticsOutput))]
     [McpMeta("anthropic/searchHint", "compiler errors warnings lint diagnostics stack trace resolve file line symbol build failure")]
     [Description(DiagnosticsDescription)]
     public Task<CallToolResult> LocalDiagnostics(
@@ -400,7 +411,8 @@ public sealed class OffloadTools(SessionState state)
             ctx => DiagnosticsTool.RunAsync(ctx, command, kind, log_path, paths, severity, max_results, timeout_sec), cancellationToken);
 
     [McpServerTool(Name = McpToolNames.Impact, Title = "Offload: влияние изменений",
-        ReadOnly = false, Destructive = false, Idempotent = true, OpenWorld = false)]
+        ReadOnly = false, Destructive = false, Idempotent = true, OpenWorld = false,
+        UseStructuredContent = true, OutputSchemaType = typeof(ImpactOutput))]
     [McpMeta("anthropic/searchHint", "change impact affected callers related tests run only affected tests test impact projects")]
     [Description(ImpactDescription)]
     public Task<CallToolResult> LocalImpact(
@@ -442,9 +454,11 @@ public sealed class OffloadTools(SessionState state)
         [Description("Timeout of each verify run, seconds.")] int timeout_sec = 600,
         [Description("Allow replacing an existing file.")] bool overwrite = false,
         [Description("Include the first 30 lines of the written file in the result.")] bool preview = false,
+        [Description(AllowBuildFilesDescription)] bool allow_build_files = false,
         CancellationToken cancellationToken = default) =>
         ToolRunner.RunAsync(McpToolNames.WriteFile, state, context,
-            ctx => WriteFileTool.RunAsync(ctx, path, task, context_paths, verify_command, fix_attempts, timeout_sec, overwrite, preview),
+            PathGuard.WithBuildFilePolicy(allow_build_files,
+                ctx => WriteFileTool.RunAsync(ctx, path, task, context_paths, verify_command, fix_attempts, timeout_sec, overwrite, preview)),
             cancellationToken);
 
     [McpServerTool(Name = McpToolNames.EditFiles, Title = "Offload: правка файлов",
@@ -461,9 +475,11 @@ public sealed class OffloadTools(SessionState state)
         [Description("Overall time limit, 1-30 minutes.")] int timeout_minutes = 10,
         [Description("Compute the change, report it, then restore the originals.")] bool dry_run = false,
         [Description("auto | rewrite | agent")] string mode = "auto",
+        [Description(AllowBuildFilesDescription)] bool allow_build_files = false,
         CancellationToken cancellationToken = default) =>
         ToolRunner.RunAsync(McpToolNames.EditFiles, state, context,
-            ctx => EditFilesTool.RunAsync(ctx, task, files, context_paths, verify_command, fix_attempts, timeout_minutes, dry_run, mode),
+            PathGuard.WithBuildFilePolicy(allow_build_files,
+                ctx => EditFilesTool.RunAsync(ctx, task, files, context_paths, verify_command, fix_attempts, timeout_minutes, dry_run, mode)),
             cancellationToken);
 
     [McpServerTool(Name = McpToolNames.ApplyPatch, Title = "Offload: применить патч",
@@ -477,9 +493,11 @@ public sealed class OffloadTools(SessionState state)
         [Description("Only check that the patch applies; write nothing.")] bool dry_run = false,
         [Description("Restore all files automatically if verify fails.")] bool rollback_on_failure = true,
         [Description("Verify timeout, seconds.")] int timeout_sec = 900,
+        [Description(AllowBuildFilesDescription)] bool allow_build_files = false,
         CancellationToken cancellationToken = default) =>
         ToolRunner.RunAsync(McpToolNames.ApplyPatch, state, context,
-            ctx => ApplyPatchTool.RunAsync(ctx, patch, verify_command, dry_run, rollback_on_failure, timeout_sec), cancellationToken);
+            PathGuard.WithBuildFilePolicy(allow_build_files,
+                ctx => ApplyPatchTool.RunAsync(ctx, patch, verify_command, dry_run, rollback_on_failure, timeout_sec)), cancellationToken);
 
     [McpServerTool(Name = McpToolNames.Refactor, Title = "Offload: рефакторинг",
         ReadOnly = false, Destructive = true, Idempotent = false, OpenWorld = false)]
@@ -498,9 +516,11 @@ public sealed class OffloadTools(SessionState state)
         [Description("rename: show the plan only.")] bool dry_run = false,
         [Description("rename: proceed despite same-named symbols or name conflicts.")] bool force = false,
         [Description("rename: also rename Foo.cs to NewName.cs for types.")] bool rename_file = true,
+        [Description(AllowBuildFilesDescription)] bool allow_build_files = false,
         CancellationToken cancellationToken = default) =>
         ToolRunner.RunAsync(McpToolNames.Refactor, state, context,
-            ctx => RefactorTool.RunAsync(ctx, action, name, new_name, paths, target_file, lines, instructions, verify_command, dry_run, force, rename_file),
+            PathGuard.WithBuildFilePolicy(allow_build_files,
+                ctx => RefactorTool.RunAsync(ctx, action, name, new_name, paths, target_file, lines, instructions, verify_command, dry_run, force, rename_file)),
             cancellationToken);
 
     [McpServerTool(Name = McpToolNames.AgentTask, Title = "Offload: задача агенту (git-песочница)",
@@ -519,9 +539,10 @@ public sealed class OffloadTools(SessionState state)
         [Description("Only changes under these folders/files/globs are merged.")] string[]? allowed_paths = null,
         [Description("Do not auto-merge if more files changed (0 = no limit).")] int max_files = 0,
         [Description("Review the change with the local model before merging; critical/high findings block the auto-merge.")] bool review = false,
+        [Description(AllowBuildFilesDescription)] bool allow_build_files = false,
         CancellationToken cancellationToken = default) =>
         ToolRunner.RunAsync(McpToolNames.AgentTask, state, context,
-            ctx => AgentTaskTool.RunAsync(ctx, new AgentTaskRequest
+            PathGuard.WithBuildFilePolicy(allow_build_files, ctx => AgentTaskTool.RunAsync(ctx, new AgentTaskRequest
             {
                 Task = task,
                 VerifyCommand = verify_command,
@@ -533,7 +554,7 @@ public sealed class OffloadTools(SessionState state)
                 AllowedPaths = allowed_paths,
                 MaxFiles = max_files,
                 Review = review,
-            }),
+            })),
             cancellationToken);
 
     [McpServerTool(Name = McpToolNames.Solve, Title = "Offload: решить задачу локально",
@@ -552,9 +573,11 @@ public sealed class OffloadTools(SessionState state)
         [Description("Overall time limit, minutes.")] int max_minutes = 30,
         [Description("Run in the background and return a job_id.")] bool background = false,
         [Description("Review the change with the local model before merging.")] bool review = true,
+        [Description(AllowBuildFilesDescription)] bool allow_build_files = false,
         CancellationToken cancellationToken = default) =>
         ToolRunner.RunAsync(McpToolNames.Solve, state, context,
-            ctx => SolveTool.RunAsync(ctx, task, kind, verify_command, allowed_paths, context_paths, merge, max_files, max_minutes, background, review),
+            PathGuard.WithBuildFilePolicy(allow_build_files,
+                ctx => SolveTool.RunAsync(ctx, task, kind, verify_command, allowed_paths, context_paths, merge, max_files, max_minutes, background, review)),
             cancellationToken);
 
     [McpServerTool(Name = McpToolNames.Memory, Title = "Offload: память проекта",
@@ -572,14 +595,14 @@ public sealed class OffloadTools(SessionState state)
         [Description("Maximum entries.")] int max_results = 10,
         CancellationToken cancellationToken = default) =>
         ToolRunner.RunAsync(McpToolNames.Memory, state, context,
-            ctx => Task.FromResult(MemoryTool.Run(ctx, action, text, kind, tags, query, id, max_results)), cancellationToken);
+            ctx => MemoryTool.RunAsync(ctx, action, text, kind, tags, query, id, max_results), cancellationToken);
 
     [McpServerTool(Name = McpToolNames.Job, Title = "Offload: задачи (список/diff/слияние/откат)",
         ReadOnly = false, Destructive = true, Idempotent = false, OpenWorld = false)]
-    [McpMeta("anthropic/searchHint", "offload job list status diff merge discard cancel revert undo sandbox branch")]
+    [McpMeta("anthropic/searchHint", "offload job list status diff merge discard cancel retry revert undo sandbox branch")]
     [Description(JobDescription)]
     public Task<CallToolResult> LocalJob(
-        [Description("list | status | diff | merge | discard | cancel | revert")] string action,
+        [Description("list | status | diff | merge | discard | cancel | retry | revert")] string action,
         RequestContext<CallToolRequestParams> context,
         [Description("job_id from a tool result or action=list (not needed for list).")] string? job_id = null,
         [Description("diff: maximum lines to return.")] int max_lines = 300,
@@ -589,5 +612,8 @@ public sealed class OffloadTools(SessionState state)
         [Description("status: wait up to N seconds (max 600) for a background job to finish.")] int wait_seconds = 0,
         CancellationToken cancellationToken = default) =>
         ToolRunner.RunAsync(McpToolNames.Job, state, context,
-            ctx => JobTool.RunAsync(ctx, job_id, action, max_lines, paths, force, commit, wait_seconds), cancellationToken);
+            // Слияние задачи песочницы — тоже запись: файлы сборки при Mcp.ProtectBuildFiles не вливаются.
+            // Рискованные merge/revert force — с подтверждением пользователя (elicitation), diff — со ссылкой на полный текст.
+            PathGuard.WithBuildFilePolicy(false, ctx => JobConfirmation.RunAsync(ctx, job_id, action, force,
+                () => JobTool.RunAsync(ctx, job_id, action, max_lines, paths, force, commit, wait_seconds))), cancellationToken);
 }

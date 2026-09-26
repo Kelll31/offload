@@ -4,5 +4,7 @@
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="Offload.Integrations.Tests" />
+    <!-- Тесты OpenCode включают песочницу IntegrationEnvironment (глобальный конфиг OpenCode пользователя). -->
+    <InternalsVisibleTo Include="Offload.OpenCode.Tests" />
   </ItemGroup>
 </Project>

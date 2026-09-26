@@ -42,14 +42,20 @@ internal sealed class Sandbox : IDisposable
     public string AppData => Path.Combine(Root, "AppData", "Roaming");
     public string Local => Path.Combine(Root, "AppData", "Local");
 
-    public Sandbox(IReadOnlyDictionary<string, string>? vars = null, bool allowCli = false, string? claudeCli = null)
+    /// <param name="wslDistros">Дистрибутивы WSL песочницы: имя → домашняя папка Linux (файлы — в <see cref="Wsl"/>).</param>
+    public Sandbox(IReadOnlyDictionary<string, string>? vars = null, bool allowCli = false, string? claudeCli = null,
+        IReadOnlyDictionary<string, string>? wslDistros = null)
     {
         Root = Path.Combine(Path.GetTempPath(), TestSetup.SandboxPrefix + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(Root);
         Directory.CreateDirectory(AppData);
         Directory.CreateDirectory(Local);
-        _override = IntegrationEnvironment.Override(Root, vars, allowCli, claudeCli);
+        _override = IntegrationEnvironment.Override(Root, vars, allowCli, claudeCli, wslDistros);
     }
+
+    /// <summary>Файл внутри дистрибутива WSL песочницы (подмена \\wsl.localhost\&lt;d&gt;\…): Wsl("Ubuntu", "/home/dev/.claude.json").</summary>
+    public string Wsl(string distro, string linuxPath) =>
+        Path.Combine([Root, "wsl", distro, .. linuxPath.Split('/', StringSplitOptions.RemoveEmptyEntries)]);
 
     public string P(params string[] parts) => Path.Combine([Root, .. parts]);
 
@@ -122,6 +128,9 @@ public sealed class RealProfileGuard : IDisposable
             Path.Combine(Home, ".codeium", "windsurf", "mcp_config.json"),
             Path.Combine(Home, ".config", "kilo", "kilo.json"),
             Path.Combine(Home, ".config", "kilo", "kilo.jsonc"),
+            Path.Combine(Home, ".config", "opencode", "config.json"),
+            Path.Combine(Home, ".config", "opencode", "opencode.json"),
+            Path.Combine(Home, ".config", "opencode", "opencode.jsonc"),
             Path.Combine(Roaming, "Code", "User", "mcp.json"),
             Path.Combine(Roaming, "Code", "User", "settings.json"),
             Path.Combine(Roaming, "Code - Insiders", "User", "mcp.json"),

@@ -1,0 +1,29 @@
+name: Проверено на железе / Hardware report
+description: Расскажите, как Offload работает на вашем компьютере / Share how Offload runs on your machine
+labels: [hardware-report]
+body:
+  - type: input
+    id: gpu
+    attributes:
+      label: Видеокарта, видеопамять, ОЗУ / GPU, VRAM, RAM
+      placeholder: RX 7900 XTX 24 GB, 64 GB RAM
+    validations:
+      required: true
+  - type: input
+    id: build
+    attributes:
+      label: Сборка llama.cpp / llama.cpp build
+      placeholder: Vulkan b11102
+  - type: input
+    id: model
+    attributes:
+      label: Модель и квант / Model and quant
+  - type: input
+    id: speed
+    attributes:
+      label: Скорость / Speed
+      placeholder: 35 tok/s генерация, контекст 64K, 3 слота
+  - type: textarea
+    id: notes
+    attributes:
+      label: Заметки / Notes

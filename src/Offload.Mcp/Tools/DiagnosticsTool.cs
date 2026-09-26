@@ -1,5 +1,6 @@
 using System.Text;
 using Offload.Mcp.Infrastructure;
+using static Offload.Mcp.Infrastructure.TextUtil;
 
 namespace Offload.Mcp.Tools;
 
@@ -20,6 +21,8 @@ internal static class DiagnosticsTool
         IEnumerable<string> lines;
         string source;
         string? outcome = null;
+        string? logUri = null;
+        LoggedRun? run = null;
         if (!string.IsNullOrWhiteSpace(logPath))
         {
             var full = ctx.ResolveRead(logPath);
@@ -30,13 +33,16 @@ internal static class DiagnosticsTool
         else
         {
             var cmd = await VerifyTool.ResolveCommandAsync(ctx, command, string.IsNullOrWhiteSpace(kind) ? "build" : kind).ConfigureAwait(false);
-            var run = await VerifyTool.RunLoggedAsync(ctx, cmd, TimeSpan.FromSeconds(Math.Clamp(timeoutSec <= 0 ? 900 : timeoutSec, 10, 3600))).ConfigureAwait(false);
+            run = await VerifyTool.RunLoggedAsync(ctx, cmd, TimeSpan.FromSeconds(Math.Clamp(timeoutSec <= 0 ? 900 : timeoutSec, 10, 3600))).ConfigureAwait(false);
+            logUri = VerifyTool.LinkRun(ctx, run);
             lines = ReadTail(run.LogPath, MaxLogBytes);
             source = run.Display;
             outcome = run.Result.TimedOut ? $"`{cmd}` TIMED OUT" : $"`{cmd}` exit {run.Result.ExitCode} ({run.Result.Duration.TotalSeconds:0} s)";
         }
 
         var materialized = lines.ToList();
+        // Вывод запущенной команды уже учтён в RunLoggedAsync; здесь — готовый лог, прочитанный сервером.
+        if (outcome is null) ctx.Stats.AddScanned(materialized.Sum(l => (long)l.Length + 1), 1);
         var all = DiagnosticParser.Parse(materialized);
         var filtered = all.Where(d => sev == "all" || d.Severity == sev || sev == "warning" && d.Severity == "error").ToList();
         if (paths is { Length: > 0 })
@@ -50,6 +56,7 @@ internal static class DiagnosticsTool
             }).ToList();
         }
 
+        var items = new List<DiagnosticItem>();
         var sb = new StringBuilder();
         if (outcome is not null) sb.Append(outcome).Append(" · ");
         sb.Append($"source: {source} · {all.Count(d => d.Severity == "error")} errors, {all.Count(d => d.Severity == "warning")} warnings parsed\n");
@@ -63,6 +70,7 @@ internal static class DiagnosticsTool
                 sb.Append(g.Key).Append('\n');
                 foreach (var d in g.OrderBy(d => d.Line))
                 {
+                    items.Add(ToItem(ctx, d, file, 240));
                     sb.Append($"  {d.Line}{(d.Col > 0 ? ":" + d.Col : "")} {d.Severity} {d.Code} {Short(d.Message, 240)}");
                     if (file is not null && d.Line >= 1 && d.Line <= file.Lines.Length)
                     {
@@ -85,7 +93,37 @@ internal static class DiagnosticsTool
             sb.Append("stack frames in project code (innermost first as logged):\n");
             foreach (var f in frames) sb.Append("  ").Append(f).Append('\n');
         }
+        ctx.Structured = new DiagnosticsOutput
+        {
+            Source = source,
+            LogUri = logUri,
+            Command = run?.Command,
+            ExitCode = run?.Result.ExitCode,
+            TimedOut = run?.Result.TimedOut ?? false,
+            ErrorCount = all.Count(d => d.Severity == "error"),
+            WarningCount = all.Count(d => d.Severity == "warning"),
+            Diagnostics = items,
+            More = Math.Max(0, filtered.Count - maxResults),
+            StackFrames = frames,
+        };
         return sb.ToString().TrimEnd();
+    }
+
+    /// <summary>Диагностика для structuredContent: путь относительно проекта, охватывающий символ и строка кода (если файл прочитан).</summary>
+    internal static DiagnosticItem ToItem(ToolContext ctx, Diagnostic d, SourceFile? file, int messageMax)
+    {
+        var inRange = file is not null && d.Line >= 1 && d.Line <= file.Lines.Length;
+        return new DiagnosticItem
+        {
+            File = ShortPath(ctx, d.File),
+            Line = d.Line,
+            Column = Math.Max(0, d.Col),
+            Severity = d.Severity,
+            Code = d.Code,
+            Message = Short(d.Message, messageMax),
+            Symbol = inRange ? Symbols.Enclosing(file!.Symbols, d.Line)?.QualifiedName : null,
+            SourceLine = inRange ? Short(file!.Lines[d.Line - 1].Trim(), 160) : null,
+        };
     }
 
     public const long MaxLogBytes = 64L * 1024 * 1024;
@@ -158,5 +196,4 @@ internal static class DiagnosticsTool
         return result;
     }
 
-    private static string Short(string s, int max) => s.Length <= max ? s : s[..max] + "…";
 }

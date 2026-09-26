@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.RegularExpressions;
 using Offload.Mcp.Infrastructure;
+using static Offload.Mcp.Infrastructure.TextUtil;
 
 namespace Offload.Mcp.Tools;
 
@@ -18,6 +19,7 @@ internal static partial class SecurityReviewTool
         ctx.Progress.Report("Collecting git diff…");
         var t = string.IsNullOrWhiteSpace(target) ? "all" : target.Trim();
         var set = await GitDiffs.CollectAsync(ctx, repo, t, includeUntracked: true).ConfigureAwait(false);
+        ctx.Stats.AddScanned(set.Files.Sum(f => (long)f.Text.Length), set.Files.Count);
 
         var findings = new List<(string Severity, string Where, string Rule, string Message, string Text)>();
         var sensitive = new List<string>();
@@ -44,7 +46,8 @@ internal static partial class SecurityReviewTool
         foreach (var u in set.Untracked.Take(200))
         {
             SourceFile? file;
-            try { file = CodeIndex.LoadOne(ctx, Path.Combine(set.RepoRoot, u)); }
+            // Исходный текст: правила секретов ищут сами значения (в отчёте их маскирует CodeRules.RedactLine).
+            try { file = CodeIndex.LoadOne(ctx, Path.Combine(set.RepoRoot, u), unredacted: true); }
             catch (ToolException) { continue; }
             if (file is null) continue;
             if (SensitivePath().IsMatch(u)) sensitive.Add(u + " (new)");
@@ -144,5 +147,4 @@ internal static partial class SecurityReviewTool
     [GeneratedRegex(@"(PackageReference\s+Include=|""[@\w./-]+""\s*:\s*""[\^~>=<]*\d|^\s*[\w.\-\[\]]+\s*(==|>=|~=)|^\s*require\s|^\s*[\w\-]+\s*=\s*[""{]|<artifactId>)", RegexOptions.CultureInvariant)]
     private static partial Regex DependencyLine();
 
-    private static string Short(string s, int max) => s.Length <= max ? s : s[..max] + "…";
 }

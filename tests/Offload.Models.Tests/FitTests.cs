@@ -178,7 +178,8 @@ public class FitTests
     {
         var hw = Hw(0, 2);
         var rec = FitCalculator.Recommend(hw);
-        Assert.Equal(ModelCatalog.All.MinBy(m => m.ApproxSizeBytes)!.Id, rec.Id);
+        // Рекомендуются только чат-модели (эмбеддинги и реранкеры — вспомогательные роли).
+        Assert.Equal(ModelCatalog.All.Where(m => m.IsChat).MinBy(m => m.ApproxSizeBytes)!.Id, rec.Id);
     }
 
     [Fact]
@@ -189,7 +190,7 @@ public class FitTests
         foreach (var vendor in new[] { GpuVendor.Nvidia, GpuVendor.Amd })
         {
             var hw = Hw(vram, ram, vendor);
-            var anyUsable = ModelCatalog.All.Any(m => FitCalculator.Evaluate(m, 0, hw).Usable);
+            var anyUsable = ModelCatalog.All.Where(m => m.IsChat).Any(m => FitCalculator.Evaluate(m, 0, hw).Usable);
             var rec = FitCalculator.Recommend(hw);
             if (anyUsable) Assert.True(FitCalculator.Evaluate(rec, 0, hw).Usable, $"{vram}/{ram}: {rec.Id}");
         }
@@ -204,7 +205,9 @@ public class FitTests
             var fit = FitCalculator.Evaluate(m, 0, Hw(vram, ram));
             Assert.True(fit.ContextSize <= m.NativeContext, m.Id);
             Assert.True(fit.ContextSize >= FitCalculator.MinContext, m.Id);
-            if (fit.Level is FitLevel.FullGpu or FitLevel.MoeOffload) Assert.True(fit.ContextSize >= FitCalculator.MinAgentContext, m.Id);
+            // Минимум для агента — только у чат-моделей; эмбеддинги/реранк работают с контекстом модели (8K).
+            if (m.IsChat && fit.Level is FitLevel.FullGpu or FitLevel.MoeOffload) Assert.True(fit.ContextSize >= FitCalculator.MinAgentContext, m.Id);
+            if (!m.IsChat) Assert.Equal(m.DefaultContext, fit.ContextSize);
         }
     }
 

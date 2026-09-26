@@ -1,0 +1,5 @@
+{
+  "Неподдерживаемая версия протокола IPC: {0} (трей Offload понимает {1}–{2}). Перезапустите IDE или обновите Offload, чтобы версии совпали.": "Unsupported IPC protocol version: {0} (the Offload tray understands {1}–{2}). Restart the IDE or update Offload so that the versions match.",
+  "Скрывать значения секретов (ключи, токены, пароли) в тексте, который видят модели": "Hide secret values (keys, tokens, passwords) in text the models see",
+  "Запрещать инструментам правку файлов сборки (*.csproj, package.json, Makefile…) без явного разрешения": "Don't let tools edit build files (*.csproj, package.json, Makefile…) without explicit permission"
+}

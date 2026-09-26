@@ -25,6 +25,7 @@ internal static class Theme
 
     public const string PresetDefault = "default";
     public const string PresetCustom = "custom";
+    public const string PresetContrast = "contrast";
 
     /// <summary>Готовая цветовая схема: акцент для светлой и тёмной основы; Midnight/Contrast — своя тёмная основа.</summary>
     public sealed record PresetInfo(string Key, string Name, Color LightAccent, Color DarkAccent, bool ForcesDark = false);
@@ -39,23 +40,51 @@ internal static class Theme
         new("orange", "Оранжевая", Color.FromArgb(188, 72, 12), Color.FromArgb(255, 150, 90)), // l10n-key
         new("pink", "Розовая", Color.FromArgb(180, 44, 140), Color.FromArgb(240, 120, 220)), // l10n-key
         new("midnight", "Полночь (тёмная)", Color.FromArgb(122, 162, 255), Color.FromArgb(122, 162, 255), ForcesDark: true), // l10n-key
-        new("contrast", "Высокий контраст (тёмная)", Color.FromArgb(255, 214, 0), Color.FromArgb(255, 214, 0), ForcesDark: true), // l10n-key
+        new(PresetContrast, "Высокий контраст (тёмная)", Color.FromArgb(255, 214, 0), Color.FromArgb(255, 214, 0), ForcesDark: true), // l10n-key
     ];
 
     /// <summary>Выбранная схема (ключ из <see cref="Presets"/> или custom).</summary>
     public static string Preset { get; private set; } = PresetDefault;
 
+    /// <summary>
+    /// Включён ли в Windows режим высокой контрастности, под который подобрана текущая палитра
+    /// (для отслеживания его включения и выключения).
+    /// </summary>
+    public static bool HighContrastApplied { get; private set; }
+
+    /// <summary>Режим высокой контрастности Windows.</summary>
+    public static bool SystemHighContrast()
+    {
+        try
+        {
+            return SystemInformation.HighContrast;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Схема с учётом высокой контрастности Windows: при теме «как в Windows» и включённом режиме — «Высокий контраст»,
+    /// иначе — выбранная пользователем.
+    /// </summary>
+    internal static string? EffectivePreset(string? mode, string? preset, bool highContrast) =>
+        highContrast && mode is not (ModeLight or ModeDark) ? PresetContrast : preset;
+
     /// <summary>Применить режим темы (и схему/свой акцент). Возвращает true, если тёмная.</summary>
     public static bool Initialize(string? mode, string? preset = null, string? accent = null)
     {
         Mode = mode is ModeLight or ModeDark ? mode : ModeSystem;
+        HighContrastApplied = SystemHighContrast();
+        preset = EffectivePreset(Mode, preset, HighContrastApplied);
         Preset = preset == PresetCustom || Presets.Any(p => p.Key == preset) ? preset! : PresetDefault;
         var info = Presets.FirstOrDefault(p => p.Key == Preset);
         IsDark = info is { ForcesDark: true } || Mode == ModeDark || (Mode == ModeSystem && SystemPrefersDark());
         var palette = Preset switch
         {
             "midnight" => Palette.Midnight,
-            "contrast" => Palette.Contrast,
+            PresetContrast => Palette.Contrast,
             _ => IsDark ? Palette.Dark : Palette.Light,
         };
         if (Preset == PresetCustom && TryParseColor(accent, out var custom)) palette = WithAccent(palette, custom, IsDark);
@@ -65,8 +94,11 @@ internal static class Theme
     }
 
     /// <summary>Будет ли тема тёмной при этих настройках (без применения).</summary>
-    public static bool WouldBeDark(string? mode, string? preset) =>
-        Presets.FirstOrDefault(p => p.Key == preset) is { ForcesDark: true } || mode == ModeDark || (mode is not ModeLight && SystemPrefersDark());
+    public static bool WouldBeDark(string? mode, string? preset)
+    {
+        preset = EffectivePreset(mode, preset, SystemHighContrast());
+        return Presets.FirstOrDefault(p => p.Key == preset) is { ForcesDark: true } || mode == ModeDark || (mode is not ModeLight && SystemPrefersDark());
+    }
 
     /// <summary>«#RRGGBB» → цвет.</summary>
     public static bool TryParseColor(string? text, out Color color)
@@ -242,9 +274,10 @@ internal static class Theme
         try
         {
             var dark = IsDark ? 1 : 0;
-            NativeMethods.DwmSetWindowAttribute(form.Handle, NativeMethods.DWMWA_USE_IMMERSIVE_DARK_MODE, ref dark, sizeof(int));
+            // HRESULT осознанно не проверяем: на старых Windows атрибут просто не поддерживается, и это ловится catch ниже.
+            _ = NativeMethods.DwmSetWindowAttribute(form.Handle, NativeMethods.DWMWA_USE_IMMERSIVE_DARK_MODE, ref dark, sizeof(int));
             var caption = ColorTranslator.ToWin32(Surface);
-            NativeMethods.DwmSetWindowAttribute(form.Handle, NativeMethods.DWMWA_CAPTION_COLOR, ref caption, sizeof(int));
+            _ = NativeMethods.DwmSetWindowAttribute(form.Handle, NativeMethods.DWMWA_CAPTION_COLOR, ref caption, sizeof(int));
         }
         catch
         {

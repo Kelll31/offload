@@ -19,6 +19,10 @@ internal sealed class ModelStep : WizardStep
     private readonly Label _quantCaption = Kit.Label(L.T("Квантизация:"));
     private readonly TextBox _folder = Kit.TextBox(readOnly: true);
     private readonly Label _space = Kit.Wrap("");
+    private readonly NumericUpDown _parallel = Kit.Number(1, ServerSettings.MaxParallel, 1, 70);
+    private readonly Label _parallelHint = Kit.Hint("");
+    private bool _settingParallel;
+    private bool _parallelTouched;
     private IReadOnlyList<(string Quant, string Text, long Size)> _quantItems = [];
     private bool _loaded;
     private bool _catalogFailed;
@@ -30,6 +34,12 @@ internal sealed class ModelStep : WizardStep
         {
             State.Quant = SelectedQuant();
             UpdateSpace();
+            UpdateParallel();
+        };
+        _parallel.Value = Math.Clamp(ConfigStore.Current.Server.Parallel, 1, ServerSettings.MaxParallel);
+        _parallel.ValueChanged += (_, _) =>
+        {
+            if (!_settingParallel) _parallelTouched = true;
         };
 
         var root = Kit.Table();
@@ -38,6 +48,8 @@ internal sealed class ModelStep : WizardStep
         root.AddRow(_description);
         root.AddRow(_fit);
         root.AddRow(Kit.Flow(_quantCaption, _quant));
+        root.AddRow(Kit.Flow(Kit.Label(L.T("Параллельные запросы:")), _parallel));
+        root.AddRow(_parallelHint);
 
         root.AddRow(Kit.Section(L.T("Папка для моделей")));
         var folderRow = Kit.Table(100, 0);
@@ -55,6 +67,15 @@ internal sealed class ModelStep : WizardStep
 
     public override bool CanGoNext => State.Model is not null && !Insufficient();
 
+    /// <summary>Число слотов сервера сохраняется при переходе дальше: шаг установки запускает сервер уже с ним.</summary>
+    public override bool OnLeave(bool forward)
+    {
+        var value = (int)_parallel.Value;
+        if (forward && value != ConfigStore.Current.Server.Parallel)
+            return Ui.RunSafe(Ctx.Form, () => ConfigStore.Update(c => c.Server.Parallel = value), L.T("Не удалось сохранить настройки"));
+        return true;
+    }
+
     public override void OnEnter()
     {
         var cfg = ConfigStore.Current;
@@ -70,7 +91,7 @@ internal sealed class ModelStep : WizardStep
         var cfg = ConfigStore.Current;
         var hw = State.Hardware;
         _summary.Text = hw is null ? L.T("Оборудование не определено — оценка памяти недоступна.") : Texts.HardwareSummary(hw);
-        var (rows, error) = ModelRows.Build(cfg, hw);
+        var (rows, error) = ModelRows.Build(cfg, hw, chatOnly: true);
         _catalogFailed = error is not null;
         if (error is not null)
         {
@@ -85,7 +106,7 @@ internal sealed class ModelStep : WizardStep
             select = rows.FirstOrDefault(r => r.IsActive)?.Id
                      ?? rows.FirstOrDefault(r => r.IsRecommended)?.Id
                      ?? rows.FirstOrDefault(r => r.Fit?.Usable == true)?.Id
-                     ?? rows.FirstOrDefault()?.Id;
+                     ?? (rows.Count > 0 ? rows[0].Id : null);
             _loaded = true;
         }
         ModelListBinder.Fill(_list, rows, full: false, select);
@@ -129,7 +150,49 @@ internal sealed class ModelStep : WizardStep
         }
         State.Quant = SelectedQuant() ?? row.Installed?.Quant;
         UpdateSpace();
+        UpdateParallel();
     }
+
+    /// <summary>
+    /// Рекомендация числа параллельных слотов для выбранной модели (FitCalculator): значение по умолчанию,
+    /// пока пользователь не изменил его сам, и пояснение компромисса.
+    /// </summary>
+    private void UpdateParallel()
+    {
+        var row = State.Model;
+        var hw = State.Hardware;
+        var fm = row is null || hw is null ? null
+            : row.Catalog is { } c && !row.IsInstalled ? new FitModel(c, ModelListBinder.RequiredBytes(c, SelectedQuant()), c.DefaultContext)
+            : row.Installed is { } inst ? Ui.Try(() => ServerAutoPlacement.ModelFor(inst), null, "ServerAutoPlacement.ModelFor")
+            : null;
+        var advice = fm is null ? null : Ui.Try<SlotAdvice?>(() => ServerFit.RecommendSlots(fm, hw!, ConfigStore.Current.Server), null, "ServerFit.RecommendSlots");
+        if (advice is null)
+        {
+            _parallelHint.Text = L.T("Сколько запросов модель обрабатывает одновременно. Больше слотов — меньше ожидания в очереди, но больше видеопамяти.");
+            return;
+        }
+
+        if (!_parallelTouched)
+        {
+            _settingParallel = true;
+            try
+            {
+                _parallel.Value = advice.Recommended;
+            }
+            finally
+            {
+                _settingParallel = false;
+            }
+        }
+        var chosen = advice.Chosen;
+        _parallelHint.Text = advice.Recommended > 1
+            ? L.F("Рекомендуется {0} × {1} (видеопамять ≈{2} из {3} ГБ): субагенты и несколько IDE не ждут друг друга, но скорость генерации при одновременной работе делится.",
+                Ui.Plural(advice.Recommended, "слот", "слота", "слотов"), Ui.Tokens(advice.ContextPerSlot),
+                Gb(chosen.Fit.EstimatedVramBytes), Gb(hw!.PrimaryVramBytes))
+            : L.T("Рекомендуется 1 слот: для параллельных запросов этой модели не хватит видеопамяти без замедления.");
+    }
+
+    private static string Gb(long bytes) => Math.Round(bytes / (1024d * 1024 * 1024), 1).ToString("0.#", L.Culture);
 
     private string? SelectedQuant() =>
         _quant.SelectedIndex >= 0 && _quant.SelectedIndex < _quantItems.Count ? _quantItems[_quant.SelectedIndex].Quant : null;

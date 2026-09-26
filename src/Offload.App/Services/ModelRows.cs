@@ -20,6 +20,12 @@ internal sealed record ModelRow(
 
     public bool IsInstalled => Installed is not null;
 
+    /// <summary>Назначение модели: установленной — из конфига, иначе из каталога (пользовательские — чат).</summary>
+    public ModelKind Kind => Installed?.Kind ?? Catalog?.Role ?? ModelKind.Chat;
+
+    /// <summary>Чат-модель: её можно сделать активной (эмбеддинги и реранкеры назначаются только ролям).</summary>
+    public bool IsChat => Kind == ModelKind.Chat;
+
     public long SizeBytes => Installed is { SizeBytes: > 0 } i ? i.SizeBytes : Catalog?.ApproxSizeBytes ?? 0;
 
     public int DefaultContext => Catalog?.DefaultContext ?? Installed?.RecommendedContext ?? 0;
@@ -74,7 +80,11 @@ internal static class ModelRows
     public static CatalogModel? Recommended(HardwareInfo? hw) =>
         hw is null ? null : Ui.Try<CatalogModel?>(() => FitCalculator.Recommend(hw), null, "FitCalculator.Recommend");
 
-    public static (IReadOnlyList<ModelRow> Rows, string? Error) Build(AppConfig cfg, HardwareInfo? hw, bool includeCustom = true)
+    /// <param name="chatOnly">
+    /// Только чат-модели (мастер настройки): модели эмбеддингов и реранкеры активной моделью быть не могут —
+    /// их ставят и назначают ролям на странице «Модели».
+    /// </param>
+    public static (IReadOnlyList<ModelRow> Rows, string? Error) Build(AppConfig cfg, HardwareInfo? hw, bool includeCustom = true, bool chatOnly = false)
     {
         var (catalog, error) = Catalog();
         var recommended = Recommended(hw);
@@ -84,17 +94,19 @@ internal static class ModelRows
 
         foreach (var c in catalog)
         {
+            if (chatOnly && !c.IsChat) continue;
             var inst = cfg.Models.Installed.FirstOrDefault(i => Matches(c, i) && !used.Contains(i));
             if (inst is not null) used.Add(inst);
             rows.Add(new ModelRow(c, inst,
                 inst is not null && active is not null && inst.Id == active.Id,
                 recommended is not null && recommended.Id == c.Id,
-                Evaluate(c, inst?.SizeBytes > 0 ? inst.SizeBytes : c.ApproxSizeBytes, hw, cfg)));
+                Evaluate(c, inst?.SizeBytes > 0 ? inst.SizeBytes : c.ApproxSizeBytes, hw, cfg,
+                    inst is { RecommendedContext: > 0 } ? inst.RecommendedContext : c.DefaultContext)));
         }
 
         if (includeCustom)
         {
-            foreach (var i in cfg.Models.Installed.Where(i => !used.Contains(i)))
+            foreach (var i in cfg.Models.Installed.Where(i => !used.Contains(i) && (!chatOnly || i.Kind == ModelKind.Chat)))
             {
                 rows.Add(new ModelRow(null, i, active is not null && i.Id == active.Id, false, EvaluateCustom(i, hw, cfg)));
             }
@@ -102,11 +114,12 @@ internal static class ModelRows
         return (rows, error);
     }
 
-    private static FitResult? Evaluate(CatalogModel model, long weights, HardwareInfo? hw, AppConfig cfg)
+    /// <summary>Оценка при текущих настройках сервера — та же, что при запуске в режиме «Авто» (ServerFit).</summary>
+    private static FitResult? Evaluate(CatalogModel model, long weights, HardwareInfo? hw, AppConfig cfg, int recommendedContext)
     {
         if (hw is null) return null;
         return Ui.Try<FitResult?>(
-            () => FitCalculator.Evaluate(model, weights, hw, 0, cfg.Server.CacheType, cfg.Server.Parallel),
+            () => ServerFit.Evaluate(new FitModel(model, weights, recommendedContext), hw, cfg.Server),
             null, $"FitCalculator.Evaluate({model.Id})");
     }
 
@@ -132,6 +145,6 @@ internal static class ModelRows
         var synthetic = new CatalogModel(
             m.Id, m.DisplayName, "", m.Repo ?? "", [m.Quant ?? ""], m.SizeBytes, 0, 0, m.IsMoe,
             m.NativeContext > 0 ? m.NativeContext : ctx, ctx, kv, m.GoodToolCalling, m.Sampling, "", 0);
-        return Evaluate(synthetic, m.SizeBytes, hw, cfg);
+        return Evaluate(synthetic, m.SizeBytes, hw, cfg, ctx);
     }
 }

@@ -69,7 +69,7 @@ public class DownloaderTests
                 try { ctx = await listener.GetContextAsync(); } catch { return; }
                 var start = 0;
                 var range = ctx.Request.Headers["Range"];
-                if (supportRange && range is not null && range.StartsWith("bytes="))
+                if (supportRange && range is not null && range.StartsWith("bytes=", StringComparison.Ordinal))
                 {
                     start = int.Parse(range[6..].TrimEnd('-'));
                     ctx.Response.StatusCode = 206;

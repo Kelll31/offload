@@ -1,0 +1,13 @@
+{
+  "Старый файл этой модели больше не используется:{0}{1}{0}{0}Освободится {2}.": "The old file of this model is no longer used:{0}{1}{0}{0}This frees {2}.",
+  "Сервер сейчас работает со старым файлом — перед удалением он будет перезапущен с новым.": "The server is currently using the old file — it will be restarted with the new one before deleting.",
+  "Оставить": "Keep",
+  "Удалить прежнюю версию «{0}»?": "Delete the previous version of “{0}”?",
+  "Не удалось удалить файлы прежней версии модели": "Could not delete the files of the previous model version",
+  "Подробный журнал (отладочные записи)": "Verbose log (debug entries)",
+  "Ручные правки config.json применяются автоматически; файл с ошибкой не применяется — остаются прежние настройки.": "Manual edits to config.json are applied automatically; a file with errors is not applied — the previous settings stay in effect.",
+  "Отладочные записи помогают разобраться в сбоях, но журнал растёт быстрее. MCP-серверы в IDE применят настройку после перезапуска IDE.": "Debug entries help to investigate failures, but the log grows faster. MCP servers in IDEs apply the setting after the IDE restarts.",
+  "Уровень журнала задан переменной окружения {0} = {1} — она важнее этой настройки.": "The log level is set by the environment variable {0} = {1}, which overrides this setting.",
+  "Ошибка в config.json": "Error in config.json",
+  "Файл настроек изменён вручную, но содержит ошибку: {0}. Пока действуют прежние настройки — исправьте файл.": "The settings file was edited manually but contains an error: {0}. The previous settings stay in effect until you fix the file."
+}

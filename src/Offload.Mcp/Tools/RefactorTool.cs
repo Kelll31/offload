@@ -5,8 +5,10 @@ using Offload.Mcp.Infrastructure;
 namespace Offload.Mcp.Tools;
 
 /// <summary>
-/// local_refactor: rename — детерминированно (без модели): все вхождения символа как слова вне строк/комментариев в файлах того же
-/// языка, переименование файла типа, проверка конфликтов, снимок, проверка командой и автооткат. extract_method / extract_class /
+/// local_refactor: rename — детерминированно (без модели): в C# — по синтаксическому дереву Roslyn (строки/комментарии не трогаются,
+/// cref и [Атрибут] — да, using-алиасы раскрываются, перегрузка выбирается по числу параметров «Type.M(int, string)»), в остальных
+/// языках — вхождения как слова вне строк/комментариев; переименование файла типа, проверка конфликтов, снимок, проверка командой
+/// и автооткат. extract_method / extract_class /
 /// move_symbol — точное задание локальному агенту в git-песочнице (local_agent_task) с проверкой и слиянием.
 /// </summary>
 internal static class RefactorTool
@@ -29,20 +31,41 @@ internal static class RefactorTool
     private static async Task<string> RenameAsync(ToolContext ctx, string name, string newName, string[]? paths, string? verifyCommand, bool dryRun,
         bool force, bool renameFile)
     {
-        var (oldSimple, container) = SymbolsTool.SplitName(name);
+        var (baseName, wantParams, emptyParens) = ParseOverloadSpec(name);
+        var (oldSimple, container) = SymbolsTool.SplitName(baseName);
         if (!Symbols.Identifier().IsMatch(newName)) throw new ToolException($"new_name '{newName}' is not a valid identifier.");
         if (newName == oldSimple) throw new ToolException("new_name equals the current name.");
         var verify = string.IsNullOrWhiteSpace(verifyCommand) ? null : VerifyCommand.Validate(verifyCommand, ctx.Cfg.Mcp.VerifyCommandAllowlist);
 
         ctx.Progress.Report("Indexing source files…");
-        var index = await CodeIndex.LoadAsync(ctx, paths, codeOnly: true, ctx.Ct).ConfigureAwait(false);
-        var defs = SymbolsTool.Definitions(index.Files, name);
-        if (defs.Count == 0) throw new ToolException($"No definition of '{name}' found in scope; check the name (action=find in local_symbols) or widen paths.");
+        // Исходный текст: вхождения считаются по тем же строкам, которые потом переписываются с диска.
+        var index = await CodeIndex.LoadAsync(ctx, paths, codeOnly: true, ctx.Ct, unredacted: true).ConfigureAwait(false);
+        var defs = SymbolsTool.Definitions(index.Files, baseName);
+        if (defs.Count == 0) throw new ToolException($"No definition of '{baseName}' found in scope; check the name (action=find in local_symbols) or widen paths.");
+
+        // Перегрузки (C#, число параметров известно): «Svc.Run(int, string)» или «Svc.Run(2)» — только методы с таким числом
+        // параметров; остальные перегрузки того же типа не трогаются. «Run()» без перегрузок с 0 параметров — весь метод, как раньше.
+        var excluded = new List<(SourceFile File, CodeSymbol Symbol)>();
+        if (wantParams is int want && defs.Any(IsKnownMethod))
+        {
+            var matching = defs.Where(d => IsKnownMethod(d) && d.Symbol.Params == want).ToList();
+            if (matching.Count == 0 && !emptyParens)
+                throw new ToolException($"No overload of '{baseName}' with {want} parameter(s); overloads: " +
+                                        string.Join(", ", defs.Where(IsKnownMethod).Take(6).Select(d => $"{d.Symbol.QualifiedName}({d.Symbol.Params} params) {d.File.Display}:{d.Symbol.Line}")) + ".");
+            if (matching.Count > 0)
+            {
+                excluded = defs.Where(d => IsKnownMethod(d) && d.Symbol.Params != want).ToList();
+                defs = matching;
+            }
+            else wantParams = null;
+        }
+        else wantParams = null;
         var langs = defs.Select(d => d.File.Lang).ToHashSet();
 
         // Одноимённые объявления в других контейнерах переименовались бы тоже — только с force или более узкими paths.
         var sameNamed = SymbolsTool.Definitions(index.Files.Where(f => langs.Contains(f.Lang)), oldSimple)
-            .Where(d => !defs.Any(x => x.File == d.File && x.Symbol.Line == d.Symbol.Line)).ToList();
+            .Where(d => !defs.Any(x => x.File == d.File && x.Symbol.Line == d.Symbol.Line))
+            .Where(d => !excluded.Any(x => x.File == d.File && x.Symbol.Line == d.Symbol.Line)).ToList();
         if (container is null)
         {
             // Неквалифицированное имя: разные объявления (кроме конструкторов и частей partial-типа) — тоже неоднозначность.
@@ -58,41 +81,23 @@ internal static class RefactorTool
         if (conflicts.Count > 0 && !force)
             throw new ToolException($"'{newName}' already exists ({string.Join(", ", conflicts.Take(3).Select(d => $"{d.File.Display}:{d.Symbol.Line}"))}); pass force=true to rename anyway.");
 
-        var word = CodeIndex.WordRegex(oldSimple);
         // Для членов типа «Other.Name» с квалификатором-типом не из проекта (Task.Run, File.Delete) — чужой API, не трогаем.
         var isMember = !defs.Any(d => d.Symbol.IsType);
         var owner = defs[0].Symbol.Container?.Split('.')[^1];
         var projectTypes = index.Files.SelectMany(f => f.Symbols).Where(s => s.IsType).Select(s => s.Name).ToHashSet(StringComparer.Ordinal);
-        var skippedForeign = new List<string>();
-        bool Replaceable(SourceFile f, string line, int index, int lineNo, bool record = true)
-        {
-            if (CodeIndex.InStringOrComment(line, index)) return false;
-            if (!isMember) return true;
-            var (receiver, _) = SymbolsTool.ReceiverOf(line, index);
-            if (receiver is { Length: > 0 } r && char.IsUpper(r[0]) && r != owner && !projectTypes.Contains(r))
-            {
-                if (record && skippedForeign.Count < 20) skippedForeign.Add($"{f.Display}:{lineNo} {r}.{oldSimple}");
-                return false;
-            }
-            return true;
-        }
+        var plan = new RenamePlan(oldSimple, newName, isMember, owner, projectTypes, wantParams,
+            defs.Select(d => d.Symbol.Container?.Split('.')[^1]).OfType<string>().ToHashSet(StringComparer.Ordinal));
+        var files = index.Files.Where(f => langs.Contains(f.Lang)).ToList();
+        if (wantParams is not null)
+            foreach (var f in files.Where(f => f.Lang == CodeLang.CSharp)) plan.LearnOverloads(f.FullPath, f.Lines);
+
         var edits = new List<(SourceFile File, int Count, List<int> Lines)>();
-        foreach (var f in index.Files.Where(f => langs.Contains(f.Lang)))
+        foreach (var f in files)
         {
-            var count = 0;
-            var at = new List<int>();
-            for (var i = 0; i < f.Lines.Length; i++)
-            {
-                var line = f.Lines[i];
-                if (!line.Contains(oldSimple, StringComparison.Ordinal)) continue;
-                var n = word.Matches(line).Count(m => Replaceable(f, line, m.Index, i + 1));
-                if (n == 0) continue;
-                count += n;
-                at.Add(i + 1);
-            }
-            if (count > 0) edits.Add((f, count, at));
+            var found = plan.Edits(f.FullPath, f.Lang, f.Lines, f.Display, record: true);
+            if (found.Count > 0) edits.Add((f, found.Count, found.Select(e => e.Line).Distinct().ToList()));
         }
-        var foreignNote = skippedForeign.Count == 0 ? "" : $"\nnot renamed (qualified by types outside the project): {string.Join(", ", skippedForeign.Take(8))}{(skippedForeign.Count > 8 ? ", …" : "")}";
+        var notes = plan.Notes();
 
         // Файл типа: Foo.cs → Bar.cs (если имя файла совпадает с именем типа).
         var fileRenames = new List<(string From, string To)>();
@@ -100,9 +105,10 @@ internal static class RefactorTool
         {
             foreach (var (f, s) in defs.Where(d => d.Symbol.IsType))
             {
-                var baseName = Path.GetFileNameWithoutExtension(f.FullPath);
-                if (baseName != oldSimple && !baseName.StartsWith(oldSimple + ".", StringComparison.Ordinal)) continue;
+                var fileBase = Path.GetFileNameWithoutExtension(f.FullPath);
+                if (fileBase != oldSimple && !fileBase.StartsWith(oldSimple + ".", StringComparison.Ordinal)) continue;
                 var target = Path.Combine(Path.GetDirectoryName(f.FullPath)!, newName + Path.GetFileName(f.FullPath)[oldSimple.Length..]);
+                if (fileRenames.Any(r => string.Equals(r.From, f.FullPath, StringComparison.OrdinalIgnoreCase))) continue;
                 if (File.Exists(target)) throw new ToolException($"Cannot rename {f.Display}: {ctx.Display(target)} already exists.");
                 fileRenames.Add((f.FullPath, target));
             }
@@ -110,12 +116,15 @@ internal static class RefactorTool
 
         var sb = new StringBuilder();
         var total = edits.Sum(e => e.Count);
+        var how = langs.Contains(CodeLang.CSharp)
+            ? "C#: syntax-aware (Roslyn) — strings and comments are skipped, doc crefs and [Attribute] usages are renamed" + (wantParams is null ? "" : $", only the {wantParams}-parameter overload(s)")
+            : "textual rename outside strings/comments";
         if (dryRun)
         {
             sb.Append($"dry run: rename {name} → {newName}: {total} occurrence(s) in {edits.Count} file(s); nothing was written.\n");
             foreach (var e in edits.Take(40)) sb.Append($"  {e.File.Display} ×{e.Count} (lines {string.Join(", ", e.Lines.Take(8))}{(e.Lines.Count > 8 ? ", …" : "")})\n");
             foreach (var (from, to) in fileRenames) sb.Append($"  file: {ctx.Display(from)} → {ctx.Display(to)}\n");
-            sb.Append("textual rename outside strings/comments; reflection, string references and other languages are not updated").Append(foreignNote);
+            sb.Append(how).Append("; reflection, string references and other languages are not updated").Append(notes);
             return sb.ToString();
         }
 
@@ -137,12 +146,13 @@ internal static class RefactorTool
             var bytes = JobStore.ReadAllBytesShared(canonical);
             var (text, format) = TextCodec.Decode(bytes);
             var src = TextCodec.SplitLines(text);
-            for (var i = 0; i < src.Length; i++)
+            // Правки считаются заново по тексту с диска (тем же способом), чтобы позиции точно совпали с переписываемыми строками.
+            foreach (var group in plan.Edits(e.File.FullPath, e.File.Lang, src, e.File.Display, record: false).GroupBy(x => x.Line))
             {
-                var line = src[i];
-                if (!line.Contains(oldSimple, StringComparison.Ordinal)) continue;
-                var lineNo = i + 1;
-                src[i] = word.Replace(line, m => Replaceable(e.File, line, m.Index, lineNo, record: false) ? newName : m.Value);
+                var line = src[group.Key - 1];
+                foreach (var x in group.OrderByDescending(x => x.Column))
+                    line = string.Concat(line.AsSpan(0, x.Column), x.Replacement, line.AsSpan(x.Column + x.Length));
+                src[group.Key - 1] = line;
             }
             writes.Add((canonical, TextCodec.Encode(string.Join("\n", src), format, out _)));
             JobStore.Snapshot(job, canonical, ctx.Display(canonical));
@@ -180,8 +190,143 @@ internal static class RefactorTool
         }
         sb.Append($"job_id: {job.Id} · undo: local_job action=revert job_id={job.Id}\n");
         if (verifyNote is not null) sb.Append(verifyNote).Append('\n');
-        sb.Append("note: string references, reflection and other languages (XAML, SQL, config) are not updated; check with local_search_code").Append(foreignNote);
+        sb.Append(how).Append("\nnote: string references, reflection and other languages (XAML, SQL, config) are not updated; check with local_search_code").Append(notes);
         return sb.ToString();
+    }
+
+    private static bool IsKnownMethod((SourceFile File, CodeSymbol Symbol) d) => d.Symbol.Kind == "method" && d.Symbol.Params >= 0;
+
+    /// <summary>
+    /// «Svc.Run(int, string)» → (Svc.Run, 2); «Svc.Run(2)» → (Svc.Run, 2); «Run()» → (Run, 0, пустые скобки); без скобок — (имя, null).
+    /// Запятые внутри &lt;…&gt;, (…) и […] не разделяют параметры.
+    /// </summary>
+    internal static (string Name, int? Params, bool EmptyParens) ParseOverloadSpec(string name)
+    {
+        var t = name.Trim();
+        var open = t.IndexOf('(', StringComparison.Ordinal);
+        if (open <= 0 || !t.EndsWith(')')) return (t, null, false);
+        var baseName = t[..open].Trim();
+        var inner = t[(open + 1)..^1].Trim();
+        if (inner.Length == 0) return (baseName, 0, true);
+        if (int.TryParse(inner, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var n)) return (baseName, n, false);
+        var depth = 0;
+        var count = 1;
+        foreach (var c in inner)
+        {
+            if (c is '<' or '(' or '[') depth++;
+            else if (c is '>' or ')' or ']') depth--;
+            else if (c == ',' && depth == 0) count++;
+        }
+        return (baseName, count, false);
+    }
+
+    /// <summary>Одна замена: строка (с 1), столбец (с 0), длина старого текста и новый текст.</summary>
+    private readonly record struct RenameEdit(int Line, int Column, int Length, string Replacement);
+
+    /// <summary>
+    /// Что и где заменять. C# — по синтаксическому дереву Roslyn (<see cref="CSharpReferences"/>): строки и комментарии не трогаются,
+    /// квалификатор «X.Name» с using-алиасами раскрывается, при выбранной перегрузке вызовы сопоставляются по числу аргументов.
+    /// Остальные языки — слово целиком вне строк/комментариев (как раньше).
+    /// </summary>
+    private sealed class RenamePlan(string oldName, string newName, bool isMember, string? owner, HashSet<string> projectTypes, int? wantParams,
+        HashSet<string> owners)
+    {
+        private readonly List<(int Min, int Max, bool Ext)> _target = [];
+        private readonly List<(int Min, int Max, bool Ext)> _other = [];
+        private readonly List<string> _foreign = [];
+        private readonly List<string> _ambiguous = [];
+        private readonly System.Text.RegularExpressions.Regex _word = CodeIndex.WordRegex(oldName);
+
+        /// <summary>Атрибут: переименование FooAttribute → BarAttribute меняет и «[Foo]» на «[Bar]».</summary>
+        private readonly (string Old, string New)? _attribute =
+            !isMember && oldName.Length > 9 && newName.Length > 9 && oldName.EndsWith("Attribute", StringComparison.Ordinal) && newName.EndsWith("Attribute", StringComparison.Ordinal)
+                ? (oldName[..^9], newName[..^9]) : null;
+
+        /// <summary>Диапазоны числа аргументов у выбранных и остальных перегрузок (по объявлениям в типах-владельцах).</summary>
+        public void LearnOverloads(string path, string[] lines)
+        {
+            if (!ContainsWord(lines, oldName)) return;
+            foreach (var o in CSharpReferences.Find(path, lines, oldName))
+            {
+                if (o.Declaration != "method" || o.DeclaringType is null || !owners.Contains(o.DeclaringType)) continue;
+                (o.Params == wantParams ? _target : _other).Add((o.MinArgs, o.MaxArgs, o.IsExtension));
+            }
+        }
+
+        public List<RenameEdit> Edits(string path, CodeLang lang, string[] lines, string display, bool record)
+        {
+            var edits = new List<RenameEdit>();
+            if (lang != CodeLang.CSharp)
+            {
+                if (!ContainsWord(lines, oldName)) return edits;
+                for (var i = 0; i < lines.Length; i++)
+                {
+                    var line = lines[i];
+                    if (!line.Contains(oldName, StringComparison.Ordinal)) continue;
+                    foreach (System.Text.RegularExpressions.Match m in _word.Matches(line))
+                        if (TextReplaceable(line, m.Index, display, i + 1, record)) edits.Add(new RenameEdit(i + 1, m.Index, oldName.Length, newName));
+                }
+                return edits;
+            }
+            if (ContainsWord(lines, oldName))
+                foreach (var o in CSharpReferences.Find(path, lines, oldName))
+                    if (Decide(o, display, record)) edits.Add(new RenameEdit(o.Line, o.Column, o.Length, newName));
+            if (_attribute is { } a && ContainsWord(lines, a.Old))
+                foreach (var o in CSharpReferences.Find(path, lines, a.Old).Where(o => o.InAttribute))
+                    edits.Add(new RenameEdit(o.Line, o.Column, o.Length, a.New));
+            return edits;
+        }
+
+        private static bool ContainsWord(string[] lines, string word) => lines.Any(l => l.Contains(word, StringComparison.Ordinal));
+
+        private bool IsForeign(string? receiver) =>
+            isMember && receiver is { Length: > 0 } r && char.IsUpper(r[0]) && r != owner && !projectTypes.Contains(r);
+
+        private bool TextReplaceable(string line, int index, string display, int lineNo, bool record)
+        {
+            if (CodeIndex.InStringOrComment(line, index)) return false;
+            if (!isMember) return true;
+            var (receiver, _) = SymbolsTool.ReceiverOf(line, index);
+            if (!IsForeign(receiver)) return true;
+            if (record && _foreign.Count < 20) _foreign.Add($"{display}:{lineNo} {receiver}.{oldName}");
+            return false;
+        }
+
+        private bool Decide(CSharpOccurrence o, string display, bool record)
+        {
+            if (IsForeign(o.Receiver))
+            {
+                if (record && _foreign.Count < 20) _foreign.Add($"{display}:{o.Line} {o.Receiver}.{oldName}");
+                return false;
+            }
+            if (wantParams is null) return true;
+            if (o.Declaration == "method" && o.DeclaringType is not null && owners.Contains(o.DeclaringType)) return o.Params == wantParams;
+            if (o.Declaration is not null) return true;
+            if (o.ArgCount >= 0)
+            {
+                var viaReceiver = o.Receiver is not null;
+                var target = _target.Any(r => Accepts(r, o.ArgCount, viaReceiver));
+                var other = _other.Any(r => Accepts(r, o.ArgCount, viaReceiver));
+                if (target && !other) return true;
+                if (other && !target) return false;
+            }
+            // Группа методов (делегат, nameof) или вызов, подходящий к нескольким перегрузкам, — по синтаксису не определить.
+            if (record && _ambiguous.Count < 20) _ambiguous.Add($"{display}:{o.Line}");
+            return false;
+        }
+
+        private static bool Accepts((int Min, int Max, bool Ext) r, int args, bool viaReceiver) =>
+            args >= r.Min && args <= r.Max || r.Ext && viaReceiver && args + 1 >= r.Min && args + 1 <= r.Max;
+
+        public string Notes()
+        {
+            var sb = new StringBuilder();
+            if (_foreign.Count > 0)
+                sb.Append($"\nnot renamed (qualified by types outside the project): {string.Join(", ", _foreign.Take(8))}{(_foreign.Count > 8 ? ", …" : "")}");
+            if (_ambiguous.Count > 0)
+                sb.Append($"\nnot renamed (overload not determinable from syntax — check by hand): {string.Join(", ", _ambiguous.Take(8))}{(_ambiguous.Count > 8 ? ", …" : "")}");
+            return sb.ToString();
+        }
     }
 
     private static async Task<string> AgentRefactorAsync(ToolContext ctx, string act, string symbol, string? newName, string? targetFile, string? lines,

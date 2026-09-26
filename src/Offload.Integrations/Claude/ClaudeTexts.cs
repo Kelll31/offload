@@ -7,6 +7,16 @@ internal static class ClaudeTexts
 {
     public const string Marker = "x-offload: managed";
 
+    // Хэши (ManagedContent.Hash) текстов, которые выпущенные версии Offload записывали с меткой без хэша: 1.0.0 (тег 1.0.0)
+    // и первая сборка (956e181). Посчитаны по исходникам этих версий. Файл с такой меткой обновляется автоматически
+    // только при точном совпадении с одним из них; остальное считается изменённым пользователем. Новые версии пишут метку
+    // с хэшем — сюда ничего добавлять не нужно.
+    internal static readonly IReadOnlyList<string> SkillShippedHashes = ["9454e170c6a1a467", "16963ada0ffa9758"];
+
+    internal static readonly IReadOnlyList<string> StrongRuleShippedHashes = ["1b9d81e75409adc4", "0a90815e083607f6"];
+
+    internal static readonly IReadOnlyList<string> RunnerAgentShippedHashes = ["a4c0437111b5be51", "a8cb92d56dd63e64"];
+
     private static string N(string tool) => McpToolNames.ClaudeCodeName(tool);
 
     /// <summary>Описание навыка (вместе с when_to_use Claude Code обрезает до 1536 символов).</summary>

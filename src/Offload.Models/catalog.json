@@ -1,6 +1,11 @@
 {
   // Встроенный каталог Offload. Размеры и SHA-256 — из HF tree API (lfs.oid) на закреплённых ревизиях,
   // параметры KV/MoE — из заголовков GGUF (исследование 2026-09-22). Порядок в UI — по priority.
+  // Необязательное "minLlamaBuild": "bNNNNN" — минимальная сборка llama.cpp с поддержкой архитектуры модели
+  // (при более старой установленной сборке интерфейс предупреждает перед активацией).
+  // "version" — номер выпуска каталога (ГГГГММДДNN). Удалённый каталог (catalog/catalog.json, подпись Ed25519) применяется,
+  // только если его версия больше встроенной; при правке каталога увеличивайте номер.
+  "version": 2026092400,
   "models": [
     {
       "id": "qwen3.6-35b-a3b-q4",
@@ -460,6 +465,133 @@
       "priority": 130,
       "releaseDate": "2026-02-28",
       "tags": ["dense", "tiny", "cpu", "official"]
+    },
+    {
+      "id": "qwen3-embed-0.6b-q8",
+      "displayName": "Qwen3 Embedding 0.6B",
+      "description": "Официальная эмбеддинг-модель Qwen3 на 0,6 млрд параметров: превращает код и текст в векторы для семантического поиска по проекту (RAG, поиск похожих фрагментов). Входит в число лучших моделей такого размера на MTEB, поддерживает 32K контекста и инструкции в запросе. Файл Q8_0 весит около 610 МБ, работает на CPU или любой видеокарте без выгрузки. Лицензия Apache-2.0.",
+      "descriptionEn": "Official Qwen3 embedding model, 0.6B parameters: turns code and text into vectors for semantic search over the project (RAG, similar-snippet search). One of the top models of its size on MTEB, supports 32K context and query instructions. The Q8_0 file is about 610 MB and runs on CPU or any GPU without offloading. License: Apache-2.0.",
+      "role": "embed",
+      "repo": "Qwen/Qwen3-Embedding-0.6B-GGUF",
+      "revision": "370f27d7550e0def9b39c1f16d3fbaa13aa67728",
+      "quants": [
+        "Q8_0",
+        "F16"
+      ],
+      "files": [
+        {
+          "quant": "Q8_0",
+          "path": "Qwen3-Embedding-0.6B-Q8_0.gguf",
+          "size": 639150592,
+          "sha256": "06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439"
+        },
+        {
+          "quant": "F16",
+          "path": "Qwen3-Embedding-0.6B-f16.gguf",
+          "size": 1197629632,
+          "sha256": "421a27e58d165478cc7acb984a688c2aa41404968b0203e7cd743ece44c54340"
+        }
+      ],
+      "approxSizeBytes": 639150592,
+      "paramsB": 0.6,
+      "activeParamsB": 0.6,
+      "isMoe": false,
+      "nativeContext": 32768,
+      "defaultContext": 8192,
+      "blockCount": 28,
+      "kv": {
+        "layers": 28,
+        "kvHeads": 8,
+        "headDim": 128
+      },
+      "goodToolCalling": false,
+      "sampling": {
+        "temperature": 0.7,
+        "topP": 0.8,
+        "topK": 20,
+        "minP": 0.0,
+        "repeatPenalty": 1.0,
+        "presencePenalty": 0.0
+      },
+      "license": "Apache-2.0",
+      "minVramGb": 1,
+      "minRamGb": 0,
+      "isReasoning": false,
+      "reasoning": "None",
+      "hasMtp": false,
+      "architecture": "qwen3",
+      "cpuFriendly": true,
+      "priority": 200,
+      "releaseDate": "2025-06-03",
+      "tags": [
+        "embedding",
+        "rag",
+        "code-search"
+      ],
+      "pooling": "last"
+    },
+    {
+      "id": "bge-reranker-v2-m3-q4",
+      "displayName": "BGE Reranker v2-m3",
+      "description": "Мультиязычный кросс-энкодер BAAI bge-reranker-v2-m3 (568 млн параметров, архитектура BERT): пересортировывает найденные эмбеддингами фрагменты кода и документов по релевантности к запросу, заметно повышая точность RAG. Контекст 8192 токена; квант Q4_K_M — около 420 МБ, Q8_0 — около 610 МБ. Работает через эндпоинт /v1/rerank llama-server. Лицензия Apache-2.0.",
+      "descriptionEn": "Multilingual BAAI bge-reranker-v2-m3 cross-encoder (568M parameters, BERT architecture): re-sorts code and document snippets found by an embedding model by relevance to the query, noticeably improving RAG precision. 8192-token context; Q4_K_M is about 420 MB, Q8_0 about 610 MB. Served via llama-server's /v1/rerank endpoint. License: Apache-2.0.",
+      "role": "rerank",
+      "repo": "gpustack/bge-reranker-v2-m3-GGUF",
+      "revision": "3093af03b1a635e67b084b1d8c03c5f5e020fd05",
+      "quants": [
+        "Q4_K_M",
+        "Q8_0"
+      ],
+      "files": [
+        {
+          "quant": "Q4_K_M",
+          "path": "bge-reranker-v2-m3-Q4_K_M.gguf",
+          "size": 438376864,
+          "sha256": "e186a244ed455b4ab66ec64339ce7427a6ae13f5c0b5e544de96e50f0f8b3673"
+        },
+        {
+          "quant": "Q8_0",
+          "path": "bge-reranker-v2-m3-Q8_0.gguf",
+          "size": 635676416,
+          "sha256": "a43c7c9b11a4c1517e5bf95151960e1621d1b72f7a493364b01e386cf1aaa1d3"
+        }
+      ],
+      "approxSizeBytes": 438376864,
+      "paramsB": 0.568,
+      "activeParamsB": 0.568,
+      "isMoe": false,
+      "nativeContext": 8192,
+      "defaultContext": 8192,
+      "blockCount": 24,
+      "kv": {
+        "layers": 24,
+        "kvHeads": 16,
+        "headDim": 64
+      },
+      "goodToolCalling": false,
+      "sampling": {
+        "temperature": 0.7,
+        "topP": 0.8,
+        "topK": 20,
+        "minP": 0.0,
+        "repeatPenalty": 1.0,
+        "presencePenalty": 0.0
+      },
+      "license": "Apache-2.0",
+      "minVramGb": 1,
+      "minRamGb": 0,
+      "isReasoning": false,
+      "reasoning": "None",
+      "hasMtp": false,
+      "architecture": "bert",
+      "cpuFriendly": true,
+      "priority": 210,
+      "releaseDate": "2024-03-15",
+      "tags": [
+        "rerank",
+        "rag",
+        "code-search"
+      ]
     }
   ]
 }

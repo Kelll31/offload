@@ -95,7 +95,7 @@ public static class OpenCodeRunner
             var before = await ChangeTracker.CaptureAsync(wd, ct);
 
             // 5. Запуск.
-            var run = await ExecuteAsync(cfg, exe, task, wd, readOnly, allowShell, timeout, report, ct);
+            var run = await ExecuteAsync(cfg, exe, task, wd, readOnly, allowShell, timeout, options.LogPath, report, ct);
 
             // 6. Изменённые файлы (и при таймауте/отмене — агент мог успеть что-то изменить).
             List<string> changed;
@@ -142,7 +142,7 @@ public static class OpenCodeRunner
     ];
 
     private static async Task<ExecOutcome> ExecuteAsync(AppConfig cfg, string exe, string task, string wd,
-        bool readOnly, bool allowShell, TimeSpan timeout, Action<string> report, CancellationToken ct)
+        bool readOnly, bool allowShell, TimeSpan timeout, string? logPath, Action<string> report, CancellationToken ct)
     {
         var events = new RunEvents(wd);
         var stderr = new TailBuffer(60);
@@ -162,6 +162,9 @@ public static class OpenCodeRunner
             StandardErrorEncoding = FileUtil.Utf8NoBom,
         };
         foreach (var a in BuildArguments(cfg, wd, readOnly)) psi.ArgumentList.Add(a);
+        // Фоновая задача в трее: окружение сессии IDE (PATH, venv, nvm…) — для команд, которые агент запускает сам;
+        // изоляция OpenCode ниже накладывается поверх и важнее.
+        CallerEnvironment.ApplyTo(psi.Environment);
         foreach (var (k, v) in OpenCodeConfigWriter.BuildEnvironment(cfg, interactive: false))
         {
             if (v is null) psi.Environment.Remove(k);
@@ -173,7 +176,7 @@ public static class OpenCodeRunner
         if (!readOnly && allowShell != cfg.OpenCode.AllowShellCommands)
             psi.Environment["OPENCODE_CONFIG_CONTENT"] = OpenCodeConfigWriter.ShellOverrideContent(cfg, allowShell);
 
-        using var runLog = RunLog.Open(exe, psi, task);
+        using var runLog = RunLog.Open(exe, psi, task, logPath);
         // Свой Job Object: при его закрытии завершаются и «внуки» (процессы, запущенные агентом через bash).
         using var job = TryCreateJob();
 
@@ -231,7 +234,8 @@ public static class OpenCodeRunner
                         ? $"OpenCode превысил время ожидания ({FormatTimeout(timeout)}) — процесс завершается"
                         : "Задача OpenCode отменена — процесс завершается");
                     Kill(process, job);
-                    try { await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10)); } catch { /* не дождались */ }
+                    // Токен уже отменён/истёк — довершаем ожидание без него, иначе оно оборвётся мгновенно.
+                    try { await process.WaitForExitAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10), CancellationToken.None); } catch { /* не дождались */ }
                 }
             }
 
@@ -521,57 +525,96 @@ public static class OpenCodeRunner
         return sb.Append('\'').ToString();
     }
 
-    /// <summary>Журнал последнего запуска (logs\opencode-last-run.log): события и stderr — для диагностики.</summary>
+    /// <summary>
+    /// Журнал запуска: события и stderr — для диагностики. Всегда пишется logs\opencode-last-run.log (перезаписывается
+    /// каждым запуском); если задан свой путь (журнал задачи MCP), те же строки дописываются и туда — у фоновых задач
+    /// журнал не теряется при следующем запуске.
+    /// </summary>
     private sealed class RunLog : IDisposable
     {
-        private readonly StreamWriter? _writer;
-        private long _written;
+        private readonly object _lock = new();
+        private readonly List<Sink> _sinks;
 
-        private RunLog(StreamWriter? writer) => _writer = writer;
+        private sealed class Sink(StreamWriter writer)
+        {
+            public StreamWriter Writer { get; } = writer;
+            public long Written { get; set; }
+        }
 
-        public static RunLog Open(string exe, ProcessStartInfo psi, string task)
+        private RunLog(List<Sink> sinks) => _sinks = sinks;
+
+        public static RunLog Open(string exe, ProcessStartInfo psi, string task, string? extraPath)
+        {
+            var sinks = new List<Sink>();
+            if (TryOpen(RunLogFile, FileMode.Create) is { } last) sinks.Add(new Sink(last));
+            if (!string.IsNullOrWhiteSpace(extraPath) && !IsSameFile(extraPath, RunLogFile) && TryOpen(extraPath, FileMode.Append) is { } own)
+                sinks.Add(new Sink(own) { Written = SafeLength(own) }); // предел — на весь журнал задачи, а не на каждый раунд
+            var log = new RunLog(sinks);
+            log.Write($"[start] {DateTime.Now:yyyy-MM-dd HH:mm:ss} {exe} {string.Join(' ', psi.ArgumentList)}");
+            log.Write("[task] " + (task.Length > 4000 ? task[..4000] + "…" : task).Replace("\r", "").Replace("\n", "\\n"));
+            return log;
+        }
+
+        private static StreamWriter? TryOpen(string path, FileMode mode)
         {
             try
             {
-                Directory.CreateDirectory(AppPaths.LogsDir);
-                var w = new StreamWriter(new FileStream(RunLogFile, FileMode.Create, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete),
-                    FileUtil.Utf8NoBom) { AutoFlush = true };
-                var log = new RunLog(w);
-                log.Write($"[start] {DateTime.Now:yyyy-MM-dd HH:mm:ss} {exe} {string.Join(' ', psi.ArgumentList)}");
-                log.Write("[task] " + (task.Length > 4000 ? task[..4000] + "…" : task).Replace("\r", "").Replace("\n", "\\n"));
-                return log;
+                var full = Path.GetFullPath(path);
+                Directory.CreateDirectory(Path.GetDirectoryName(full)!);
+                return new StreamWriter(new FileStream(full, mode, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete), FileUtil.Utf8NoBom)
+                {
+                    AutoFlush = true,
+                };
             }
-            catch
+            catch (Exception ex)
             {
-                return new RunLog(null);
+                Log.Debug("opencode", $"Журнал запуска не открыт ({path}): {ex.Message}");
+                return null;
             }
+        }
+
+        private static long SafeLength(StreamWriter w)
+        {
+            try { return w.BaseStream.Length; }
+            catch { return 0; }
+        }
+
+        private static bool IsSameFile(string a, string b)
+        {
+            try { return string.Equals(Path.GetFullPath(a), Path.GetFullPath(b), StringComparison.OrdinalIgnoreCase); }
+            catch { return false; }
         }
 
         public void Write(string line)
         {
-            if (_writer is null) return;
-            lock (_writer)
+            lock (_lock)
             {
-                if (_written > MaxRunLogBytes) return;
-                try
+                foreach (var s in _sinks)
                 {
-                    _writer.WriteLine(line);
-                    _written += line.Length + 2;
-                    if (_written > MaxRunLogBytes) _writer.WriteLine("[журнал обрезан]"); // l10n-ignore: журнал запуска
-                }
-                catch
-                {
-                    // Журнал не критичен.
+                    if (s.Written > MaxRunLogBytes) continue;
+                    try
+                    {
+                        s.Writer.WriteLine(line);
+                        s.Written += line.Length + 2;
+                        if (s.Written > MaxRunLogBytes) s.Writer.WriteLine("[журнал обрезан]"); // l10n-ignore: журнал запуска
+                    }
+                    catch
+                    {
+                        // Журнал не критичен.
+                    }
                 }
             }
         }
 
         public void Dispose()
         {
-            if (_writer is null) return;
-            lock (_writer)
+            lock (_lock)
             {
-                try { _writer.Dispose(); } catch { }
+                foreach (var s in _sinks)
+                {
+                    try { s.Writer.Dispose(); } catch { }
+                }
+                _sinks.Clear();
             }
         }
     }

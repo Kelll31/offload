@@ -178,6 +178,8 @@ internal sealed partial class ContinueIntegration : IntegrationBase
     public override IntegrationStatus GetStatus(McpServerSpec spec) =>
         IsClientInstalled() ? Probe(spec).ToStatus(spec) : IntegrationStatus.ClientNotFound;
 
+    internal override IReadOnlyList<FileProbe> ProbeEntries(McpServerSpec spec) => IsClientInstalled() ? [Probe(spec)] : [];
+
     public override Task<IntegrationResult> RegisterAsync(McpServerSpec spec, CancellationToken ct = default)
     {
         if (!IsClientInstalled()) return Task.FromResult(NotFound());
@@ -207,6 +209,35 @@ internal sealed partial class ContinueIntegration : IntegrationBase
         {
             Log.Warn("Integrations", $"{Id}: {msg}");
             return Task.FromResult(new IntegrationResult(false, msg));
+        }
+    }
+
+    /// <summary>
+    /// Файл с меткой Offload целиком наш (так и написано в его первой строке) — при перемещённом exe он пишется заново.
+    /// Файл без метки, указывающий на Offload, создан пользователем: его не трогаем (решает пользователь).
+    /// </summary>
+    internal override Task<IntegrationResult?> RepairPathAsync(McpServerSpec spec, CancellationToken ct = default)
+    {
+        if (!IsClientInstalled() || Probe(spec).Need(spec) != RepairNeed.PathMoved) return Task.FromResult<IntegrationResult?>(null);
+        var path = ConfigPath!;
+        try
+        {
+            var content = BuildYaml(spec);
+            var res = ConfigFile.Edit(path, snap =>
+            {
+                if (!snap.Exists || !snap.Text.Contains(Marker, StringComparison.Ordinal)) return null;
+                var info = ParseYaml(snap.Text);
+                if (info?.Command is null || IntegrationBase.NeedOf(info, spec) != RepairNeed.PathMoved) return null;
+                return content;
+            });
+            return Task.FromResult<IntegrationResult?>(res.Outcome == WriteOutcome.Written
+                ? new IntegrationResult(true, MsgRegistered(path), res.BackupPath)
+                : null);
+        }
+        catch (Exception ex) when (DescribeFailure(path, ex) is { } msg)
+        {
+            Log.Warn("Integrations", $"{Id}: {msg}");
+            return Task.FromResult<IntegrationResult?>(new IntegrationResult(false, msg));
         }
     }
 

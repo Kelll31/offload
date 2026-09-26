@@ -7,12 +7,18 @@
     <Version>1.0.0</Version>
     <Company>Offload</Company>
     <Product>Offload</Product>
-    <Copyright>© Offload</Copyright>
+    <Copyright>© 2026 Kelll31 и участники проекта Offload</Copyright>
     <NeutralLanguage>ru-RU</NeutralLanguage>
     <SatelliteResourceLanguages>ru;en</SatelliteResourceLanguages>
     <InvariantGlobalization>false</InvariantGlobalization>
     <Deterministic>true</Deterministic>
+    <AnalysisLevel>latest-recommended</AnalysisLevel>
     <NoWarn>$(NoWarn);CA1416</NoWarn>
+  </PropertyGroup>
+  <!-- В CI: детерминированные пути в PDB и предупреждения как ошибки (локально предупреждения не мешают работе). -->
+  <PropertyGroup Condition="'$(GITHUB_ACTIONS)' == 'true'">
+    <ContinuousIntegrationBuild>true</ContinuousIntegrationBuild>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
   <!-- Локализация интерфейса (L.T / L.F / L.Plural) доступна во всех проектах без using. -->
   <ItemGroup>

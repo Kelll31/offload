@@ -3,8 +3,11 @@ using Offload.Integrations.Editing;
 
 namespace Offload.Integrations.Clients;
 
-/// <summary>Команда и аргументы из записи сервера в конфиге клиента.</summary>
-internal sealed record EntryInfo(string? Command, IReadOnlyList<string> Args)
+/// <summary>
+/// Команда и аргументы из записи сервера в конфиге клиента. <paramref name="StaleDefaults"/> — в записи остались
+/// значения по умолчанию, записанные прежней версией Offload (таймауты, список автоодобрения), — запись «устарела».
+/// </summary>
+internal sealed record EntryInfo(string? Command, IReadOnlyList<string> Args, bool StaleDefaults = false)
 {
     public bool Matches(McpServerSpec spec) =>
         CommandPath.Same(Command, spec.Command) && Args.SequenceEqual(spec.Args, StringComparer.Ordinal);
@@ -29,8 +32,18 @@ internal sealed record FileProbe(string Path, ProbeState State, EntryInfo? Entry
     public IntegrationStatus ToStatus(McpServerSpec spec) => State switch
     {
         ProbeState.Error => IntegrationStatus.Error,
-        ProbeState.Ours => Entry!.Matches(spec) ? IntegrationStatus.Registered : IntegrationStatus.Outdated,
+        ProbeState.Ours => Entry!.Matches(spec) && !Entry.StaleDefaults ? IntegrationStatus.Registered : IntegrationStatus.Outdated,
+        ProbeState.Foreign => IntegrationStatus.Foreign,
         _ => IntegrationStatus.NotRegistered,
+    };
+
+    /// <summary>Что с записью в этом файле (см. <see cref="RepairNeed"/>). Не обращается к сетевым путям.</summary>
+    public RepairNeed Need(McpServerSpec spec) => State switch
+    {
+        ProbeState.FileMissing or ProbeState.Absent => RepairNeed.Missing,
+        ProbeState.Foreign => RepairNeed.Foreign,
+        ProbeState.Ours => IntegrationBase.NeedOf(Entry!, spec),
+        _ => RepairNeed.None,
     };
 }
 
@@ -47,6 +60,44 @@ internal abstract class IntegrationBase : IIdeIntegration
     public abstract Task<IntegrationResult> UnregisterAsync(CancellationToken ct = default);
 
     public override string ToString() => Id;
+
+    /// <summary>Записи Offload в файлах, куда клиент прописывается (для «доктора интеграций»). Пусто — клиент без файла.</summary>
+    internal virtual IReadOnlyList<FileProbe> ProbeEntries(McpServerSpec spec) => [];
+
+    /// <summary>Файлы конфигурации, за которыми следит автовосстановление подключения.</summary>
+    internal virtual IReadOnlyList<string> WatchedFiles() => ConfigPath is { Length: > 0 } p ? [p] : [];
+
+    /// <summary>Состояние записи в каждом файле клиента (пусто — клиент не найден или без файла).</summary>
+    internal virtual IReadOnlyList<RepairNeed> FileNeeds(McpServerSpec spec) =>
+        IsClientInstalled() ? ProbeEntries(spec).Select(p => p.Need(spec)).ToList() : [];
+
+    /// <summary>
+    /// Автоматическое исправление: в файлах, где наша запись указывает на отсутствующий Offload.exe (<see cref="RepairNeed.PathMoved"/>),
+    /// заменить только путь к exe; прочие ключи записи и другие файлы не трогаются. null — клиент так не умеет (решает пользователь).
+    /// </summary>
+    internal virtual Task<IntegrationResult?> RepairPathAsync(McpServerSpec spec, CancellationToken ct = default) =>
+        Task.FromResult<IntegrationResult?>(null);
+
+    /// <summary>
+    /// Состояние нашей записи: путь и аргументы совпадают — всё в порядке (или устарели умолчания); аргументы те же, а exe
+    /// по пути из записи отсутствует — программу переместили; иначе запись указывает на другую копию Offload
+    /// (dev-сборка, портативная копия, свои аргументы) — её не трогаем.
+    /// </summary>
+    internal static RepairNeed NeedOf(EntryInfo entry, McpServerSpec spec)
+    {
+        if (entry.Matches(spec)) return entry.StaleDefaults ? RepairNeed.StaleSettings : RepairNeed.None;
+        if (!entry.Args.SequenceEqual(spec.Args, StringComparer.Ordinal)) return RepairNeed.OtherCopy;
+        return CommandPath.IsMissingLocalFile(entry.Command) ? RepairNeed.PathMoved : RepairNeed.OtherCopy;
+    }
+
+    /// <summary>Самая серьёзная причина из нескольких файлов (чужая запись важнее всего, перемещённый exe — меньше всего).</summary>
+    internal static RepairNeed Worst(IEnumerable<RepairNeed> needs)
+    {
+        var set = needs.ToHashSet();
+        foreach (var n in (RepairNeed[])[RepairNeed.Foreign, RepairNeed.OtherCopy, RepairNeed.Missing, RepairNeed.StaleSettings, RepairNeed.PathMoved])
+            if (set.Contains(n)) return n;
+        return RepairNeed.None;
+    }
 
     protected static string ServerName => AppInfo.McpServerId;
 
@@ -72,11 +123,14 @@ internal abstract class IntegrationBase : IIdeIntegration
     protected static string MsgReplacedForeign(string? command) =>
         L.F("Прежняя запись «{0}» ({1}) заменена, резервная копия сохранена.", ServerName, command ?? L.T("без команды"));
 
-    /// <summary>Несколько файлов → один статус: ошибка важнее всего, частичная регистрация = «требует обновления».</summary>
+    /// <summary>
+    /// Несколько файлов → один статус: ошибка важнее всего, затем чужая запись «offload»; частичная регистрация = «требует обновления».
+    /// </summary>
     protected static IntegrationStatus Aggregate(IReadOnlyList<IntegrationStatus> statuses)
     {
         if (statuses.Count == 0) return IntegrationStatus.NotRegistered;
         if (statuses.Contains(IntegrationStatus.Error)) return IntegrationStatus.Error;
+        if (statuses.Contains(IntegrationStatus.Foreign)) return IntegrationStatus.Foreign;
         if (statuses.All(s => s == IntegrationStatus.Registered)) return IntegrationStatus.Registered;
         if (statuses.Any(s => s is IntegrationStatus.Registered or IntegrationStatus.Outdated)) return IntegrationStatus.Outdated;
         return IntegrationStatus.NotRegistered;

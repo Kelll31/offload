@@ -90,8 +90,9 @@ public sealed class ServerProcessTests : IDisposable
         Assert.False(TestEnv.ProcessAlive(pid));
         lock (states) Assert.Equal([ServerState.Starting, ServerState.Running, ServerState.Stopping, ServerState.Stopped], states);
 
+        // Ключ передан окружением: в журнале запуска его нет, но сервер его требует (401 выше).
         var log = await File.ReadAllTextAsync(LlamaServerProcess.LogFilePath, TestContext.Current.CancellationToken);
-        Assert.Contains("--api-key ***", log);
+        Assert.DoesNotContain("--api-key", log);
         Assert.DoesNotContain(cfg.Server.ApiKey, log);
         Assert.Contains("завершился", log);
 
@@ -260,19 +261,19 @@ public sealed class ServerProcessTests : IDisposable
     [Fact]
     public void DescribeExit_Hints()
     {
-        var oom = LlamaServerProcess.DescribeExit(["0.00.100.000 E ggml_backend_cuda_buffer_type_alloc_buffer: allocating 20000 MiB on device 0: cudaMalloc failed: out of memory"],
+        var oom = ServerExitDiagnostics.DescribeExit(["0.00.100.000 E ggml_backend_cuda_buffer_type_alloc_buffer: allocating 20000 MiB on device 0: cudaMalloc failed: out of memory"],
             1, whileStarting: true, port: 8765);
         Assert.Contains("Не хватило памяти", oom);
         Assert.Contains("cudaMalloc failed", oom);
         Assert.DoesNotContain("0.00.100.000", oom);
 
-        var arg = LlamaServerProcess.DescribeExit(["error: invalid argument: --no-mmap"], 1, true, 8765);
+        var arg = ServerExitDiagnostics.DescribeExit(["error: invalid argument: --no-mmap"], 1, true, 8765);
         Assert.Contains("Дополнительные аргументы", arg);
 
-        var vc = LlamaServerProcess.DescribeExit([], unchecked((int)0xC0000135), true, 8765);
+        var vc = ServerExitDiagnostics.DescribeExit([], unchecked((int)0xC0000135), true, 8765);
         Assert.Contains("Visual C++", vc);
 
-        var crash = LlamaServerProcess.DescribeExit(["0.01.000.000 I slot launch_slot_: id 0"], unchecked((int)0xC0000409), false, 8765);
+        var crash = ServerExitDiagnostics.DescribeExit(["0.01.000.000 I slot launch_slot_: id 0"], unchecked((int)0xC0000409), false, 8765);
         Assert.Contains("неожиданно завершился (код 0xC0000409)", crash);
         Assert.Contains("аварийно", crash);
     }

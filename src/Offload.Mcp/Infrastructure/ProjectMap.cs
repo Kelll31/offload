@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Xml.Linq;
+using Offload.Mcp.Index;
 
 namespace Offload.Mcp.Infrastructure;
 
@@ -36,6 +37,10 @@ internal sealed class ProjectMapResult
     public int TotalFiles { get; set; }
     public string? Note { get; set; }
 
+    /// <summary>Объём исходников, по которым построена карта (для учёта просмотренного материала).</summary>
+    public long ScannedChars { get; set; }
+    public int ScannedFiles { get; set; }
+
     public SuggestedCommand? Pick(string kind) =>
         Commands.FirstOrDefault(c => c.Kind == kind && c.Allowed) ?? Commands.FirstOrDefault(c => c.Kind == kind);
 }
@@ -52,18 +57,110 @@ internal static partial class ProjectMap
         ".editorconfig", "CONVENTIONS.md", "STYLEGUIDE.md", "docs/CONTRIBUTING.md", "GEMINI.md", ".clinerules",
     ];
 
+    private static readonly string[] NodeTestFrameworks =
+        ["vitest", "jest", "mocha", "ava", "playwright", "@playwright/test", "cypress"];
+
+    /// <summary>Разобранные манифесты и команды для корня: пересчитываются только при изменении отпечатка манифестов.</summary>
+    private sealed record ManifestCache(string Key, List<ProjectInfo> Projects, List<SuggestedCommand> Commands);
+
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, ManifestCache> Cache = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Совместимость: карта + загруженный текст исходников (для разделов, которым нужен текст всех файлов).</summary>
     public static async Task<(ProjectMapResult Map, CodeIndexResult Index)> BuildAsync(ToolContext ctx, CancellationToken ct)
     {
-        var root = ctx.Roots[0];
-        var map = new ProjectMapResult();
-        var info = new GatherResult();
-        var opts = ctx.GatherOptions with { MaxFiles = CodeIndex.MaxIndexFiles, MaxEntriesVisited = 120_000 };
-        var all = await FileGatherer.ListFilesAsync([root], ctx.Roots, opts, info, ct).ConfigureAwait(false);
-        map.TotalFiles = all.Count;
-        if (info.LimitNote is not null) map.Note = info.LimitNote;
-        var rel = all.Select(f => (Full: f, Rel: Path.GetRelativePath(root, f).Replace('\\', '/'))).Where(x => !x.Rel.StartsWith("..", StringComparison.Ordinal)).ToList();
+        var map = await GetAsync(ctx, ct).ConfigureAwait(false);
+        var index = await CodeIndex.LoadAsync(ctx, null, codeOnly: true, ct).ConfigureAwait(false);
+        return (map, index);
+    }
 
-        // Манифесты.
+    /// <summary>
+    /// Карта проекта через постоянный индекс (без чтения текста всех файлов): языки и точки входа — из индекса, манифесты и
+    /// команды — из кэша процесса по отпечатку манифестов (пути, размеры, время изменения, белый список команд). Общая для
+    /// verify, solve, impact и dependency_check: повторные вызовы в одном процессе не разбирают манифесты заново.
+    /// </summary>
+    public static async Task<ProjectMapResult> GetAsync(ToolContext ctx, CancellationToken ct)
+    {
+        var root = ctx.Roots[0];
+        using var view = await CodeIndex.OpenAsync(ctx, null, codeOnly: false, ct).ConfigureAwait(false);
+        var map = new ProjectMapResult { TotalFiles = view.AllPaths.Count, Note = view.Info.LimitNote };
+        var rel = view.AllPaths.Select(f => (Full: f, Rel: Path.GetRelativePath(root, f).Replace('\\', '/')))
+            .Where(x => !x.Rel.StartsWith("..", StringComparison.Ordinal)).ToList();
+        var relSet = rel.Select(x => x.Rel).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        var key = ManifestKey(root, rel, relSet, ctx.Cfg.Mcp.VerifyCommandAllowlist);
+        if (!Cache.TryGetValue(root, out var cached) || cached.Key != key)
+        {
+            var parsed = new ProjectMapResult();
+            ParseManifests(parsed, rel);
+            SuggestCommands(parsed, root, relSet, ctx.Cfg.Mcp.VerifyCommandAllowlist);
+            cached = new ManifestCache(key, parsed.Projects, parsed.Commands);
+            Cache[root] = cached;
+        }
+        map.Projects.AddRange(cached.Projects);
+        map.Commands.AddRange(cached.Commands);
+
+        foreach (var (_, r) in rel)
+        {
+            var name = Path.GetFileName(r);
+            if (RuleFileNames.Contains(r, StringComparer.OrdinalIgnoreCase)) map.RuleFiles.Add(r);
+            if (r.StartsWith(".github/workflows/", StringComparison.OrdinalIgnoreCase) || name is ".gitlab-ci.yml" or "azure-pipelines.yml" or "Jenkinsfile" or ".travis.yml" or "appveyor.yml")
+                map.CiFiles.Add(r);
+            if (name.StartsWith("Dockerfile", StringComparison.OrdinalIgnoreCase) || name is "docker-compose.yml" or "docker-compose.yaml" or "compose.yml" or "compose.yaml")
+                map.DockerFiles.Add(r);
+        }
+
+        // Языки и крупные папки.
+        var code = view.Files.Where(f => f.IsCode).ToList();
+        foreach (var g in code.GroupBy(f => f.Lang).OrderByDescending(g => g.Sum(f => (long)f.LineCount)))
+            map.Languages.Add((g.Key.ToString(), g.Count(), g.Sum(f => (long)f.LineCount)));
+        foreach (var g in rel.GroupBy(x => x.Rel.Contains('/') ? x.Rel[..x.Rel.IndexOf('/')] : ".").OrderByDescending(g => g.Count()).Take(14))
+            map.TopFolders.Add((g.Key, g.Count()));
+        map.ScannedChars = code.Sum(f => f.Chars);
+        map.ScannedFiles = code.Count;
+
+        FindEntryPoints(map, code);
+        return map;
+    }
+
+    /// <summary>Файлы, от которых зависят проекты и команды: манифесты, requirements*, global.json, lock-файлы и т. п.</summary>
+    private static bool IsManifestInput(string rel)
+    {
+        var name = Path.GetFileName(rel);
+        var ext = Path.GetExtension(rel).ToLowerInvariant();
+        return ext is ".csproj" or ".fsproj" or ".vbproj" or ".dproj" or ".sln" or ".slnx"
+               || name is "package.json" or "pyproject.toml" or "setup.py" or "go.mod" or "Cargo.toml" or "pom.xml" or "build.gradle"
+                   or "build.gradle.kts" or "CMakeLists.txt" or "global.json" or "pnpm-lock.yaml" or "yarn.lock" or "tsconfig.json"
+                   or "gradlew" or "gradlew.bat" or "Makefile"
+               || name.StartsWith("requirements", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Отпечаток входов разбора манифестов: пути, размеры и время изменения, признаки файлов для команд, белый список.</summary>
+    private static string ManifestKey(string root, List<(string Full, string Rel)> rel, HashSet<string> relSet, IReadOnlyList<string>? allowlist)
+    {
+        var sb = new System.Text.StringBuilder(root).Append('\n');
+        foreach (var (full, r) in rel.Where(x => IsManifestInput(x.Rel)).OrderBy(x => x.Rel, StringComparer.OrdinalIgnoreCase))
+        {
+            long size = -1, mtime = -1;
+            try
+            {
+                var info = new FileInfo(full);
+                if (info.Exists) (size, mtime) = (info.Length, info.LastWriteTimeUtc.Ticks);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Нечитаемый манифест — отпечаток «-1», разбор отметит его как unreadable.
+            }
+            sb.Append(r).Append('|').Append(size).Append('|').Append(mtime).Append('\n');
+        }
+        // Команды зависят и от наличия файлов определённого вида (Python-тесты), а не только от манифестов.
+        sb.Append(relSet.Any(f => f.EndsWith(".py", StringComparison.OrdinalIgnoreCase)) ? "py" : "-")
+          .Append(relSet.Any(f => Path.GetFileName(f).StartsWith("test_", StringComparison.Ordinal)) ? "test_" : "-").Append('\n');
+        sb.Append(string.Join('\u0001', allowlist ?? []));
+        return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(sb.ToString())));
+    }
+
+    private static void ParseManifests(ProjectMapResult map, List<(string Full, string Rel)> rel)
+    {
         foreach (var (full, r) in rel)
         {
             var name = Path.GetFileName(r);
@@ -85,23 +182,7 @@ internal static partial class ProjectMap
             {
                 map.Projects.Add(new ProjectInfo { Kind = "unreadable", Manifest = r, Name = DirName(r) });
             }
-            if (RuleFileNames.Contains(r, StringComparer.OrdinalIgnoreCase)) map.RuleFiles.Add(r);
-            if (r.StartsWith(".github/workflows/", StringComparison.OrdinalIgnoreCase) || name is ".gitlab-ci.yml" or "azure-pipelines.yml" or "Jenkinsfile" or ".travis.yml" or "appveyor.yml")
-                map.CiFiles.Add(r);
-            if (name.StartsWith("Dockerfile", StringComparison.OrdinalIgnoreCase) || name is "docker-compose.yml" or "docker-compose.yaml" or "compose.yml" or "compose.yaml")
-                map.DockerFiles.Add(r);
         }
-
-        // Языки и крупные папки.
-        var index = await CodeIndex.LoadAsync(ctx, null, codeOnly: true, ct).ConfigureAwait(false);
-        foreach (var g in index.Files.GroupBy(f => f.Lang).OrderByDescending(g => g.Sum(f => (long)f.Lines.Length)))
-            map.Languages.Add((g.Key.ToString(), g.Count(), g.Sum(f => (long)f.Lines.Length)));
-        foreach (var g in rel.GroupBy(x => x.Rel.Contains('/') ? x.Rel[..x.Rel.IndexOf('/')] : ".").OrderByDescending(g => g.Count()).Take(14))
-            map.TopFolders.Add((g.Key, g.Count()));
-
-        FindEntryPoints(map, index);
-        SuggestCommands(map, root, rel.Select(x => x.Rel).ToHashSet(StringComparer.OrdinalIgnoreCase), ctx.Cfg.Mcp.VerifyCommandAllowlist);
-        return (map, index);
     }
 
     // ───────────────────────── манифесты ─────────────────────────
@@ -155,7 +236,7 @@ internal static partial class ProjectMap
         if (r.TryGetProperty("scripts", out var scripts) && scripts.ValueKind == JsonValueKind.Object)
             foreach (var s in scripts.EnumerateObject())
                 if (s.Value.ValueKind == JsonValueKind.String) p.Scripts[s.Name] = s.Value.GetString()!;
-        p.TestFramework = new[] { "vitest", "jest", "mocha", "ava", "playwright", "@playwright/test", "cypress" }
+        p.TestFramework = NodeTestFrameworks
             .FirstOrDefault(t => p.Packages.Any(x => x.Name == t));
         p.IsTest = false;
         if (r.TryGetProperty("main", out var main) && main.ValueKind == JsonValueKind.String) p.OutputType = "main: " + main.GetString();
@@ -272,36 +353,38 @@ internal static partial class ProjectMap
     [GeneratedRegex(@"^if\s+__name__\s*==\s*['""]__main__['""]", RegexOptions.CultureInvariant)]
     private static partial Regex PyMain();
 
-    private static void FindEntryPoints(ProjectMapResult map, CodeIndexResult index)
+    /// <summary>
+    /// Признак точки входа по тексту файла (для индекса): «Main», «host builder», «__main__», «func main», «main», «Spring Boot».
+    /// Признаки по пути (Program.cs, main.rs, .dpr, index.ts) определяются при построении карты.
+    /// </summary>
+    internal static string? EntryHint(CodeLang lang, string[] lines) => lang switch
     {
-        foreach (var f in index.Files)
+        CodeLang.CSharp => lines.Any(l => CsMain().IsMatch(l)) ? "Main" : lines.Any(l => CsHost().IsMatch(l)) ? "host builder" : null,
+        CodeLang.Python => lines.Any(l => PyMain().IsMatch(l)) ? "__main__" : null,
+        CodeLang.Go => lines.Any(l => l.StartsWith("package main", StringComparison.Ordinal)) && lines.Any(l => l.StartsWith("func main()", StringComparison.Ordinal))
+            ? "func main" : null,
+        CodeLang.Java or CodeLang.Kotlin => lines.Any(l => l.Contains("public static void main(", StringComparison.Ordinal) || l.StartsWith("fun main(", StringComparison.Ordinal))
+            ? "main" : lines.Any(l => l.Contains("@SpringBootApplication", StringComparison.Ordinal)) ? "Spring Boot" : null,
+        _ => null,
+    };
+
+    private static void FindEntryPoints(ProjectMapResult map, List<IndexedFile> files)
+    {
+        foreach (var f in files)
         {
             if (map.EntryPoints.Count >= 40) break;
             if (f.IsTest) continue;
-            string? why = null;
+            var why = f.Entry;
             switch (f.Lang)
             {
                 case CodeLang.CSharp:
-                    if (f.Lines.Any(l => CsMain().IsMatch(l))) why = "Main";
-                    else if (f.Lines.Any(l => CsHost().IsMatch(l))) why = "host builder";
-                    else if (Path.GetFileName(f.Display) == "Program.cs") why = "top-level statements";
-                    break;
-                case CodeLang.Python:
-                    if (f.Lines.Any(l => PyMain().IsMatch(l))) why = "__main__";
-                    break;
-                case CodeLang.Go:
-                    if (f.Lines.Any(l => l.StartsWith("package main", StringComparison.Ordinal)) && f.Lines.Any(l => l.StartsWith("func main()", StringComparison.Ordinal))) why = "func main";
+                    if (why is null && Path.GetFileName(f.Display) == "Program.cs") why = "top-level statements";
                     break;
                 case CodeLang.Rust:
                     if (f.Display.EndsWith("src/main.rs", StringComparison.Ordinal) || f.Display.Contains("/src/bin/", StringComparison.Ordinal)) why = "fn main";
                     break;
                 case CodeLang.Pascal:
                     if (f.Display.EndsWith(".dpr", StringComparison.OrdinalIgnoreCase) || f.Display.EndsWith(".lpr", StringComparison.OrdinalIgnoreCase)) why = "program";
-                    break;
-                case CodeLang.Java:
-                case CodeLang.Kotlin:
-                    if (f.Lines.Any(l => l.Contains("public static void main(", StringComparison.Ordinal) || l.StartsWith("fun main(", StringComparison.Ordinal))) why = "main";
-                    else if (f.Lines.Any(l => l.Contains("@SpringBootApplication", StringComparison.Ordinal))) why = "Spring Boot";
                     break;
                 case CodeLang.TypeScript:
                     var n = Path.GetFileNameWithoutExtension(f.Display);

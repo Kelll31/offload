@@ -157,6 +157,61 @@ public sealed class RecommendTests
         Assert.False(BackendAdvisor.SupportsCuda13(Hw()));
     }
 
+    [Fact]
+    public void Intel_OpenVinoOfferedManually_NotRecommended()
+    {
+        var arc = Hw(false, new GpuInfo("Intel(R) Arc(TM) A770 Graphics", GpuVendor.Intel, 16 * Gb, false));
+        Assert.Contains(LlamaBackend.OpenVino, LlamaReleaseResolver.AvailableBackends(arc));
+        Assert.NotEqual(LlamaBackend.OpenVino, LlamaReleaseResolver.Recommend(arc).Backend);
+
+        var uhd = Hw(false, new GpuInfo("Intel(R) UHD Graphics 770", GpuVendor.Intel, 512L * 1024 * 1024, true));
+        Assert.Contains(LlamaBackend.OpenVino, LlamaReleaseResolver.AvailableBackends(uhd));
+        Assert.Equal(LlamaBackend.Cpu, LlamaReleaseResolver.Recommend(uhd).Backend);
+
+        var amd = Hw(false, new GpuInfo("AMD Radeon RX 7900 XTX", GpuVendor.Amd, 24 * Gb, false));
+        Assert.DoesNotContain(LlamaBackend.OpenVino, LlamaReleaseResolver.AvailableBackends(amd));
+        Assert.Equal("Intel OpenVINO", LlamaReleaseResolver.DisplayName(LlamaBackend.OpenVino));
+    }
+
+    [Fact]
+    public void Snapdragon_OpenClAdrenoOfferedManually_NotRecommended()
+    {
+        var snapdragon = Hw(true, new GpuInfo("Qualcomm(R) Adreno(TM) X1-85 GPU", GpuVendor.Other, 0, true));
+        Assert.Equal([LlamaBackend.OpenClAdreno, LlamaBackend.Cpu], LlamaReleaseResolver.AvailableBackends(snapdragon));
+        Assert.Equal(LlamaBackend.Cpu, LlamaReleaseResolver.Recommend(snapdragon).Backend);
+        // На x64 сборки Adreno нет.
+        Assert.DoesNotContain(LlamaBackend.OpenClAdreno, LlamaReleaseResolver.AvailableBackends(Hw(false, new GpuInfo("Qualcomm(R) Adreno(TM) X1-85 GPU", GpuVendor.Other, 0, true))));
+    }
+
+    [Fact]
+    public void IqTensors_ModelWithoutIq_DropsCuda13Warning_SameBackend()
+    {
+        var hw = Hw(false, Nvidia("NVIDIA GeForce RTX 3090", "616.92", "8.6", 24));
+        var unknown = LlamaReleaseResolver.Recommend(hw);
+        var withIq = LlamaReleaseResolver.Recommend(hw, modelHasIqTensors: true);
+        var noIq = LlamaReleaseResolver.Recommend(hw, modelHasIqTensors: false);
+        Assert.Equal(LlamaBackend.Cuda12, noIq.Backend);
+        Assert.Equal(LlamaBackend.Cuda12, withIq.Backend);
+        Assert.Contains("21255", unknown.ReasonRu);
+        Assert.Contains("21255", withIq.ReasonRu);
+        Assert.DoesNotContain("21255", noIq.ReasonRu);
+        Assert.Equal(noIq.ReasonRu.TrimEnd(), noIq.ReasonRu);
+    }
+
+    [Fact]
+    public void IqTensors_BlackwellWithIqModel_WarnsButStaysCuda13()
+    {
+        var hw = Hw(false, Nvidia("NVIDIA GeForce RTX 5090", "590.10", "12.0", 32));
+        var withIq = LlamaReleaseResolver.Recommend(hw, modelHasIqTensors: true);
+        Assert.Equal(LlamaBackend.Cuda13, withIq.Backend);
+        Assert.Contains("21255", withIq.ReasonRu);
+        Assert.Contains("Vulkan", withIq.ReasonRu);
+
+        var noIq = LlamaReleaseResolver.Recommend(hw, modelHasIqTensors: false);
+        Assert.Equal(LlamaBackend.Cuda13, noIq.Backend);
+        Assert.DoesNotContain("21255", noIq.ReasonRu);
+    }
+
     [Theory]
     [InlineData("AMD Radeon RX 6800 XT", true)]
     [InlineData("AMD Radeon RX 9070 XT", true)]

@@ -29,6 +29,22 @@ internal static class JobStatus
 
     /// <summary>Песочница удалена без слияния.</summary>
     public const string Discarded = "discarded";
+
+    /// <summary>
+    /// Процесс, выполнявший задачу, завершился посреди работы (закрыли IDE или трей, сбой). Песочница сохраняется:
+    /// local_job action=retry (повтор по сохранённому описанию) или action=discard.
+    /// </summary>
+    public const string Interrupted = "interrupted";
+}
+
+/// <summary>Кто выполняет задачу (JobInfo.Host).</summary>
+internal static class JobHost
+{
+    /// <summary>Фоновая задача в MCP-процессе IDE (трей не запущен или не принял задачу).</summary>
+    public const string Mcp = "mcp";
+
+    /// <summary>Фоновая задача в процессе трея — переживает закрытие IDE.</summary>
+    public const string Tray = "tray";
 }
 
 /// <summary>Файл, затронутый задачей: исходные байты (снимок) и хэш на момент завершения.</summary>
@@ -71,6 +87,21 @@ internal sealed class JobInfo
 
     /// <summary>Git-песочница агентной задачи (local_agent_task) или null.</summary>
     public SandboxInfo? Sandbox { get; set; }
+
+    /// <summary>
+    /// Задача создана с allow_build_files=true: её отложенное слияние (local_job merge) может менять файлы сборки
+    /// и при Mcp.ProtectBuildFiles. Действует только для этой задачи.
+    /// </summary>
+    public bool AllowBuildFiles { get; set; }
+
+    /// <summary>Фоновая задача: кто её выполняет (<see cref="JobHost"/>); null — задача выполняется в вызове создавшего процесса.</summary>
+    public string? Host { get; set; }
+
+    /// <summary>Процесс, выполняющий задачу (для восстановления после сбоя: процесс исчез — задача прервана).</summary>
+    public int? HostPid { get; set; }
+
+    /// <summary>Время запуска процесса-хозяина (UTC): защищает от повторного использования PID другим процессом.</summary>
+    public DateTime? HostStartedUtc { get; set; }
 }
 
 internal sealed record RevertOutcome(bool Ok, string Message);
@@ -112,10 +143,84 @@ internal static partial class JobStore
                 Root = root,
                 Task = task.Length > 600 ? task[..600] + "…" : task,
                 ToolUseId = toolUseId,
+                AllowBuildFiles = PathGuard.BuildFilesAllowed,
+                HostPid = Environment.ProcessId,
+                HostStartedUtc = CurrentProcessStartUtc.Value,
             };
             Save(job);
             return job;
         }
+    }
+
+    // ───────────── процесс-хозяин задачи и восстановление после сбоя ─────────────
+
+    /// <summary>
+    /// Задачи без сведений о хозяине (созданы до их появления) считаются живыми столько времени после создания:
+    /// дольше не длится ни одна задача (max_minutes ≤ 90 + проверка и слияние).
+    /// </summary>
+    internal static readonly TimeSpan LegacyRunningGrace = TimeSpan.FromHours(3);
+
+    /// <summary>Допуск при сравнении времени запуска процесса (округление в разных API).</summary>
+    private static readonly TimeSpan StartTimeTolerance = TimeSpan.FromSeconds(2);
+
+    internal static readonly Lazy<DateTime?> CurrentProcessStartUtc = new(() =>
+    {
+        try
+        {
+            using var p = System.Diagnostics.Process.GetCurrentProcess();
+            return p.StartTime.ToUniversalTime();
+        }
+        catch
+        {
+            return null;
+        }
+    });
+
+    /// <summary>Отметить текущий процесс хозяином задачи (host — <see cref="JobHost"/>) и сохранить.</summary>
+    public static void SetHost(JobInfo job, string host)
+    {
+        job.Host = host;
+        job.HostPid = Environment.ProcessId;
+        job.HostStartedUtc = CurrentProcessStartUtc.Value;
+        Save(job);
+    }
+
+    /// <summary>
+    /// Жив ли процесс, выполняющий задачу: PID существует и время его запуска совпадает с записанным (PID мог достаться
+    /// другому процессу). Без сведений о хозяине — «жив», пока задача моложе <see cref="LegacyRunningGrace"/>.
+    /// Нет доступа к процессу — считаем живым (лучше не прервать чужую живую задачу).
+    /// </summary>
+    public static bool IsHostAlive(JobInfo job)
+    {
+        if (job.HostPid is not { } pid) return DateTime.UtcNow - job.CreatedUtc < LegacyRunningGrace;
+        if (pid == Environment.ProcessId)
+            return job.HostStartedUtc is not { } own || CurrentProcessStartUtc.Value is not { } cur || (own - cur).Duration() <= StartTimeTolerance;
+        try
+        {
+            using var p = System.Diagnostics.Process.GetProcessById(pid);
+            if (p.HasExited) return false;
+            if (job.HostStartedUtc is not { } started) return true;
+            return (p.StartTime.ToUniversalTime() - started).Duration() <= StartTimeTolerance;
+        }
+        catch (ArgumentException)
+        {
+            return false; // Процесса с таким PID нет.
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception or NotSupportedException)
+        {
+            return true;
+        }
+    }
+
+    /// <summary>Пометить задачу прерванной (процесс-хозяин исчез). Песочница не трогается — её можно повторить или удалить.</summary>
+    public static void MarkInterrupted(JobInfo job, string reason)
+    {
+        job.Status = JobStatus.Interrupted;
+        job.FinishedUtc = DateTime.UtcNow;
+        var note = "interrupted: " + reason;
+        if (!job.Notes.Contains(note)) job.Notes.Add(note);
+        Save(job);
+        Log.Warn("mcp", $"Задача {job.Id} ({job.Tool}) помечена прерванной: {reason}");
     }
 
     /// <summary>Снимок файла до изменений (исходные байты + хэш). Повторный вызов для того же пути — без изменений.</summary>
@@ -168,12 +273,37 @@ internal static partial class JobStore
             throw new ToolException($"Job '{id}' not found (jobs are kept for a limited number of days).");
         try
         {
-            return JsonSerializer.Deserialize<JobInfo>(File.ReadAllText(file), Json.Options)
+            return JsonSerializer.Deserialize<JobInfo>(ReadTextWithRetry(file), Json.Options)
                 ?? throw new ToolException($"Job '{id}' is corrupted.");
         }
         catch (JsonException)
         {
             throw new ToolException($"Job '{id}' is corrupted.");
+        }
+    }
+
+    /// <summary>
+    /// Чтение файла задачи, который в это же время может атомарно заменять другой процесс (фоновая задача в трее
+    /// сохраняет job.json): короткая замена даёт нарушение совместного доступа — повторяем.
+    /// </summary>
+    private static string ReadTextWithRetry(string file)
+    {
+        for (var attempt = 0; ; attempt++)
+        {
+            try
+            {
+                using var fs = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+                using var reader = new StreamReader(fs, Encoding.UTF8);
+                return reader.ReadToEnd();
+            }
+            catch (IOException) when (attempt < 5 && File.Exists(file))
+            {
+                Thread.Sleep(40 * (attempt + 1));
+            }
+            catch (UnauthorizedAccessException) when (attempt < 5)
+            {
+                Thread.Sleep(40 * (attempt + 1));
+            }
         }
     }
 
@@ -245,8 +375,14 @@ internal static partial class JobStore
             return new(true, $"Job {job.Id} was not merged into the project (status {job.Status}); nothing to revert. Use local_job action=discard to drop its sandbox.");
         if (job.Status == JobStatus.Running && !force)
             return new(false, $"Job {job.Id} is still running (or was interrupted). Retry later, or use force=true to restore the snapshot now.");
+        if (job.Status == JobStatus.Interrupted && job.Files.Count == 0)
+            return new(true, $"Job {job.Id} was interrupted before anything was merged into the project; nothing to revert. " +
+                             "Use local_job action=retry to run it again or action=discard to drop its sandbox.");
+        if (job.Status == JobStatus.Interrupted && !force)
+            return new(false, $"Job {job.Id} was interrupted while changing files, so their final state is unknown. " +
+                              "Check the files (action=diff), then use force=true to restore the pre-job snapshot.");
 
-        var changed = job.Status == JobStatus.Running ? [] : ChangedSinceFinish(job);
+        var changed = job.Status is JobStatus.Running or JobStatus.Interrupted ? [] : ChangedSinceFinish(job);
         if (changed.Count > 0 && !force)
         {
             return new(false,

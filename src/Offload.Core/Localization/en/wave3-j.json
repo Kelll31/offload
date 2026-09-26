@@ -1,0 +1,18 @@
+{
+  "Трей не принимает фоновые задачи": "The tray does not accept background jobs",
+  "фоновые задачи агента: {0}": "background agent jobs: {0}",
+  "Фоновые задачи прерваны": "Background jobs interrupted",
+  "Задач, прерванных закрытием Offload или IDE: {0}. Повторить можно из IDE: local_job action=retry.": "Jobs interrupted because Offload or the IDE was closed: {0}. Retry them from the IDE: local_job action=retry.",
+  "{0}. Задача: {1}": "{0}. Task: {1}",
+  "Фоновая задача агента завершена": "Background agent job finished",
+  "Фоновая задача агента не выполнена": "Background agent job failed",
+  "Фоновая задача агента остановлена": "Background agent job stopped",
+  "изменения применены к проекту": "changes applied to the project",
+  "изменения влиты коммитом": "changes merged as a commit",
+  "изменения ждут проверки в IDE": "changes are waiting for review in the IDE",
+  "изменений нет": "no changes",
+  "конфликт при слиянии": "merge conflict",
+  "отменена": "cancelled",
+  "прервана": "interrupted",
+  "ошибка": "error"
+}

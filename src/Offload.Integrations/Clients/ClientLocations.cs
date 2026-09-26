@@ -12,6 +12,8 @@ internal static partial class ClientLocations
 
     public static bool Dir(string path) => Directory.Exists(path);
 
+    private static readonly string[] TraeNames = ["Trae", "Trae CN", "TRAE SOLO CN"];
+
     // ---------------------------------------------------------------- Claude Code
 
     /// <summary>~/.claude (или CLAUDE_CONFIG_DIR).</summary>
@@ -156,9 +158,15 @@ internal static partial class ClientLocations
 
     public static bool RooInstalled() => Dir(RooDir) || ExtensionVersions("rooveterinaryinc.roo-cline").Count > 0;
 
+    /// <summary>~/.config (или XDG_CONFIG_HOME): xdg-basedir учитывает переменную и на Windows.</summary>
+    private static string XdgConfigHome =>
+        IntegrationEnvironment.GetVariable("XDG_CONFIG_HOME") ?? Path.Combine(Profile, ".config");
+
     /// <summary>~/.config/kilo (xdg-basedir, НЕ %APPDATA%).</summary>
-    public static string KiloDir =>
-        Path.Combine(IntegrationEnvironment.GetVariable("XDG_CONFIG_HOME") ?? Path.Combine(Profile, ".config"), "kilo");
+    public static string KiloDir => Path.Combine(XdgConfigHome, "kilo");
+
+    /// <summary>~/.config/opencode — глобальный конфиг собственного OpenCode пользователя (xdg-basedir, НЕ %APPDATA%).</summary>
+    public static string OpenCodeGlobalDir => Path.Combine(XdgConfigHome, "opencode");
 
     public static IReadOnlyList<string> KiloTargets()
     {
@@ -186,7 +194,7 @@ internal static partial class ClientLocations
     }
 
     public static IReadOnlyList<string> TraeTargets() =>
-        new[] { "Trae", "Trae CN", "TRAE SOLO CN" }
+        TraeNames
             .Select(n => Path.Combine(AppData, n))
             .Where(Dir)
             .Select(d => Path.Combine(d, "User", "mcp.json"))

@@ -4,12 +4,15 @@ using Offload.App.Controls;
 using Offload.App.Services;
 using Offload.App.Util;
 using Offload.Core;
+using Offload.Core.Config;
 using Offload.Core.Logging;
+using Offload.Llama;
 
 namespace Offload.App.Forms.Pages;
 
 /// <summary>
 /// Вкладка «Журнал»: журнал приложения (вживую), llama-server и MCP (хвост файла, обновление раз в 2 секунды).
+/// Журналы вспомогательных серверов ролей (llama-server-fast/embed/rerank.log) появляются в списке источников, когда файл есть.
 /// Строки раскрашены по уровню; фильтр по уровню и поиск по тексту; Ctrl+C копирует выделенные строки.
 /// </summary>
 internal sealed class LogPage : PageBase
@@ -18,7 +21,11 @@ internal sealed class LogPage : PageBase
     private const int TailBytes = 1024 * 1024;
     private const byte NewLine = (byte)'\n';
 
-    private enum Source { App, LlamaServer, Mcp }
+    private enum Source { App, LlamaServer, Mcp, Fast, Embed, Rerank }
+
+    /// <summary>Источники вспомогательных серверов ролей (показываются, только если их журнал существует).</summary>
+    private static readonly (Source Source, ModelRole Role)[] AuxSources =
+        [(Source.Fast, ModelRole.Fast), (Source.Embed, ModelRole.Embed), (Source.Rerank, ModelRole.Rerank)];
 
     private enum Level { Debug, Info, Warn, Error }
 
@@ -65,12 +72,22 @@ internal sealed class LogPage : PageBase
     private bool _reading;
     private int _maxChars;
     private long _fileOffset = -1;
+    private readonly List<Source> _sources = [Source.App, Source.LlamaServer, Source.Mcp];
+    private bool _fillingSources;
 
     public LogPage(IAppShell shell) : base(shell)
     {
-        _source.Items.AddRange([L.T("Приложение"), "llama-server", "MCP"]);
+        foreach (var s in _sources) _source.Items.Add(SourceName(s));
         _source.SelectedIndex = 0;
-        _source.SelectedIndexChanged += (_, _) => SwitchSource();
+        _source.SelectedIndexChanged += (_, _) =>
+        {
+            if (!_fillingSources) SwitchSource();
+        };
+        // Сервер роли мог запуститься, пока вкладка открыта, — список обновляется при раскрытии.
+        _source.DropDown += (_, _) =>
+        {
+            if (FillSources()) SwitchSource();
+        };
         _levels.Items.AddRange([L.T("Все сообщения"), L.T("Без отладочных"), L.T("Предупреждения и ошибки"), L.T("Только ошибки")]);
         _levels.SelectedIndex = 1;
         _levels.SelectedIndexChanged += (_, _) => Rebuild(keepPosition: false);
@@ -99,7 +116,9 @@ internal sealed class LogPage : PageBase
         var actions = Kit.Flow(
             Kit.Button(L.T("Копировать"), (_, _) => CopySelection()),
             Kit.Button(L.T("Очистить экран"), (_, _) => ClearScreen(), 120),
-            Kit.Button(L.T("Открыть папку журналов"), (_, _) => Ui.OpenFolder(AppPaths.LogsDir), 160));
+            Kit.Button(L.T("Открыть папку журналов"), (_, _) => Ui.OpenFolder(AppPaths.LogsDir), 160),
+            Kit.Button(L.T("Собрать пакет диагностики…"), async (_, _) =>
+                await RunBusyAsync(() => DiagnosticsUi.RunAsync(Owner, Shell), L.T("Не удалось собрать пакет диагностики")), 220));
         root.AddRow(actions);
         var status = Kit.Table(100, 0);
         _counts.Anchor = AnchorStyles.Right;
@@ -124,11 +143,66 @@ internal sealed class LogPage : PageBase
 
     public override string Glyph => Glyphs.Log;
 
-    private Source Current => (Source)Math.Max(0, _source.SelectedIndex);
+    private Source Current => _source.SelectedIndex >= 0 && _source.SelectedIndex < _sources.Count ? _sources[_source.SelectedIndex] : Source.App;
 
-    private string FilePath(Source s) => Path.Combine(AppPaths.LogsDir, s == Source.LlamaServer ? "llama-server.log" : "mcp.log");
+    private static string FilePath(Source s) => s switch
+    {
+        Source.LlamaServer => LlamaServerProcess.LogFilePath,
+        Source.Fast => AuxServerArgs.LogFilePath(ModelRole.Fast),
+        Source.Embed => AuxServerArgs.LogFilePath(ModelRole.Embed),
+        Source.Rerank => AuxServerArgs.LogFilePath(ModelRole.Rerank),
+        _ => Path.Combine(AppPaths.LogsDir, "mcp.log"),
+    };
 
-    protected override void OnActivated() => SwitchSource();
+    private static bool IsLlama(Source s) => s is Source.LlamaServer or Source.Fast or Source.Embed or Source.Rerank;
+
+    protected override void OnActivated()
+    {
+        FillSources();
+        SwitchSource();
+    }
+
+    /// <summary>
+    /// Список источников: приложение, llama-server, MCP и журналы серверов ролей, которые есть на диске.
+    /// Выбранный источник сохраняется (если его журнал пропал — выбирается «Приложение»). true — выбранный источник сменился.
+    /// </summary>
+    private bool FillSources()
+    {
+        var sources = new List<Source> { Source.App, Source.LlamaServer, Source.Mcp };
+        foreach (var (source, role) in AuxSources)
+        {
+            if (Ui.Try(() => File.Exists(AuxServerArgs.LogFilePath(role)), false, "LogPage.AuxLog")) sources.Add(source);
+        }
+        if (sources.SequenceEqual(_sources) && _source.Items.Count == _sources.Count) return false;
+
+        var current = Current;
+        _fillingSources = true;
+        try
+        {
+            _sources.Clear();
+            _sources.AddRange(sources);
+            _source.BeginUpdate();
+            _source.Items.Clear();
+            foreach (var s in _sources) _source.Items.Add(SourceName(s));
+            _source.EndUpdate();
+            _source.SelectedIndex = Math.Max(0, _sources.IndexOf(current));
+        }
+        finally
+        {
+            _fillingSources = false;
+        }
+        return Current != current;
+    }
+
+    private static string SourceName(Source s) => s switch
+    {
+        Source.App => L.T("Приложение"),
+        Source.LlamaServer => "llama-server",
+        Source.Fast => "llama-server · fast",
+        Source.Embed => "llama-server · embed",
+        Source.Rerank => "llama-server · rerank",
+        _ => "MCP",
+    };
 
     protected override void OnDeactivated()
     {
@@ -353,7 +427,7 @@ internal sealed class LogPage : PageBase
                 {
                     _lastFileStamp = default;
                     _fileOffset = -1;
-                    SetLines([source == Source.LlamaServer
+                    SetLines([IsLlama(source)
                         ? L.T("Журнал llama-server пока пуст: сервер ещё не запускался.")
                         : L.T("Журнал MCP пока пуст: IDE ещё не обращалась к Offload.")], keepPosition: false);
                 }

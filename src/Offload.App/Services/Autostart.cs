@@ -39,6 +39,11 @@ internal static class Autostart
 
     public static void Set(bool enabled)
     {
+        if (DevMode.Active)
+        {
+            Log.Info("autostart", $"Режим разработчика ({DevMode.EnvVar}) — автозапуск в реестре не меняется");
+            return;
+        }
         using var k = Registry.CurrentUser.CreateSubKey(RunKey, writable: true);
         if (enabled)
         {

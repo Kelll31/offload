@@ -264,7 +264,10 @@ public class ModelRequestTests
     public void LlamaErrorsMappedToEnglish()
     {
         Assert.Contains("API key", LocalModel.MapError(new LlamaApiException("Неверный ключ", 401)).Message);
-        Assert.IsType<ContextExceededException>(LocalModel.MapError(new LlamaApiException("Запрос не помещается в контекст модели", 400)));
+        Assert.IsType<ContextExceededException>(LocalModel.MapError(
+            new LlamaApiException("Запрос не помещается в контекст модели", 400) { Kind = LlamaErrorKind.ContextExceeded }));
+        // Классификация — по Kind, а не по слову «контекст» в тексте.
+        Assert.IsType<ToolException>(LocalModel.MapError(new LlamaApiException("Запрос не помещается в контекст модели", 400)));
         Assert.Contains("Lost connection", LocalModel.MapError(new LlamaApiException("нет связи")).Message);
     }
 

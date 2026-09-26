@@ -129,6 +129,42 @@ public sealed partial class MemoryToolTests
     }
 
     [Fact]
+    public async Task Store_ConcurrentWriters_NoLostWrites()
+    {
+        using var env = new TestEnv();
+        const int PerWriter = 20;
+
+        // Два «процесса»: разные потоки со своими контекстами и своими дескрипторами именованного мьютекса.
+        var writers = Enumerable.Range(0, 2).Select(w => Task.Run(() =>
+        {
+            var ctx = env.Context();
+            for (var i = 0; i < PerWriter; i++) Store(ctx, $"writer {w} remembers fact number {i}");
+        }, TestContext.Current.CancellationToken)).ToArray();
+        await Task.WhenAll(writers);
+
+        var list = MemoryTool.Run(env.Context(), "list", null, null, null, null, null, 100);
+        Assert.StartsWith($"{2 * PerWriter} entries;", list);
+    }
+
+    [Fact]
+    public async Task Run_WaitsForMemoryLockHeldElsewhere()
+    {
+        using var env = new TestEnv();
+        var file = MemoryTool.FileFor(env.Workspace);
+        Task<string> pending;
+        // Мьютекс привязан к потоку: держим и освобождаем его без await внутри блока.
+        using (MemoryTool.FileLock(file))
+        {
+            pending = Task.Run(() => Store(env.Context(), Fact), TestContext.Current.CancellationToken);
+            Thread.Sleep(300);
+            Assert.False(pending.IsCompleted, "запись должна ждать освобождения мьютекса другим владельцем");
+        }
+
+        Assert.StartsWith("Stored fact", await pending);
+        Assert.Equal(@"Local\Offload.Memory.", MemoryTool.MutexName(file)[..21]);
+    }
+
+    [Fact]
     public void FileFor_LivesInDataDirNotInWorkspace()
     {
         using var env = new TestEnv();

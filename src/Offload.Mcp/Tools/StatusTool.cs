@@ -19,6 +19,8 @@ internal static class StatusTool
         var client = LlamaClient.FromConfig(cfg);
         var sb = new StringBuilder();
 
+        // Серверы ролей опрашиваются параллельно с основным.
+        var rolesTask = RoleStatusAsync(cfg, ctx.Ct);
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ctx.Ct);
         cts.CancelAfter(TimeSpan.FromSeconds(4));
         HealthState health;
@@ -34,12 +36,17 @@ internal static class StatusTool
         }
 
         var name = model is null ? props?.ModelAlias ?? "none" : model.DisplayName + (string.IsNullOrWhiteSpace(model.Quant) ? "" : $" ({model.Quant})");
+        var state = health switch
+        {
+            HealthState.Ready => "ready",
+            HealthState.Loading => "loading",
+            _ => !cfg.SetupCompleted || model is null ? "not_set_up" : "offline",
+        };
         switch (health)
         {
             case HealthState.Ready:
-                var ctxSize = props?.ContextPerSlot ?? 0;
                 sb.Append($"local model: READY · {name}");
-                if (ctxSize > 0) sb.Append($" · context {ctxSize} tok per request × {props!.TotalSlots} slot(s)");
+                if (props is not null) sb.Append(ContextLine(props));
                 if (props?.IsSleeping == true) sb.Append(" · asleep (reloads on the next call, a few seconds)");
                 sb.Append('\n');
                 break;
@@ -59,6 +66,9 @@ internal static class StatusTool
                 break;
         }
 
+        var roles = await rolesTask.ConfigureAwait(false);
+        sb.Append(RolesLine(roles)).Append('\n');
+
         var records = UsageLog.ReadAll(DateTime.UtcNow.AddDays(-30));
         var speed = ctx.State.LastGenerationTps;
         if (speed is double tps) sb.Append($"speed: {tps:0} tok/s (last call)");
@@ -66,20 +76,137 @@ internal static class StatusTool
         {
             var recent = records.Where(r => r.Ok && r.CompletionTokens > 50 && r.DurationMs > 0).TakeLast(20).ToList();
             if (recent.Count > 0)
-                sb.Append($"speed: ≈{recent.Sum(r => r.CompletionTokens) * 1000.0 / recent.Sum(r => r.DurationMs):0} tok/s (recent calls, incl. reading input)");
+            {
+                speed = recent.Sum(r => r.CompletionTokens) * 1000.0 / recent.Sum(r => r.DurationMs);
+                sb.Append($"speed: ≈{speed:0} tok/s (recent calls, incl. reading input)");
+            }
             else sb.Append("speed: not measured yet");
         }
-        var slots = Math.Max(1, cfg.Server.Parallel);
-        sb.Append($" · queue: {GpuQueue.CountBusy(slots)}/{slots} slot(s) busy\n");
+        var slots = Math.Clamp(cfg.Server.Parallel, 1, 16);
+        var busy = GpuQueue.CountBusy(slots);
+        var board = GpuQueueBoard.ReadSafe();
+        sb.Append(QueueLine(cfg.Server.Parallel, busy, board, DateTime.UtcNow));
 
-        sb.Append("agent mode for local_edit_files (OpenCode): ").Append(OpenCodeState(cfg)).Append('\n');
+        var agentMode = OpenCodeState(cfg);
+        sb.Append("agent mode for local_edit_files (OpenCode): ").Append(agentMode).Append('\n');
 
         var summary = UsageLog.Summarize(UsageLog.ReadAll());
         sb.Append($"cloud tokens avoided: this session ≈{Tokens.Format(ctx.State.SavedTokens)} ({ctx.State.ModelCalls} calls) · " +
                   $"lifetime ≈{Tokens.Format(summary.EstimatedSavedTokens)} ({summary.Calls} calls)\n");
         sb.Append("workspace: ").Append(string.Join("; ", ctx.Roots)).Append('\n');
         sb.Append($"offload {AppInfo.Version}");
+        ctx.Structured = new StatusOutput
+        {
+            Model = new StatusModel
+            {
+                State = state,
+                Name = name,
+                ContextPerRequest = props is { ContextPerSlot: > 0 } ? props.ContextPerSlot : null,
+                Slots = props is { TotalSlots: > 0 } ? props.TotalSlots : null,
+                Asleep = props?.IsSleeping == true,
+            },
+            SpeedTps = speed is double v ? Math.Round(v, 1) : null,
+            Queue = new StatusQueue { Busy = busy, Slots = slots, Waiting = board.Count(e => e.State == GpuQueueEntry.Waiting) },
+            AgentMode = agentMode.StartsWith("available", StringComparison.Ordinal) ? "available"
+                : agentMode.StartsWith("disabled", StringComparison.Ordinal) ? "disabled" : "not_installed",
+            SavedTokensSession = ctx.State.SavedTokens,
+            CallsSession = ctx.State.ModelCalls,
+            SavedTokensLifetime = summary.EstimatedSavedTokens,
+            CallsLifetime = summary.Calls,
+            Workspace = ctx.Roots,
+            Version = AppInfo.Version,
+            Roles = roles,
+        };
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Вспомогательные серверы ролей: назначенная модель, порт и состояние (/health, без автозапуска; серверы опрашиваются
+    /// параллельно, не дольше 3 секунд). fast, совпадающая с активной моделью, считается не настроенной: короткие задачи
+    /// тогда идут на основной сервер.
+    /// </summary>
+    internal static async Task<IReadOnlyList<StatusRole>> RoleStatusAsync(AppConfig cfg, CancellationToken ct)
+    {
+        var active = cfg.ActiveModel();
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(TimeSpan.FromSeconds(3));
+        var tasks = ModelRoleConfig.Auxiliary.Select(async role =>
+        {
+            var model = cfg.RoleModel(role);
+            if (model is null || (role == ModelRole.Fast && string.Equals(model.Id, active?.Id, StringComparison.OrdinalIgnoreCase)))
+                return new StatusRole { Role = role.Key(), State = "not_configured" };
+            HealthState health;
+            try
+            {
+                health = await LlamaClient.ForRole(cfg, role).GetHealthAsync(cts.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                health = HealthState.Down;
+            }
+            return new StatusRole
+            {
+                Role = role.Key(),
+                State = health switch
+                {
+                    HealthState.Ready => "running",
+                    HealthState.Loading => "loading",
+                    _ => "idle",
+                },
+                Model = model.DisplayName + (string.IsNullOrWhiteSpace(model.Quant) ? "" : $" ({model.Quant})"),
+                Port = cfg.Server.AuxPort(role),
+            };
+        }).ToList();
+        return await Task.WhenAll(tasks).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Одна строка о ролях: «roles: fast — Qwen 4B (running, :8766) · embed — not configured · …»;
+    /// если ни одна роль не назначена — короткая подсказка.
+    /// </summary>
+    internal static string RolesLine(IReadOnlyList<StatusRole> roles)
+    {
+        ArgumentNullException.ThrowIfNull(roles);
+        if (roles.All(r => r.State == "not_configured"))
+            return "roles: fast/embed/rerank not configured (the main model serves everything; assign them in the tray app, Models tab)";
+        return "roles: " + string.Join(" · ", roles.Select(r => r.State == "not_configured"
+            ? $"{r.Role} — not configured"
+            : $"{r.Role} — {r.Model} ({(r.State == "idle" ? "idle, starts on the first call" : r.State)}, :{r.Port})"));
+    }
+
+    /// <summary>
+    /// Очередь GPU: занятые слоты и ждущие, затем по строке на держателя (инструмент, клиент, сколько держит).
+    /// busy — по мьютексам (истина для исключительного владения), список — с доски очереди.
+    /// </summary>
+    internal static string QueueLine(int parallel, int busy, IReadOnlyList<GpuQueueEntry> board, DateTime nowUtc)
+    {
+        var slots = Math.Clamp(parallel, 1, 16);
+        var waiting = board.Count(e => e.State == GpuQueueEntry.Waiting);
+        var sb = new StringBuilder($" · queue: {busy}/{slots} slot(s) busy");
+        if (waiting > 0) sb.Append($", {waiting} waiting");
+        sb.Append(slots == 1
+            ? " (agent runs share the single slot with other calls via llama-server's own queue)"
+            : $" (agent runs use at most {slots - 1}; 1 slot is kept for interactive calls)");
+        sb.Append('\n');
+        sb.Append(GpuQueueBoard.Describe(board, nowUtc));
+        var listed = board.Count(e => e.State == GpuQueueEntry.Holding && e.Slot >= 0);
+        if (busy > listed) sb.Append($"  {busy - listed} slot(s) held without details (e.g. an older Offload version in another IDE)\n");
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Контекст на запрос (доля слота) и, при общем KV-кэше (-kvu), весь буфер отдельно:
+    /// «context 65536 tok per request (shared KV 196608 across 3 slots)».
+    /// </summary>
+    internal static string ContextLine(ServerProps props)
+    {
+        if (props.ContextPerSlot <= 0) return "";
+        var slots = Math.Max(1, props.TotalSlots);
+        if (props.SharedContext is int shared && slots > 1)
+            return $" · context {props.ContextPerSlot} tok per request (shared KV {shared} across {slots} slots)";
+        return slots > 1
+            ? $" · context {props.ContextPerSlot} tok per request × {slots} slots"
+            : $" · context {props.ContextPerSlot} tok per request";
     }
 
     internal static string OpenCodeState(AppConfig cfg)

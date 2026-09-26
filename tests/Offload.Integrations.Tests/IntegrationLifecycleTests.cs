@@ -255,7 +255,13 @@ public class IntegrationLifecycleTests
         };
         sb.Write(path, content);
 
-        Assert.Equal(IntegrationStatus.NotRegistered, integration.GetStatus(sb.Spec()));
+        Assert.Equal(IntegrationStatus.Foreign, integration.GetStatus(sb.Spec()));
+        Assert.Equal(RepairNeed.Foreign, IntegrationRegistry.Assess(integration, sb.Spec()));
+        // Автовосстановление чужую запись не трогает никогда, только сообщает о ней.
+        var repair = await IntegrationRegistry.RepairAsync([id], sb.Spec(), _ => true, TestContext.Current.CancellationToken);
+        Assert.Empty(repair.Repaired);
+        Assert.Equal(new[] { new RepairIssue(id, RepairNeed.Foreign) }, repair.NeedsAttention);
+        Assert.Equal(content, File.ReadAllText(path));
         var u = await integration.UnregisterAsync();
         Assert.False(u.Ok);
         Assert.Contains("другую программу", u.Message);
@@ -419,13 +425,15 @@ public class IntegrationLifecycleTests
         // Короткое имя 8.3 разворачивается (если файловая система их создаёт).
         using var sb = new Sandbox();
         var exe = sb.Write(sb.P("Long Folder Name", "Offload.exe"), "");
-        var shortPath = new StringBuilder(260);
-        if (GetShortPathName(exe, shortPath, 260) > 0 && shortPath.ToString() != exe)
-            Assert.True(CommandPath.Same(shortPath.ToString(), exe));
+        var shortPathBuf = new char[260];
+        var shortLen = GetShortPathName(exe, shortPathBuf, (uint)shortPathBuf.Length);
+        var shortPath = shortLen > 0 ? new string(shortPathBuf, 0, (int)shortLen) : "";
+        if (shortLen > 0 && shortPath != exe)
+            Assert.True(CommandPath.Same(shortPath, exe));
     }
 
     [System.Runtime.InteropServices.DllImport("kernel32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
-    private static extern uint GetShortPathName(string longPath, StringBuilder shortPath, uint size);
+    private static extern uint GetShortPathName(string longPath, char[] shortPath, uint size);
 
     [Fact]
     public void ForCurrentExecutable_Shape()

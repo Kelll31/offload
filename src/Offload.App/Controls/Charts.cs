@@ -50,6 +50,8 @@ internal sealed class StatTile : PaintedControl
         Dock = DockStyle.Fill;
         Margin = new Padding(0, 0, 12, 12);
         BackColor = Color.Transparent;
+        AccessibleRole = AccessibleRole.StaticText;
+        UpdateAccessibleText();
     }
 
     public void Set(string value, string detail, Color? accent = null)
@@ -58,7 +60,16 @@ internal sealed class StatTile : PaintedControl
         _value = value;
         _detail = detail;
         _accent = accent;
+        UpdateAccessibleText();
         Invalidate();
+    }
+
+    /// <summary>Текст для экранного диктора: «подпись: значение», пояснение — в описании.</summary>
+    private void UpdateAccessibleText()
+    {
+        AccessibleName = $"{_caption}: {_value}";
+        AccessibleDescription = _detail;
+        if (IsHandleCreated) AccessibilityNotifyClients(AccessibleEvents.NameChange, -1);
     }
 
     /// <summary>Доля для полосы внизу (null — без полосы).</summary>
@@ -147,6 +158,7 @@ internal sealed class BarChart : PaintedControl
         Height = 190;
         Dock = DockStyle.Fill;
         BackColor = Color.Transparent;
+        AccessibleRole = AccessibleRole.Chart;
     }
 
     public string EmptyText { get; set; } = L.T("Нет данных");
@@ -156,8 +168,16 @@ internal sealed class BarChart : PaintedControl
         _bars = bars;
         if (format is not null) _format = format;
         _hover = -1;
+        AccessibleDescription = bars.Count == 0 || bars.All(b => b.Value <= 0)
+            ? EmptyText
+            : L.F("Столбцов: {0}, наибольшее значение: {1}. Подробности по каждому — в элементах диаграммы.", bars.Count, _format(bars.Max(b => b.Value)));
+        if (IsHandleCreated) AccessibilityNotifyClients(AccessibleEvents.Reorder, -1);
         Invalidate();
     }
+
+    /// <summary>Столбцы доступны экранному диктору как элементы диаграммы (текст подсказки).</summary>
+    protected override AccessibleObject CreateAccessibilityInstance() =>
+        new ItemsAccessibleObject(this, () => _bars.Select(b => b.Tooltip).ToList(), AccessibleRole.ListItem);
 
     private Rectangle Plot => new(Px(52), Px(26), Math.Max(1, Width - Px(60)), Math.Max(1, Height - Px(26) - Px(26)));
 
@@ -261,13 +281,14 @@ internal sealed class BarList : PaintedControl
 {
     public sealed record Row(string Label, double Value, string ValueText);
 
-    private IReadOnlyList<Row> _rows = [];
+    private List<Row> _rows = [];
 
     public BarList()
     {
         Height = 200;
         Dock = DockStyle.Fill;
         BackColor = Color.Transparent;
+        AccessibleRole = AccessibleRole.List;
     }
 
     public string EmptyText { get; set; } = L.T("Нет данных");
@@ -275,8 +296,14 @@ internal sealed class BarList : PaintedControl
     public void SetData(IEnumerable<Row> rows)
     {
         _rows = rows.OrderByDescending(r => r.Value).ThenBy(r => r.Label).ToList();
+        AccessibleDescription = _rows.Count == 0 ? EmptyText : null;
+        if (IsHandleCreated) AccessibilityNotifyClients(AccessibleEvents.Reorder, -1);
         Invalidate();
     }
+
+    /// <summary>Строки доступны экранному диктору как элементы списка «подпись: значение» (все, без свёртки в «Прочие»).</summary>
+    protected override AccessibleObject CreateAccessibilityInstance() =>
+        new ItemsAccessibleObject(this, () => _rows.Select(r => $"{r.Label}: {r.ValueText}").ToList(), AccessibleRole.ListItem);
 
     protected override void OnPaint(PaintEventArgs e)
     {
@@ -315,5 +342,32 @@ internal sealed class BarList : PaintedControl
             Draw.Text(g, row.ValueText, Theme.Semibold(9f), new Rectangle(Width - valueW, y, valueW, rowH), Theme.TextPrimary,
                 TextFormatFlags.Right | TextFormatFlags.VerticalCenter);
         }
+    }
+}
+
+/// <summary>
+/// Доступность рисованного элемента: сам элемент (роль и имя задаёт владелец) и дочерние элементы с текстом —
+/// столбцы диаграммы или строки списка, которые иначе видны только глазами.
+/// </summary>
+internal sealed class ItemsAccessibleObject(Control owner, Func<IReadOnlyList<string>> items, AccessibleRole itemRole)
+    : Control.ControlAccessibleObject(owner)
+{
+    public override int GetChildCount() => items().Count;
+
+    public override AccessibleObject? GetChild(int index)
+    {
+        var list = items();
+        return index >= 0 && index < list.Count ? new Item(this, list[index], itemRole) : null;
+    }
+
+    private sealed class Item(AccessibleObject parent, string name, AccessibleRole role) : AccessibleObject
+    {
+        public override AccessibleObject Parent => parent;
+
+        public override string Name => name;
+
+        public override AccessibleRole Role => role;
+
+        public override AccessibleStates State => AccessibleStates.ReadOnly;
     }
 }

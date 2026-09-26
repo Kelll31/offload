@@ -9,6 +9,7 @@ using Offload.Core.Config;
 using Offload.Core.Ipc;
 using Offload.Core.Localization;
 using Offload.Core.Logging;
+using Offload.Core.Usage;
 using Offload.Integrations;
 using Offload.Llama;
 using Offload.Models;
@@ -29,7 +30,9 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
     private readonly TrayIconRenderer _renderer;
     private readonly ContextMenuStrip _menu;
     private readonly IpcServer _ipc;
+    private readonly BackgroundJobHost _jobs;
     private readonly System.Windows.Forms.Timer _configDebounce;
+    private readonly IntegrationWatcher _integrationWatcher = new();
 
     private readonly ToolStripMenuItem _header;
     private readonly ToolStripMenuItem _open;
@@ -38,6 +41,7 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
     private readonly ToolStripMenuItem _restart;
     private readonly ToolStripMenuItem _models;
     private readonly ToolStripMenuItem _updateLlama;
+    private readonly ToolStripMenuItem _updateApp;
     private readonly ToolStripSeparator _updateSeparator;
     private readonly ToolStripMenuItem _autostart;
 
@@ -49,6 +53,8 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
     private SetupWizardForm? _wizard;
     private bool _exiting;
     private bool _disposed;
+    // Что открыть по щелчку на последнем показанном уведомлении (null — просто окно).
+    private Action? _balloonClick;
 
     public TrayApplicationContext(StartupView view)
     {
@@ -60,7 +66,7 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
 
         Server = new ServerController(_ui);
         Server.StateChanged += (_, _) => OnServerStateChanged();
-        Server.Notification += (title, text, icon) => Notify(title, text, icon);
+        Server.Notification += (title, text, icon) => Notify(title, text, icon, tab: ServerNotificationTab(icon));
 
         _renderer = new TrayIconRenderer();
         _menu = new ContextMenuStrip { Renderer = MenuColors.Renderer(), ShowImageMargin = true };
@@ -74,6 +80,7 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
         _models = Localized(new ToolStripMenuItem("Модель")); // l10n-key
         _models.DropDownItems.Add(new ToolStripMenuItem("…"));
         _updateLlama = Item("Обновить llama.cpp", async (_, _) => await UpdateLlamaAsync()); // l10n-key
+        _updateApp = Item("Обновить Offload", async (_, _) => await UpdateAppAsync()); // l10n-key
         _updateSeparator = new ToolStripSeparator();
 
         var openCode = new ToolStripMenuItem("OpenCode");
@@ -92,6 +99,7 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
             _restart,
             _models,
             _updateSeparator,
+            _updateApp,
             _updateLlama,
             new ToolStripSeparator(),
             Item("Подключение к IDE…", (_, _) => ShowMainWindow(Tabs.Integrations)), // l10n-key
@@ -106,7 +114,7 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
             Item("О программе", (_, _) => ShowMainWindow(Tabs.About)), // l10n-key
             Item("Выход", async (_, _) => await ExitAsync()), // l10n-key
         });
-        _updateLlama.Visible = _updateSeparator.Visible = false;
+        _updateLlama.Visible = _updateApp.Visible = _updateSeparator.Visible = false;
         _menu.Opening += (_, _) => RefreshMenu();
 
         _tray = new NotifyIcon
@@ -121,9 +129,11 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
             if (ConfigStore.Current.SetupCompleted || _wizard is null) ShowMainWindow();
             else ShowSetupWizard();
         };
-        _tray.BalloonTipClicked += (_, _) => ShowMainWindow();
+        // Щелчок по уведомлению открывает то, к чему оно относится (журнал для ошибок сервера, «Сервер» для обновления…).
+        _tray.BalloonTipClicked += (_, _) => (_balloonClick ?? (() => ShowMainWindow()))();
         _tray.Visible = true;
         SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
+        SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
 
         _configDebounce = new System.Windows.Forms.Timer { Interval = 300 };
         _configDebounce.Tick += (_, _) =>
@@ -132,8 +142,10 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
             ConfigChanged();
         };
         ConfigStore.Saved += OnConfigSaved;
+        ConfigStore.ExternallyChanged += OnConfigSaved;
+        ConfigStore.InvalidFile += OnConfigInvalid;
 
-        _ipc = new IpcServer(new IpcRequestHandler(this).HandleAsync);
+        _ipc = new IpcServer(new IpcRequestHandler(this, _jobs = new BackgroundJobHost((title, text, icon) => Notify(title, text, icon, tab: Tabs.Log))).HandleAsync);
         try
         {
             _ipc.Start();
@@ -153,6 +165,14 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
     public HardwareCache Hardware { get; } = new();
 
     public LlamaUpdateInfo? PendingLlamaUpdate { get; set; }
+
+    public AppUpdateInfo? PendingAppUpdate { get; set; }
+
+    public bool IsExiting => _exiting;
+
+    public event EventHandler<UsageRecord>? UsageRecorded;
+
+    public void ReportUsageRecorded(UsageRecord record) => PostToUi(() => UsageRecorded?.Invoke(this, record));
 
     /// <summary>Пункты меню с исходным (русским) текстом — для перевода на лету при смене языка.</summary>
     private readonly List<(ToolStripItem Item, string Ru)> _menuTexts = [];
@@ -183,12 +203,15 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
 
     private void OnStarted(StartupView view)
     {
+        // Остатки прошлого обновления — до того, как пользователь успеет начать новое.
+        AppUpdater.CleanupLeftovers(AppPaths.ExecutablePath);
         try
         {
             switch (view)
             {
                 case StartupView.MainWindow:
-                    ShowMainWindow(Tabs.Status);
+                    // Без явного раздела: окно откроется на разделе, который был открыт в прошлый раз.
+                    ShowMainWindow();
                     break;
                 case StartupView.SetupWizard:
                     ShowSetupWizard();
@@ -196,7 +219,8 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
                 default:
                     Log.Info("app", "Запуск в фоне (автозапуск)");
                     if (!ConfigStore.Current.SetupCompleted)
-                        Notify(L.T("Настройка Offload не завершена"), L.T("Щёлкните значок Offload правой кнопкой и выберите «Мастер настройки…»."), ToolTipIcon.Warning);
+                        ShowBalloon(L.T("Настройка Offload не завершена"), L.T("Щёлкните значок Offload правой кнопкой и выберите «Мастер настройки…»."),
+                            ToolTipIcon.Warning, force: false, ShowSetupWizard);
                     break;
             }
         }
@@ -212,6 +236,7 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
     private async Task BackgroundStartupAsync()
     {
         var cfg = ConfigStore.Current;
+        _jobs.RecoverInterrupted();
 
         try
         {
@@ -232,7 +257,10 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
         var foreign = InstallInfo.Foreign;
         if (foreign is not null)
             Log.Info("install", $"Это не установленная копия (установлена: {foreign.ExePath}) — пути в IDE и автозапуск не обновляются");
-        if (cfg.Integrations.Count > 0 && foreign is null)
+        var ownsSetup = foreign is null && !DevMode.Active;
+        if (DevMode.Active)
+            Log.Info("install", $"Режим разработчика ({DevMode.EnvVar}) — пути в IDE и автозапуск не обновляются");
+        if (cfg.Integrations.Count > 0 && ownsSetup)
         {
             try
             {
@@ -240,7 +268,8 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
                 if (updated.Count > 0)
                 {
                     Log.Info("integrations", "Обновлён путь к Offload в: " + string.Join(", ", updated));
-                    Notify(L.T("Подключения к IDE обновлены"), L.F("Путь к Offload обновлён в: {0}. Перезапустите эти IDE.", string.Join(", ", updated)));
+                    Notify(L.T("Подключения к IDE обновлены"), L.F("Путь к Offload обновлён в: {0}. Перезапустите эти IDE.", string.Join(", ", updated)),
+                        tab: Tabs.Integrations);
                 }
             }
             catch (Exception ex)
@@ -249,7 +278,8 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
             }
         }
 
-        if (foreign is null) SyncAutostart(cfg);
+        if (ownsSetup) SyncAutostart(cfg);
+        if (ownsSetup) _integrationWatcher.Start(this);
 
         PostToUi(() => Server.RefreshConfigured());
         cfg = ConfigStore.Reload();
@@ -258,7 +288,7 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
             try
             {
                 if (!await Server.StartAsync(manual: false).ConfigureAwait(false) && Server.State == ServerState.Failed)
-                    Notify(L.T("Сервер llama.cpp не запустился"), Server.LastError ?? L.T("Подробности — в журнале."), ToolTipIcon.Error);
+                    Notify(L.T("Сервер llama.cpp не запустился"), Server.LastError ?? L.T("Подробности — в журнале."), ToolTipIcon.Error, tab: Tabs.Log);
             }
             catch (Exception ex)
             {
@@ -279,7 +309,8 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
                     {
                         PendingLlamaUpdate = info;
                         Notify(L.T("Доступна новая версия llama.cpp"),
-                            L.F("Версия {0} (установлена {1}). Обновить можно из меню значка или на вкладке «Сервер».", info.LatestTag, info.InstalledTag ?? "—"));
+                            L.F("Версия {0} (установлена {1}). Обновить можно из меню значка или на вкладке «Сервер».", info.LatestTag, info.InstalledTag ?? "—"),
+                            tab: Tabs.Server);
                     });
                 }
             }
@@ -287,6 +318,45 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
             {
                 Log.Debug("llama", $"Проверка обновлений llama.cpp: {ex.Message}");
             }
+        }
+
+        await CheckAppUpdateAsync(cfg).ConfigureAwait(false);
+
+        // Удалённый каталог моделей: подпись Ed25519, не чаще раза в сутки; без сети остаётся прежний каталог.
+        try
+        {
+            if ((await RemoteCatalog.RefreshIfDueAsync().ConfigureAwait(false)).Status == CatalogUpdateStatus.Updated)
+                PostToUi(() => _main?.NotifyConfigChanged());
+        }
+        catch (Exception ex)
+        {
+            Log.Debug("catalog", $"Проверка удалённого каталога: {ex.Message}");
+        }
+    }
+
+    /// <summary>Проверка обновления Offload при запуске (не чаще раза в 12 ч; в режиме разработчика — никогда).</summary>
+    private async Task CheckAppUpdateAsync(AppConfig cfg)
+    {
+        if (!cfg.Ui.CheckAppUpdates) return;
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(1));
+            var info = await AppUpdater.CheckAsync(force: false, cts.Token).ConfigureAwait(false);
+            if (info is null) return;
+            PostToUi(() =>
+            {
+                PendingAppUpdate = info;
+                _main?.NotifyConfigChanged();
+                ShowBalloon(L.F("Доступна новая версия Offload {0}", info.Version),
+                    info.CanInstall
+                        ? L.T("Щёлкните, чтобы обновить. Обновить можно и из меню значка или в разделе «О программе».")
+                        : L.T("Щёлкните, чтобы открыть страницу релиза: эту установку нужно обновить установщиком."),
+                    ToolTipIcon.Info, force: false, () => _ = UpdateAppAsync());
+            });
+        }
+        catch (Exception ex)
+        {
+            Log.Debug("update", $"Проверка обновлений Offload: {ex.Message}");
         }
     }
 
@@ -392,6 +462,7 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
         _main = null;
         if (!visible) return;
         _main = CreateMainForm();
+        _main.SkipSavedPlacement = true;
         _main.StartPosition = FormStartPosition.Manual;
         _main.Bounds = bounds;
         _main.ShowAndActivate();
@@ -421,11 +492,16 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
 
     private void OnUserPreferenceChanged(object? sender, UserPreferenceChangedEventArgs e)
     {
-        if (e.Category is not (UserPreferenceCategory.General or UserPreferenceCategory.Color)) return;
+        if (e.Category is not (UserPreferenceCategory.General or UserPreferenceCategory.Color or UserPreferenceCategory.Accessibility)) return;
         if (ConfigStore.Current.Ui.Theme is Theme.ModeLight or Theme.ModeDark) return;
-        if (Theme.SystemPrefersDark() == Theme.IsDark) return;
-        PostToUi(() => RefreshTheme(userInitiated: false));
+        // Включение/выключение высокой контрастности Windows меняет схему (тема «как в Windows» → «Высокий контраст»).
+        var contrastChanged = Theme.SystemHighContrast() != Theme.HighContrastApplied;
+        if (!contrastChanged && Theme.SystemPrefersDark() == Theme.IsDark) return;
+        PostToUi(() => RefreshTheme(userInitiated: false, force: contrastChanged));
     }
+
+    /// <summary>Смена масштаба или мониторов: значок трея перерисовывается под новый размер.</summary>
+    private void OnDisplaySettingsChanged(object? sender, EventArgs e) => PostToUi(UpdateTray);
 
     public void ShowMainWindow(string? tab = null)
     {
@@ -468,7 +544,15 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
         }
     }
 
-    public void Notify(string title, string text, ToolTipIcon icon = ToolTipIcon.Info, bool force = false)
+    public void Notify(string title, string text, ToolTipIcon icon = ToolTipIcon.Info, bool force = false, string? tab = null) =>
+        ShowBalloon(title, text, icon, force, () => ShowMainWindow(tab));
+
+    /// <summary>Раздел для уведомлений сервера: сбои и предупреждения — «Журнал», остальное — «Состояние».</summary>
+    internal static string ServerNotificationTab(ToolTipIcon icon) =>
+        icon is ToolTipIcon.Error or ToolTipIcon.Warning ? Tabs.Log : Tabs.Status;
+
+    /// <summary>Показать уведомление и запомнить, что сделать по щелчку на нём.</summary>
+    private void ShowBalloon(string title, string text, ToolTipIcon icon, bool force, Action onClick)
     {
         PostToUi(() =>
         {
@@ -477,6 +561,7 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
             try
             {
                 _tray.ShowBalloonTip(6000, Texts.Truncate(title, 63), Texts.Truncate(string.IsNullOrWhiteSpace(text) ? title : text, 250), icon);
+                _balloonClick = onClick;
             }
             catch (Exception ex)
             {
@@ -504,6 +589,7 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
     public void ConfigChanged()
     {
         if (_disposed) return;
+        Log.ApplyLevel(ConfigStore.Current.Ui.VerboseLog);
         Server.RefreshConfigured();
         UpdateTray();
         _main?.NotifyConfigChanged();
@@ -550,6 +636,7 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
         if (_exiting) return;
         var busy = _main?.BusyDescription;
         if (_wizard is { IsDisposed: false, IsInstalling: true }) busy = busy is null ? L.T("установка в мастере настройки") : busy + ", " + L.T("установка в мастере настройки");
+        busy = BackgroundJobHost.AddBusy(busy);
         if (busy is not null &&
             !Ui.Confirm(ActiveOwner(), L.F("Сейчас выполняется: {0}.{1}{1}Прервать и выйти из Offload?", busy, Environment.NewLine), warning: true))
             return;
@@ -601,6 +688,7 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
         var model = ConfigStore.Current.ActiveModel();
         var text = state switch
         {
+            ServerState.Running when Server.IsSleeping => L.F("{0} — модель выгружена после простоя: {1}", AppInfo.DisplayName, Texts.ModelName(model)),
             ServerState.Running => L.F("{0} — работает: {1}", AppInfo.DisplayName, Texts.ModelName(model)),
             ServerState.Starting => L.F("{0} — запускается: {1}", AppInfo.DisplayName, Texts.ModelName(model)),
             ServerState.Stopping => L.F("{0} — останавливается", AppInfo.DisplayName),
@@ -624,7 +712,9 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
         var state = Server.State;
         var model = cfg.ActiveModel();
 
-        _header.Text = state is ServerState.Running or ServerState.Starting
+        _header.Text = state == ServerState.Running && Server.IsSleeping
+            ? L.F("{0} · {1} · модель выгружена", Texts.State(state), Texts.ModelName(model))
+            : state is ServerState.Running or ServerState.Starting
             ? $"{Texts.State(state)} · {Texts.ModelName(model)}"
             : model is null ? Texts.State(state) : $"{Texts.State(state)} · {Texts.ModelName(model)}";
         var old = _header.Image;
@@ -638,13 +728,17 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
 
         // Модели.
         _models.DropDownItems.Clear();
-        if (cfg.Models.Installed.Count == 0)
+        // Только чат-модели: эмбеддинги и реранкеры активными не бывают — их назначают ролям на странице «Модели».
+        var chat = cfg.Models.Installed.Where(m => m.Kind == ModelKind.Chat).ToList();
+        if (chat.Count == 0)
         {
-            _models.DropDownItems.Add(new ToolStripMenuItem(L.T("Нет установленных моделей")) { Enabled = false });
+            _models.DropDownItems.Add(new ToolStripMenuItem(cfg.Models.Installed.Count == 0
+                ? L.T("Нет установленных моделей")
+                : L.T("Нет установленных чат-моделей")) { Enabled = false });
         }
         else
         {
-            foreach (var m in cfg.Models.Installed.OrderBy(Texts.ModelName, StringComparer.CurrentCultureIgnoreCase))
+            foreach (var m in chat.OrderBy(Texts.ModelName, StringComparer.CurrentCultureIgnoreCase))
             {
                 var id = m.Id;
                 var item = new ToolStripMenuItem(Texts.ModelName(m) + (string.IsNullOrWhiteSpace(m.Quant) ? "" : $"  ({m.Quant})"))
@@ -662,8 +756,12 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
         _models.DropDownItems.Add(download);
 
         var update = PendingLlamaUpdate is { UpdateAvailable: true };
-        _updateLlama.Visible = _updateSeparator.Visible = update;
+        var appUpdate = PendingAppUpdate is not null;
+        _updateLlama.Visible = update;
+        _updateApp.Visible = appUpdate;
+        _updateSeparator.Visible = update || appUpdate;
         if (update) _updateLlama.Text = L.F("Обновить llama.cpp до {0}", PendingLlamaUpdate!.LatestTag);
+        if (appUpdate) _updateApp.Text = L.F("Обновить Offload до {0}", PendingAppUpdate!.Version);
 
         _autostart.Checked = Autostart.IsEnabled;
     }
@@ -698,6 +796,13 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
     {
         ShowMainWindow(Tabs.Server);
         if (_main is not null) await _main.RunLlamaUpdateAsync();
+    }
+
+    /// <summary>Обновление Offload: раздел «О программе» показывает прогресс и предупреждения.</summary>
+    private async Task UpdateAppAsync()
+    {
+        ShowMainWindow(Tabs.About);
+        if (_main is not null) await _main.RunAppUpdateAsync();
     }
 
     private async Task OpenWebChatAsync()
@@ -735,15 +840,28 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
         });
     }
 
+    private void OnConfigInvalid(string error)
+    {
+        // Вызывается из потока, обратившегося к настройкам; прежние настройки продолжают действовать.
+        Notify(L.T("Ошибка в config.json"),
+            L.F("Файл настроек изменён вручную, но содержит ошибку: {0}. Пока действуют прежние настройки — исправьте файл.", error),
+            ToolTipIcon.Warning, force: true, tab: Tabs.Settings);
+    }
+
     protected override void Dispose(bool disposing)
     {
         if (!_disposed && disposing)
         {
             _disposed = true;
             ConfigStore.Saved -= OnConfigSaved;
+            ConfigStore.ExternallyChanged -= OnConfigSaved;
+            ConfigStore.InvalidFile -= OnConfigInvalid;
             SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
+            SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
             try { _ipc.Dispose(); } catch (Exception ex) { Log.Debug("ipc", $"Остановка IPC: {ex.Message}"); }
+            _jobs.Dispose();
             _configDebounce.Dispose();
+            _integrationWatcher.Dispose();
             try { _main?.Dispose(); } catch { }
             try { _wizard?.Dispose(); } catch { }
             _tray.Visible = false;

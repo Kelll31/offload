@@ -3,4 +3,8 @@
     <ProjectReference Include="..\..\src\Offload.OpenCode\Offload.OpenCode.csproj" />
     <ProjectReference Include="..\..\src\Offload.Core\Offload.Core.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- Записанный JSON-вывод «opencode run» для контрактных тестов RunEvents. -->
+    <None Include="Fixtures\*.jsonl" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

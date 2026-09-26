@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using static Offload.Mcp.Infrastructure.TextUtil;
 
 namespace Offload.Mcp.Infrastructure;
 
@@ -237,5 +238,4 @@ internal static partial class UnifiedPatch
     [GeneratedRegex(@"\s+", RegexOptions.CultureInvariant)]
     private static partial Regex WhiteSpace();
 
-    private static string Short(string s, int max) => s.Length <= max ? s : s[..max] + "…";
 }

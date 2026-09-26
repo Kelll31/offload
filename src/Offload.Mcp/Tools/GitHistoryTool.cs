@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.RegularExpressions;
 using Offload.Mcp.Infrastructure;
+using static Offload.Mcp.Infrastructure.TextUtil;
 
 namespace Offload.Mcp.Tools;
 
@@ -60,6 +61,7 @@ internal static partial class GitHistoryTool
                 var byCode = await Git.RunAsync(root, ["log", "-S" + q, "-n", maxCommits.ToString(System.Globalization.CultureInfo.InvariantCulture), "--date=short", Format, "--name-only",
                         "--", ".", .. PathGuard.SecretPathspecExcludes(ctx.Cfg.Mcp.SecretFilePatterns)], ctx.Ct,
                     timeout: TimeSpan.FromMinutes(2)).ConfigureAwait(false);
+                if (byCode.Success) ctx.Stats.AddScanned(byCode.StdOut.Length);
                 var sb = new StringBuilder();
                 sb.Append($"commits mentioning \"{q}\" in the message:\n").Append(byMessage.Trim().Length == 0 ? "  none\n" : Indent(byMessage));
                 sb.Append($"commits that added/removed \"{q}\" in code:\n").Append(!byCode.Success || byCode.StdOut.Trim().Length == 0 ? "  none\n" : Indent(CompactNameOnly(byCode.StdOut)));
@@ -75,7 +77,7 @@ internal static partial class GitHistoryTool
                 var lang = string.IsNullOrWhiteSpace(language) ? "en" : language.Trim();
                 var system = model.SystemPrompt("Write concise user-facing release notes from the commit list: sections New, Improved, Fixed (omit empty ones), " +
                                                 $"one bullet per user-visible change, merge duplicates, skip internal chores/refactors/tests/CI. Language: {lang}. Markdown, no preamble.");
-                await using var slot = await GpuQueue.AcquireAsync(ctx.Cfg.Server.Parallel, ctx.Progress, ctx.Ct).ConfigureAwait(false);
+                await using var slot = await GpuQueue.AcquireAsync(ctx, ctx.Ct).ConfigureAwait(false);
                 var reply = await model.ChatAsync(system, "COMMITS:\n" + Truncate(log, model.MaterialBudget(900, system) * 3), 900, "release notes", ctx.Ct).ConfigureAwait(false);
                 ctx.Stats.TokensRead = Tokens.Estimate(log);
                 return $"release notes for {r} (draft by the local model):\n{reply.Text.Trim()}\n\nraw changes:\n{grouped}";
@@ -89,6 +91,7 @@ internal static partial class GitHistoryTool
     {
         var r = await Git.RunAsync(ctx.Roots[0], args, ctx.Ct, timeout: TimeSpan.FromMinutes(2)).ConfigureAwait(false);
         if (!r.Success) throw new ToolException("git " + args[0] + " failed: " + GitSandbox.FirstLines(r.StdErr, 3));
+        ctx.Stats.AddScanned(r.StdOut.Length);
         return r.StdOut;
     }
 
@@ -106,6 +109,7 @@ internal static partial class GitHistoryTool
         var defs = SymbolsTool.Definitions(index.Files, name);
         if (defs.Count == 0) throw new ToolException($"No definition of '{name}' found{(scope is null ? "" : " in " + path)}.");
         var (f, s) = defs[0];
+        ctx.Stats.AddScanned([f]);
         return (Path.GetRelativePath(ctx.Roots[0], f.FullPath).Replace('\\', '/'), s.Line, Math.Max(s.Line, s.EndLine), s.QualifiedName);
     }
 
@@ -261,7 +265,7 @@ internal static partial class GitHistoryTool
                                         "Cite commit hashes. Be brief and concrete; say when the history does not answer the question.");
         var budget = model.MaterialBudget(700, system, question);
         var material = Truncate(summary + "\n" + detail, budget * 3);
-        await using var slot = await GpuQueue.AcquireAsync(ctx.Cfg.Server.Parallel, ctx.Progress, ctx.Ct).ConfigureAwait(false);
+        await using var slot = await GpuQueue.AcquireAsync(ctx, ctx.Ct).ConfigureAwait(false);
         var reply = await model.ChatAsync(system, "GIT HISTORY:\n" + material + "\nQUESTION:\n" + question.Trim(), 700, "history", ctx.Ct).ConfigureAwait(false);
         ctx.Stats.TokensRead = Tokens.Estimate(detail);
         return summary.TrimEnd() + "\n\nanswer (local model):\n" + reply.Text.Trim();
@@ -275,5 +279,4 @@ internal static partial class GitHistoryTool
 
     private static string Truncate(string s, int max) => s.Length <= max ? s : s[..Math.Max(0, max)] + "\n…[truncated]";
 
-    private static string Short(string s, int max) => s.Length <= max ? s : s[..max] + "…";
 }

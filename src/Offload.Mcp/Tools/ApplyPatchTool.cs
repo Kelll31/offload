@@ -17,6 +17,8 @@ internal static class ApplyPatchTool
     {
         var text = ToolHelpers.RequireText(patch, "patch", MaxPatchChars);
         var verify = string.IsNullOrWhiteSpace(verifyCommand) ? null : VerifyCommand.Validate(verifyCommand, ctx.Cfg.Mcp.VerifyCommandAllowlist);
+        // «npx X» без локального пакета — отказ до записи, а не после.
+        if (verify is not null) VerifyCommand.ResolveNpx(verify, ctx.Roots[0]);
         var files = UnifiedPatch.Parse(text);
         if (files.Count == 0) throw new ToolException("No file changes found: pass a unified diff with ---/+++ headers and @@ hunks (git diff format).");
         if (files.Count > MaxFiles) throw new ToolException($"The patch touches {files.Count} files (max {MaxFiles}); split it.");

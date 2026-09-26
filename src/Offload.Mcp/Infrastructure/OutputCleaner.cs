@@ -100,8 +100,8 @@ internal static partial class OutputCleaner
             var line = m.Value.Trim();
             if (!original.Contains(line, StringComparison.OrdinalIgnoreCase)) return true;
         }
-        var bare = BareEllipsisComment().Matches(newText).Count;
-        var bareOrig = BareEllipsisComment().Matches(original).Count;
+        var bare = BareEllipsisComment().Count(newText);
+        var bareOrig = BareEllipsisComment().Count(original);
         return bare > bareOrig;
     }
 }

@@ -5,6 +5,7 @@ using Offload.Core;
 using Offload.Core.Config;
 using Offload.Core.Logging;
 using Offload.Core.Util;
+using Offload.Integrations;
 
 namespace Offload.OpenCode;
 
@@ -29,11 +30,6 @@ public static class OpenCodeConfigWriter
 
     /// <summary>Метка процессов, запущенных из OpenCode под Offload (защита от рекурсивного local_agent).</summary>
     internal const string NestedEnvVar = "OFFLOAD_OPENCODE";
-
-    /// <summary>Переопределение папки глобального конфига OpenCode (тесты).</summary>
-    internal const string GlobalDirEnvVar = "OFFLOAD_OPENCODE_GLOBAL_DIR";
-
-    internal static string? GlobalConfigDirOverride { get; set; }
 
     internal const int DefaultContext = 32768;
     internal const int EditAgentSteps = 40;
@@ -61,9 +57,11 @@ public static class OpenCodeConfigWriter
 
     internal static string CacheHome => Path.Combine(AppPaths.OpenCodeDir, "cache");
 
+    private static readonly string[] IsolatedDirNames = ["config", "cache", "data", "state", "data-tui", "state-tui"];
+
     /// <summary>Изолированные папки XDG (config/cache общие; data/state у TUI свои — параллельные экземпляры на одной базе зависают).</summary>
     internal static IEnumerable<string> IsolatedDirs =>
-        new[] { "config", "cache", "data", "state", "data-tui", "state-tui" }.Select(n => Path.Combine(AppPaths.OpenCodeDir, n));
+        IsolatedDirNames.Select(n => Path.Combine(AppPaths.OpenCodeDir, n));
 
     /// <summary>Идентификатор модели для --model: «offload/&lt;alias&gt;».</summary>
     public static string ModelRef(AppConfig cfg)
@@ -94,7 +92,7 @@ public static class OpenCodeConfigWriter
     public static string WriteManagedConfig(AppConfig cfg) => WriteManagedConfig(cfg, null);
 
     /// <param name="contextOverride">Фактический контекст слота, полученный от работающего llama-server (/props).</param>
-    internal static string WriteManagedConfig(AppConfig cfg, int? contextOverride)
+    public static string WriteManagedConfig(AppConfig cfg, int? contextOverride)
     {
         ArgumentNullException.ThrowIfNull(cfg);
         var path = AppPaths.OpenCodeConfigFile;
@@ -381,137 +379,36 @@ public static class OpenCodeConfigWriter
         return existing.Contains("127.0.0.1", StringComparison.Ordinal) ? existing : local + "," + existing;
     }
 
-    // ---- Глобальный конфиг пользователя (%USERPROFILE%\.config\opencode) ----
+    // ---- Глобальный конфиг пользователя (~/.config/opencode) ----
 
-    internal static string GlobalConfigDir()
-    {
-        if (!string.IsNullOrWhiteSpace(GlobalConfigDirOverride)) return Path.GetFullPath(GlobalConfigDirOverride);
-        var env = System.Environment.GetEnvironmentVariable(GlobalDirEnvVar);
-        if (!string.IsNullOrWhiteSpace(env)) return Path.GetFullPath(env);
-        // OpenCode (xdg-basedir) учитывает XDG_CONFIG_HOME и на Windows.
-        var xdg = System.Environment.GetEnvironmentVariable("XDG_CONFIG_HOME");
-        var root = !string.IsNullOrWhiteSpace(xdg)
-            ? xdg
-            : Path.Combine(System.Environment.GetFolderPath(System.Environment.SpecialFolder.UserProfile), ".config");
-        return Path.Combine(root, "opencode");
-    }
-
-    /// <summary>OpenCode сливает config.json → opencode.json → opencode.jsonc (последний главнее).</summary>
-    private static readonly string[] GlobalFileNames = ["config.json", "opencode.json", "opencode.jsonc"];
-
-    /// <summary>Добавить провайдера Offload в глобальный конфиг OpenCode пользователя (с резервной копией).</summary>
-    public static void RegisterGlobal(AppConfig cfg)
+    /// <summary>
+    /// Добавить провайдера Offload в глобальный конфиг собственного OpenCode пользователя. Правка точечная
+    /// (<see cref="OpenCodeGlobalConfig"/>: комментарии и чужие ключи сохраняются, резервная копия, атомарная запись,
+    /// путь — от корней IntegrationEnvironment). Агенты и модель по умолчанию пользователя не трогаются.
+    /// <para>
+    /// Ключ API записывается значением, а не ссылкой «{env:OFFLOAD_API_KEY}», как в изолированном конфиге: там
+    /// переменную задаёт сам Offload при запуске opencode (<see cref="BuildEnvironment"/>), а собственный OpenCode
+    /// пользователь запускает из своей консоли или IDE, где этой переменной нет — провайдер получил бы пустой ключ
+    /// и llama-server отвечал бы 401. Ключ защищает только локальный сервер на 127.0.0.1 и уже хранится открытым
+    /// текстом в config.json Offload в том же профиле.
+    /// </para>
+    /// </summary>
+    /// <exception cref="InvalidOperationException">Файл не разобран или не записан (текст — для пользователя).</exception>
+    /// <param name="cfg">Настройки.</param>
+    /// <param name="contextOverride">Фактический контекст слота запущенного сервера (режим «Авто» может его уменьшить).</param>
+    public static void RegisterGlobal(AppConfig cfg, int? contextOverride = null)
     {
         ArgumentNullException.ThrowIfNull(cfg);
-        var dir = GlobalConfigDir();
-        var jsonc = Path.Combine(dir, "opencode.jsonc");
-        var path = File.Exists(jsonc) ? jsonc : Path.Combine(dir, "opencode.json");
-
-        var root = LoadObject(path) ?? new JsonObject();
-        if (!root.ContainsKey("$schema")) root.Insert(0, "$schema", SchemaUrl);
-
-        var providerNode = root["provider"];
-        JsonObject providers;
-        if (providerNode is JsonObject existing)
-        {
-            providers = existing;
-        }
-        else if (providerNode is null)
-        {
-            providers = new JsonObject();
-            root["provider"] = providers;
-        }
-        else
-        {
-            throw new InvalidOperationException(L.F("В {0} поле «provider» имеет неожиданный вид — исправьте файл вручную.", path));
-        }
-        // В профиле пользователя переменной OFFLOAD_API_KEY нет — ключ записывается как есть.
-        providers[ProviderId] = BuildProvider(cfg, EffectiveContext(cfg), cfg.Server.ApiKey);
-
-        if (root["enabled_providers"] is JsonArray enabled && !enabled.Any(n => IsString(n, ProviderId)))
-            enabled.Add(ProviderId);
-
-        SaveUserFile(path, root);
-        Log.Info("opencode", $"Провайдер Offload добавлен в глобальный конфиг OpenCode: {path}");
+        var context = contextOverride is > 0 ? contextOverride.Value : EffectiveContext(cfg);
+        var r = OpenCodeGlobalConfig.RegisterProvider(ProviderId, BuildProvider(cfg, context, cfg.Server.ApiKey), SchemaUrl);
+        if (!r.Ok) throw new InvalidOperationException(r.Message);
     }
 
+    /// <summary>Убрать провайдера Offload (и нашу модель по умолчанию, если пользователь её выбрал) из глобального конфига OpenCode.</summary>
+    /// <exception cref="InvalidOperationException">Какой-то из файлов не удалось записать.</exception>
     public static void UnregisterGlobal()
     {
-        var dir = GlobalConfigDir();
-        foreach (var name in GlobalFileNames)
-        {
-            var path = Path.Combine(dir, name);
-            if (!File.Exists(path)) continue;
-            JsonObject? root;
-            try
-            {
-                root = LoadObject(path);
-            }
-            catch (Exception ex)
-            {
-                Log.Warn("opencode", $"Глобальный конфиг OpenCode не разобран, пропущен: {ex.Message}");
-                continue;
-            }
-            if (root is null) continue;
-
-            var changed = false;
-            if (root["provider"] is JsonObject providers && providers.Remove(ProviderId))
-            {
-                changed = true;
-                if (providers.Count == 0) root.Remove("provider");
-            }
-            foreach (var key in new[] { "model", "small_model" })
-            {
-                if (root[key] is JsonValue v && v.TryGetValue<string>(out var s)
-                    && s.StartsWith(ProviderId + "/", StringComparison.OrdinalIgnoreCase))
-                {
-                    root.Remove(key);
-                    changed = true;
-                }
-            }
-            if (root["enabled_providers"] is JsonArray enabled)
-            {
-                for (var i = enabled.Count - 1; i >= 0; i--)
-                {
-                    if (!IsString(enabled[i], ProviderId)) continue;
-                    enabled.RemoveAt(i);
-                    changed = true;
-                }
-            }
-
-            if (!changed) continue;
-            SaveUserFile(path, root);
-            Log.Info("opencode", $"Провайдер Offload удалён из глобального конфига OpenCode: {path}");
-        }
+        var r = OpenCodeGlobalConfig.UnregisterProvider(ProviderId);
+        if (!r.Ok) throw new InvalidOperationException(r.Message);
     }
-
-    /// <summary>JSON/JSONC → объект. null — файла нет или он пуст. Ошибка разбора — исключение (файл не трогаем).</summary>
-    internal static JsonObject? LoadObject(string path)
-    {
-        if (!File.Exists(path)) return null;
-        var text = File.ReadAllText(path);
-        if (string.IsNullOrWhiteSpace(text)) return null;
-        JsonNode? node;
-        try
-        {
-            node = JsonNode.Parse(text, Json.NodeOptions, Json.LenientDocument);
-            if (node is JsonObject obj) _ = obj.Count; // разбор ленивый: дубликаты ключей всплывут здесь
-        }
-        catch (Exception ex) when (ex is JsonException or ArgumentException or InvalidOperationException)
-        {
-            throw new InvalidOperationException(L.F("Не удалось разобрать {0}: {1}. Исправьте файл вручную.", path, ex.Message), ex);
-        }
-        return node as JsonObject
-               ?? throw new InvalidOperationException(L.F("{0} содержит не JSON-объект — исправьте файл вручную.", path));
-    }
-
-    /// <summary>Резервная копия (комментарии JSONC при перезаписи теряются) и атомарная запись.</summary>
-    private static void SaveUserFile(string path, JsonObject root)
-    {
-        if (File.Exists(path)) FileUtil.Backup(path);
-        FileUtil.WriteAllTextAtomic(path, root.ToJsonString(WriteOptions));
-    }
-
-    private static bool IsString(JsonNode? node, string value) =>
-        node is JsonValue v && v.TryGetValue<string>(out var s) && string.Equals(s, value, StringComparison.OrdinalIgnoreCase);
 }

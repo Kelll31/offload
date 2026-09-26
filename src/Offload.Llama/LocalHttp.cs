@@ -51,6 +51,23 @@ internal static class LocalHttp
         return false;
     }
 
+    /// <summary>
+    /// Причина сетевой ошибки без локализованных текстов ОС (сообщения SocketException приходят на языке Windows):
+    /// имя кода сокета или HttpRequestError, иначе имя типа исключения.
+    /// </summary>
+    public static string InvariantReason(Exception ex)
+    {
+        for (var e = ex; e is not null; e = e.InnerException)
+        {
+            if (e is SocketException se) return "socket error " + se.SocketErrorCode;
+        }
+        for (var e = ex; e is not null; e = e.InnerException)
+        {
+            if (e is HttpRequestException { HttpRequestError: not HttpRequestError.Unknown } hre) return "HTTP client error " + hre.HttpRequestError;
+        }
+        return ex.GetType().Name;
+    }
+
     /// <summary>URL для подключения клиента: 0.0.0.0/:: заменяются на петлевой адрес, IPv6 — в скобках.</summary>
     public static string ClientBaseUrl(string host, int port)
     {

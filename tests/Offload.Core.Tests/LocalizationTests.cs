@@ -111,6 +111,9 @@ internal static class SourceScan
 {
     private sealed record Lit(int Start, int End, string Value, bool Interpolated);
 
+    private static readonly JsonSerializerOptions ReadLenientOptions = new() { ReadCommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true };
+    private static readonly JsonSerializerOptions RelaxedEscapingOptions = new() { Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping };
+
     public static string RepoRoot()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
@@ -145,8 +148,7 @@ internal static class SourceScan
             Dictionary<string, string>? part;
             try
             {
-                part = JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(file),
-                    new JsonSerializerOptions { ReadCommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true });
+                part = JsonSerializer.Deserialize<Dictionary<string, string>>(File.ReadAllText(file), ReadLenientOptions);
             }
             catch (JsonException ex)
             {
@@ -230,10 +232,7 @@ internal static class SourceScan
 
     private static string Short(string s) => s.Length > 90 ? s[..90] + "…" : s;
 
-    private static string Json(string s) => JsonSerializer.Serialize(s, new JsonSerializerOptions
-    {
-        Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-    });
+    private static string Json(string s) => JsonSerializer.Serialize(s, RelaxedEscapingOptions);
 
     private static bool StartsArgument(char[] masked, int start)
     {

@@ -177,7 +177,7 @@ public sealed class LlamaClientTests
             for (var i = 0; i < text.Length; i += 37)
             {
                 await FakeHttpServer.WriteRawAsync(s, text.Substring(i, Math.Min(37, text.Length - i)));
-                await Task.Delay(1);
+                await Task.Delay(1, _);
             }
         });
         var client = new LlamaClient(server.BaseUrl, "pc-key");

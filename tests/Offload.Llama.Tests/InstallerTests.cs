@@ -19,6 +19,9 @@ public sealed class InstallerTests : IDisposable
     private readonly string _savedApi = GitHubReleases.ApiBase;
     private readonly string _savedWeb = GitHubReleases.WebBase;
 
+    /// <summary>Путь файлов релиза на поддельном GitHub: адреса вне …/releases/download/ отбрасываются при разборе.</summary>
+    private const string Dl = "/" + LlamaReleaseResolver.Repo + "/releases/download/b0/";
+
     public void Dispose()
     {
         GitHubReleases.ApiBase = _savedApi;
@@ -61,11 +64,11 @@ public sealed class InstallerTests : IDisposable
         FakeHttpServer? self = null;
         var server = new FakeHttpServer(async (req, s, _) =>
         {
-            if (req.Path.EndsWith("/releases/latest/download/nightly-tag.txt"))
+            if (req.Path.EndsWith("/releases/latest/download/nightly-tag.txt", StringComparison.Ordinal))
             {
                 await FakeHttpServer.WriteResponseAsync(s, 200, tag, "text/plain");
             }
-            else if (req.Path.EndsWith($"/releases/tags/{tag}") || req.Path.Contains("/releases?per_page="))
+            else if (req.Path.EndsWith($"/releases/tags/{tag}", StringComparison.Ordinal) || req.Path.Contains("/releases?per_page="))
             {
                 var json = JsonSerializer.Serialize(new
                 {
@@ -79,15 +82,15 @@ public sealed class InstallerTests : IDisposable
                         state = "uploaded",
                         size = a.Data.LongLength,
                         digest = a.WithDigest ? "sha256:" + Convert.ToHexString(SHA256.HashData(a.Data)).ToLowerInvariant() : null,
-                        browser_download_url = $"{self!.BaseUrl}/dl/{a.Name}",
+                        browser_download_url = $"{self!.BaseUrl}{Dl}{a.Name}",
                     }),
                 });
                 if (req.Path.Contains("per_page")) json = "[" + json + "]";
                 await FakeHttpServer.WriteResponseAsync(s, 200, json);
             }
-            else if (req.Path.StartsWith("/dl/"))
+            else if (req.Path.StartsWith(Dl, StringComparison.Ordinal))
             {
-                var name = req.Path[4..];
+                var name = req.Path[Dl.Length..];
                 var a = assets.FirstOrDefault(x => x.Name == name);
                 if (a is null) await FakeHttpServer.WriteResponseAsync(s, 404, "{}");
                 else await FakeHttpServer.WriteBytesResponseAsync(s, a.Data);
@@ -140,20 +143,20 @@ public sealed class InstallerTests : IDisposable
         Assert.DoesNotContain(Directory.EnumerateDirectories(AppPaths.LlamaDir), d => Path.GetFileName(d).StartsWith('.'));
 
         // Прогресс — на русском, доля не убывает.
-        Assert.Contains(stages, s => s.Stage.StartsWith("Поиск последней версии llama.cpp"));
-        Assert.Contains(stages, s => s.Stage.StartsWith("Загрузка llama.cpp b99999"));
-        Assert.Contains(stages, s => s.Stage.StartsWith("Распаковка"));
-        Assert.Contains(stages, s => s.Stage.StartsWith("Проверка запуска"));
+        Assert.Contains(stages, s => s.Stage.StartsWith("Поиск последней версии llama.cpp", StringComparison.Ordinal));
+        Assert.Contains(stages, s => s.Stage.StartsWith("Загрузка llama.cpp b99999", StringComparison.Ordinal));
+        Assert.Contains(stages, s => s.Stage.StartsWith("Распаковка", StringComparison.Ordinal));
+        Assert.Contains(stages, s => s.Stage.StartsWith("Проверка запуска", StringComparison.Ordinal));
         Assert.EndsWith("установлен", stages[^1].Stage);
         var fractions = stages.Where(s => s.Fraction is not null).Select(s => s.Fraction!.Value).ToList();
         for (var i = 1; i < fractions.Count; i++) Assert.True(fractions[i] >= fractions[i - 1] - 1e-9, $"прогресс убывает: {fractions[i - 1]} → {fractions[i]}");
         Assert.Equal(1.0, fractions[^1]);
 
         // Повторная установка того же тега — быстрый выход без загрузки.
-        var downloads = server.Requests.Count(r => r.Path.StartsWith("/dl/"));
+        var downloads = server.Requests.Count(r => r.Path.StartsWith(Dl, StringComparison.Ordinal));
         var again = await LlamaInstaller.InstallAsync(LlamaBackend.Cpu, null, TestContext.Current.CancellationToken);
         Assert.Equal(result.InstallDir, again.InstallDir);
-        Assert.Equal(downloads, server.Requests.Count(r => r.Path.StartsWith("/dl/")));
+        Assert.Equal(downloads, server.Requests.Count(r => r.Path.StartsWith(Dl, StringComparison.Ordinal)));
 
         // Устройства: сборка CPU не видит видеокарт.
         Assert.Empty(await LlamaDevices.ListAsync(result.ServerExePath, TestContext.Current.CancellationToken));
@@ -165,10 +168,24 @@ public sealed class InstallerTests : IDisposable
     }
 
     [Fact]
+    public async Task Install_WithoutDigest_RefusedBeforeDownload()
+    {
+        // Сборка llama.cpp не нужна: отказ происходит до загрузки.
+        await using var server = GitHubWith("b99996", new FakeAsset("llama-b99996-bin-win-cpu-x64.zip", [1, 2, 3], WithDigest: false));
+
+        var ex = await Assert.ThrowsAnyAsync<Exception>(() =>
+            LlamaInstaller.InstallAsync(LlamaBackend.Cpu, null, TestContext.Current.CancellationToken));
+
+        Assert.Contains("контрольн", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(server.Requests, r => r.Path.StartsWith(Dl, StringComparison.Ordinal));
+        Assert.Null(ConfigStore.Reload().Llama.InstalledTag);
+    }
+
+    [Fact]
     public async Task Install_ConfigLost_ReusesExtractedFolder()
     {
         TestEnv.RequireLlama();
-        await using var server = GitHubWith("b99998", new FakeAsset("llama-b99998-bin-win-cpu-x64.zip", CpuZip.Value, WithDigest: false));
+        await using var server = GitHubWith("b99998", new FakeAsset("llama-b99998-bin-win-cpu-x64.zip", CpuZip.Value));
         var first = await LlamaInstaller.InstallAsync(LlamaBackend.Cpu, null, TestContext.Current.CancellationToken);
 
         ConfigStore.Update(c =>
@@ -176,10 +193,10 @@ public sealed class InstallerTests : IDisposable
             c.Llama.InstallDir = null;
             c.Llama.InstalledTag = null;
         });
-        var downloads = server.Requests.Count(r => r.Path.StartsWith("/dl/"));
+        var downloads = server.Requests.Count(r => r.Path.StartsWith(Dl, StringComparison.Ordinal));
         var second = await LlamaInstaller.InstallAsync(LlamaBackend.Cpu, null, TestContext.Current.CancellationToken);
         Assert.Equal(first.InstallDir, second.InstallDir);
-        Assert.Equal(downloads, server.Requests.Count(r => r.Path.StartsWith("/dl/")));
+        Assert.Equal(downloads, server.Requests.Count(r => r.Path.StartsWith(Dl, StringComparison.Ordinal)));
         Assert.Equal("b99998", ConfigStore.Reload().Llama.InstalledTag);
     }
 
@@ -211,10 +228,12 @@ public sealed class InstallerTests : IDisposable
         GitHubReleases.ApiBase = server.BaseUrl;
         GitHubReleases.WebBase = server.BaseUrl;
         var release = await LlamaReleaseResolver.GetLatestAsync(TestContext.Current.CancellationToken);
-        var asset = release.Assets[0] with { DownloadUrl = $"{evil.BaseUrl}/dl/{release.Assets[0].Name}" };
+        var asset = release.Assets[0] with { DownloadUrl = $"{evil.BaseUrl}{Dl}{release.Assets[0].Name}" };
         var cache = ReleaseCache.Load()!;
         cache.Releases = [release with { Assets = [asset] }];
         cache.Save();
+        // Адрес файла должен выглядеть как github.com/…/releases/download/ — «github.com» здесь второй сервер.
+        GitHubReleases.WebBase = evil.BaseUrl;
 
         var ex = await Assert.ThrowsAnyAsync<Exception>(() => LlamaInstaller.InstallAsync(LlamaBackend.Cpu, null, TestContext.Current.CancellationToken));
         Assert.Contains("SHA-256", ex.Message);

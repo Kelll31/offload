@@ -1,3 +1,4 @@
+using Offload.App.Controls;
 using Offload.App.Services;
 using Offload.App.Util;
 using Offload.Core.Config;
@@ -15,6 +16,7 @@ internal sealed class DoneStep : WizardStep
     private readonly Label _next = Kit.Wrap("");
     private readonly Label _hints = Kit.Hint("");
     private readonly CheckBox _openMain = Kit.Check(L.T("Открыть панель управления"), true);
+    private readonly OnboardingCard _onboarding;
     private readonly List<(Label Glyph, Label Title, Label Detail)> _rows = [];
     private bool _coreReady;
 
@@ -38,6 +40,11 @@ internal sealed class DoneStep : WizardStep
         }
         root.AddRow(Kit.Section(L.T("Что дальше")));
         root.AddRow(_next);
+        // Проверка «IDE видит Offload»: ожидание первого вызова и тестовый запрос к модели.
+        _onboarding = new OnboardingCard(ctx.Shell);
+        _onboarding.Card.Margin = new Padding(0, 10, 0, 4);
+        _onboarding.Card.Visible = false;
+        root.AddRow(_onboarding.Card);
         root.AddRow(_hints);
         root.AddRow(Kit.Spacer(8));
         root.AddRow(_openMain);
@@ -107,6 +114,7 @@ internal sealed class DoneStep : WizardStep
             : L.T("Откройте мастер ещё раз (меню значка Offload → «Мастер настройки…») и повторите установку. Подробности — в журнале.");
         _hints.Text = _install.HintsText.Count > 0 ? string.Join(Environment.NewLine, _install.HintsText) : "";
         _hints.Visible = _install.HintsText.Count > 0;
+        _onboarding.Card.Visible = _coreReady && (_onboarding.Connected || !OnboardingCard.HasUsageHistory());
         RaiseNavigationChanged();
     }
 }

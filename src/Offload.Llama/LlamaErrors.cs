@@ -4,12 +4,60 @@ using System.Runtime.CompilerServices;
 
 namespace Offload.Llama;
 
-/// <summary>Ошибка обращения к API llama-server. Message — на русском, для пользователя.</summary>
+/// <summary>Вид ошибки llama-server — устойчивый признак для классификации (не зависит от текста и языка сообщения).</summary>
+public enum LlamaErrorKind
+{
+    /// <summary>Не распознано (прочие HTTP-ошибки без известного типа).</summary>
+    Other,
+    /// <summary>Сервер не слушает порт (соединение отвергнуто).</summary>
+    NotRunning,
+    /// <summary>Соединение не установлено по другой причине (сеть, сброс, таймаут подключения).</summary>
+    ConnectionFailed,
+    /// <summary>Соединение прервалось во время генерации или поток ответа оборвался до конца.</summary>
+    ConnectionLost,
+    /// <summary>401: неверный ключ API.</summary>
+    Unauthorized,
+    /// <summary>503: модель ещё загружается.</summary>
+    Loading,
+    /// <summary>Запрос не помещается в контекст (type = exceed_context_size_error).</summary>
+    ContextExceeded,
+    /// <summary>HTTP 5xx: внутренняя ошибка сервера.</summary>
+    ServerError,
+    /// <summary>HTTP 4xx: сервер отклонил запрос.</summary>
+    Rejected,
+}
+
+/// <summary>
+/// Ошибка обращения к API llama-server. Message — на русском (L.T), для пользователя;
+/// Kind и Detail — устойчивые данные для классификации и английских сообщений (MCP).
+/// </summary>
 public sealed class LlamaApiException(string message, int? statusCode = null, Exception? inner = null)
     : Exception(message, inner)
 {
     /// <summary>HTTP-код ответа (null — нет соединения).</summary>
     public int? StatusCode { get; } = statusCode;
+
+    /// <summary>Вид ошибки. По умолчанию выводится из кода: null → ConnectionFailed, 401/503/5xx/4xx — соответствующий вид.</summary>
+    public LlamaErrorKind Kind { get; init; } = statusCode switch
+    {
+        null => LlamaErrorKind.ConnectionFailed,
+        401 => LlamaErrorKind.Unauthorized,
+        503 => LlamaErrorKind.Loading,
+        >= 500 => LlamaErrorKind.ServerError,
+        >= 400 => LlamaErrorKind.Rejected,
+        _ => LlamaErrorKind.Other,
+    };
+
+    /// <summary>
+    /// Подробность на английском без локализации (например, текст ошибки из JSON llama-server или «connection reset»).
+    /// null — подробностей нет. Никогда не содержит текстов L.T и сообщений ОС.
+    /// </summary>
+    public string? Detail { get; init; }
+
+    /// <summary>Для ContextExceeded: токенов в запросе и размер контекста слота (если сервер их сообщил).</summary>
+    public int? PromptTokens { get; init; }
+
+    public int? ContextSize { get; init; }
 }
 
 /// <summary>Сервер не удалось запустить (Message совпадает с LlamaServerProcess.LastError).</summary>

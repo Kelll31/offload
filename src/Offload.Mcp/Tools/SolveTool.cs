@@ -40,11 +40,11 @@ internal static class SolveTool
 
         // 2. Контекст: детерминированный поиск + расширение запроса моделью.
         ctx.Progress.Report("Finding relevant code…");
-        var index = await CodeIndex.LoadAsync(ctx, null, codeOnly: true, ctx.Ct).ConfigureAwait(false);
         var terms = FindContextTool.ExtractTerms(t);
-        var scored = index.Files.AsParallel().WithCancellation(ctx.Ct)
-            .Select(f => FindContextTool.Score(f, terms, [], k == "tests"))
-            .Where(s => s.Score > 0).OrderByDescending(s => s.Score).Take(8).ToList();
+        List<FindContextTool.Scored> scored;
+        // Ранжирование по постоянному индексу (как local_find_context); снимок базы закрывается до запуска агента.
+        using (var index = await CodeIndex.OpenAsync(ctx, null, codeOnly: true, ctx.Ct).ConfigureAwait(false))
+            scored = FindContextTool.Rank(index, terms, [], k == "tests", 8);
         var hints = (contextPaths ?? []).Where(p => !string.IsNullOrWhiteSpace(p)).ToList();
         foreach (var s in scored.Take(6)) if (!hints.Contains(s.File.Display, StringComparer.OrdinalIgnoreCase)) hints.Add(s.File.Display);
 

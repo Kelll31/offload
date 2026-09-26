@@ -241,6 +241,49 @@ public class RunnerTests
     }
 
     [Fact]
+    public async Task Run_PerRunLog_KeptAcrossRunsAndLastRunCopyWritten()
+    {
+        using var home = new TempHome();
+        using var server = new FakeLlamaServer();
+        var (cfg, wd, _) = Setup(home, server, HappyEvents);
+        var jobLog = Path.Combine(home.Path, "jobs", "job1", "opencode.log");
+
+        var r = await OpenCodeRunner.RunAsync(cfg, "первый раунд", wd, new OpenCodeRunOptions(false, TimeSpan.FromMinutes(1)) { LogPath = jobLog });
+        Assert.True(r.Success, r.Error);
+        // Другой запуск (другая задача) перезаписывает только общий журнал.
+        r = await OpenCodeRunner.RunAsync(cfg, "чужая задача", wd, new OpenCodeRunOptions(false, TimeSpan.FromMinutes(1)));
+        Assert.True(r.Success, r.Error);
+        r = await OpenCodeRunner.RunAsync(cfg, "второй раунд", wd, new OpenCodeRunOptions(false, TimeSpan.FromMinutes(1)) { LogPath = jobLog });
+        Assert.True(r.Success, r.Error);
+
+        var own = File.ReadAllText(jobLog);
+        Assert.Contains("[task] первый раунд", own);
+        Assert.Contains("[task] второй раунд", own);
+        Assert.DoesNotContain("чужая задача", own);
+        Assert.Equal(2, own.Split("[exit]").Length - 1);
+
+        var last = File.ReadAllText(OpenCodeRunner.RunLogFile);
+        Assert.Contains("[task] второй раунд", last);
+        Assert.DoesNotContain("первый раунд", last);
+        Assert.Contains("[exit]", last);
+    }
+
+    [Fact]
+    public void ParseContext_UnifiedKv_PerSlotShare()
+    {
+        const string json = """{"default_generation_settings":{"n_ctx":196608},"total_slots":3}""";
+        Assert.Equal(196608, LocalServer.ParseContext(json));
+        Assert.Equal(65536, LocalServer.ParseContext(json, unifiedKv: true));
+        Assert.Equal(8192, LocalServer.ParseContext("""{"default_generation_settings":{"n_ctx":8192},"total_slots":1}""", unifiedKv: true));
+
+        var s = new ServerSettings { Parallel = 3 };
+        Assert.True(LocalServer.UsesUnifiedKv(s));
+        s.ExtraArgs = "-no-kvu";
+        Assert.False(LocalServer.UsesUnifiedKv(s));
+        Assert.False(LocalServer.UsesUnifiedKv(new ServerSettings { Parallel = 1 }));
+    }
+
+    [Fact]
     public async Task Run_Preconditions()
     {
         using var home = new TempHome();

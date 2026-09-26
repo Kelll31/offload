@@ -18,7 +18,12 @@ internal static class InstallGuard
     public static bool Check(bool background)
     {
         var installed = InstallInfo.Installed;
-        if (installed is null) return true;
+        if (installed is null)
+        {
+            // Портативная копия после самообновления оставляет Offload.exe.old — он больше не нужен.
+            if (!DevMode.Active) TryDelete(AppPaths.ExecutablePath + ".old");
+            return true;
+        }
         if (installed.IsCurrentProcess)
         {
             CleanupReplacedExe(installed);
@@ -152,7 +157,7 @@ internal static class InstallGuard
     }
 
     /// <summary>Самодостаточный однофайловый exe (у dev-сборки рядом лежит Offload.dll — её одним файлом не заменить).</summary>
-    private static bool IsSingleFile() => !File.Exists(Path.Combine(AppContext.BaseDirectory, "Offload.dll"));
+    internal static bool IsSingleFile() => !File.Exists(Path.Combine(AppContext.BaseDirectory, "Offload.dll"));
 
     private static void CleanupReplacedExe(InstalledCopy installed) => TryDelete(installed.ExePath + ".old");
 

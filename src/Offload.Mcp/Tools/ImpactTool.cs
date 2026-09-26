@@ -17,6 +17,9 @@ internal static partial class ImpactTool
         ctx.Progress.Report("Indexing source files…");
         var (map, index) = await ProjectMap.BuildAsync(ctx, ctx.Ct).ConfigureAwait(false);
         var files = index.Files;
+        ctx.Stats.AddScanned(files);
+        // Ссылки на изменённые символы — из обратного индекса (читаются только файлы, где имя встречается).
+        using var refIndex = await CodeIndex.OpenAsync(ctx, null, codeOnly: true, ctx.Ct).ConfigureAwait(false);
 
         // 1. Изменённые символы.
         var changed = new List<(SourceFile File, CodeSymbol? Symbol, string Why)>();
@@ -29,7 +32,11 @@ internal static partial class ImpactTool
         else
         {
             var ranges = await ChangedRangesAsync(ctx, string.IsNullOrWhiteSpace(target) ? "all" : target.Trim()).ConfigureAwait(false);
-            if (ranges.Count == 0) return "No changes found for target=" + (target ?? "all") + ".";
+            if (ranges.Count == 0)
+            {
+                ctx.Structured = new ImpactOutput { ChangedFiles = [], ChangedSymbols = [], Callers = [], RelatedTests = [], Projects = [], TestRuns = [] };
+                return "No changes found for target=" + (target ?? "all") + ".";
+            }
             foreach (var (display, lines) in ranges)
             {
                 changedFiles.Add(display);
@@ -57,9 +64,10 @@ internal static partial class ImpactTool
         var tests = new Dictionary<string, HashSet<string>>(StringComparer.OrdinalIgnoreCase);
         var callersShown = 0;
         var callerLines = new StringBuilder();
+        var callerItems = new List<ImpactCaller>();
         foreach (var (f, s) in symbols)
         {
-            var refs = SymbolsTool.FindReferences(files, s.Name, 300);
+            var refs = refIndex.References(s.Name, 300);
             foreach (var r in refs)
             {
                 impactedFiles.Add(r.File.Display);
@@ -74,6 +82,13 @@ internal static partial class ImpactTool
             if (callers.Count == 0 || callersShown >= maxResults) continue;
             callerLines.Append($"  {s.QualifiedName} ← ");
             callerLines.Append(string.Join(", ", callers.Take(8).Select(g => $"{g.Key.QualifiedName} ({g.Key.Display}:{g.First().Line})")));
+            callerItems.AddRange(callers.Take(8).Select(g => new ImpactCaller
+            {
+                Symbol = s.QualifiedName,
+                Caller = g.Key.QualifiedName,
+                File = g.Key.Display,
+                Line = g.First().Line,
+            }));
             if (callers.Count > 8) callerLines.Append($", +{callers.Count - 8}");
             callerLines.Append('\n');
             callersShown += Math.Min(8, callers.Count);
@@ -99,6 +114,16 @@ internal static partial class ImpactTool
         }
         var projects = impactedFiles.Select(f => ProjectMap.OwnerOf(map, f)).Where(p => p is not null).Select(p => p!.Manifest).Distinct().ToList();
         if (projects.Count > 0) sb.Append($"projects affected: {string.Join(", ", projects.Take(15))}\n");
+        var output = new ImpactOutput
+        {
+            ChangedFiles = changedFiles,
+            ChangedSymbols = [.. symbols.Select(x => new ImpactSymbol { Name = x.Symbol.QualifiedName, Kind = x.Symbol.Kind, File = x.File.Display, Line = x.Symbol.Line })],
+            Callers = callerItems,
+            RelatedTests = [.. tests.Take(maxResults).Select(t => new ImpactTest { File = t.Key, Classes = [.. t.Value.Take(4)] })],
+            Projects = [.. projects.Take(15)],
+            TestRuns = [],
+        };
+        ctx.Structured = output;
 
         if (!runTests) return sb.Append(tests.Count > 0 ? "run only these tests: call again with run_tests=true" : "").ToString().TrimEnd();
 
@@ -106,10 +131,27 @@ internal static partial class ImpactTool
         var commands = TestCommands(ctx, map, tests);
         if (commands.Count == 0) return sb.Append("no runnable test command could be built for these tests (check the allowlist)").ToString().TrimEnd();
         var timeout = TimeSpan.FromSeconds(Math.Clamp(timeoutSec <= 0 ? 900 : timeoutSec, 30, 3600));
-        foreach (var cmd in commands.Take(4))
+        var runs = new List<ImpactTestRun>();
+        var toRun = commands.Take(4).ToList();
+        for (var i = 0; i < toRun.Count; i++)
         {
+            var cmd = toRun[i];
+            ctx.Progress.Step(i, toRun.Count, $"running related tests {i + 1}/{toRun.Count}: {cmd}");
             var run = await VerifyTool.RunLoggedAsync(ctx, cmd, timeout).ConfigureAwait(false);
             var scan = VerifyTool.Scan(run.LogPath, ctx.Ct);
+            var logUri = VerifyTool.LinkRun(ctx, run);
+            runs.Add(new ImpactTestRun
+            {
+                Command = cmd,
+                Status = run.Result.Passed ? "passed" : run.Result.TimedOut ? "timed_out" : "failed",
+                ExitCode = run.Result.ExitCode,
+                DurationSec = Math.Round(run.Result.Duration.TotalSeconds, 1),
+                Log = run.Display,
+                LogUri = logUri,
+                Summary = [.. scan.Summary.TakeLast(3)],
+                Errors = run.Result.Passed ? [] : [.. scan.Errors.Take(8)],
+            });
+            ctx.Structured = output with { TestRuns = [.. runs] };
             sb.Append($"`{cmd}` → {(run.Result.Passed ? "PASSED" : run.Result.TimedOut ? "TIMED OUT" : $"FAILED (exit {run.Result.ExitCode})")}, {run.Result.Duration.TotalSeconds:0} s · log: {run.Display}\n");
             foreach (var l in scan.Summary.TakeLast(3)) sb.Append("    ").Append(l).Append('\n');
             if (!run.Result.Passed)
@@ -139,6 +181,7 @@ internal static partial class ImpactTool
         if (!res.Success && target == "all")
             res = await Git.RunAsync(root, ["diff", "-U0", "--no-color", "--no-ext-diff", "--no-renames", "--relative"], ctx.Ct).ConfigureAwait(false);
         if (!res.Success) throw new ToolException("git diff failed: " + GitSandbox.FirstLines(res.StdErr, 3));
+        ctx.Stats.AddScanned(res.StdOut.Length);
         var result = new Dictionary<string, List<int>>(StringComparer.OrdinalIgnoreCase);
         string? file = null;
         foreach (var line in res.StdOut.Split('\n'))

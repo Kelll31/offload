@@ -1,0 +1,3 @@
+# Подпись Ed25519 покрывает catalog.json байт в байт: git не должен менять концы строк при сохранении.
+catalog.json -text
+catalog.json.sig -text

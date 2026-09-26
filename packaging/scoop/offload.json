@@ -1,0 +1,33 @@
+{
+    "version": "1.0.0",
+    "description": "Local coding model for Claude Code and other IDEs: llama.cpp + MCP server in the Windows tray",
+    "homepage": "https://github.com/Kelll31/offload",
+    "license": "MIT",
+    "architecture": {
+        "64bit": {
+            "url": "https://github.com/Kelll31/offload/releases/download/v1.0.0/Offload.exe",
+            "hash": "REPLACE_WITH_SHA256_FROM_SHA256SUMS"
+        }
+    },
+    "bin": "Offload.exe",
+    "shortcuts": [["Offload.exe", "Offload"]],
+    "persist": [],
+    "notes": [
+        "Offload keeps its data in %LOCALAPPDATA%\Offload (models, llama.cpp, settings).",
+        "Run Offload once to open the setup wizard."
+    ],
+    "checkver": {
+        "github": "https://github.com/Kelll31/offload"
+    },
+    "autoupdate": {
+        "architecture": {
+            "64bit": {
+                "url": "https://github.com/Kelll31/offload/releases/download/v$version/Offload.exe",
+                "hash": {
+                    "url": "https://github.com/Kelll31/offload/releases/download/v$version/SHA256SUMS.txt",
+                    "regex": "$sha256\s+Offload\.exe"
+                }
+            }
+        }
+    }
+}

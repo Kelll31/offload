@@ -9,6 +9,7 @@
     <Project Path="src/Offload.OpenCode/Offload.OpenCode.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/Offload.App.Tests/Offload.App.Tests.csproj" />
     <Project Path="tests/Offload.Core.Tests/Offload.Core.Tests.csproj" />
     <Project Path="tests/Offload.Integrations.Tests/Offload.Integrations.Tests.csproj" />
     <Project Path="tests/Offload.Llama.Tests/Offload.Llama.Tests.csproj" />

@@ -85,8 +85,25 @@ public sealed record CatalogModel(
     /// <summary>Описание на английском (для английского интерфейса); null — показывается русское.</summary>
     string? DescriptionEn = null,
     /// <summary>Название на английском, если русское содержит слова (например «минимальная»); null — как DisplayName.</summary>
-    string? DisplayNameEn = null)
+    string? DisplayNameEn = null,
+    /// <summary>Минимальная сборка llama.cpp (тег bNNNNN), в которой поддержана архитектура модели; null — любая.</summary>
+    string? MinLlamaBuild = null,
+    /// <summary>
+    /// Назначение (поле «role»): chat (по умолчанию) — основная/быстрая модель; embed — эмбеддинги; rerank — реранкер.
+    /// Модели embed/rerank не предлагаются как активная модель и запускаются только на вспомогательных серверах ролей.
+    /// </summary>
+    ModelKind Role = ModelKind.Chat,
+    /// <summary>Пулинг эмбеддингов для --pooling (mean, cls, last) — только для role = embed; null — из заголовка GGUF.</summary>
+    string? Pooling = null)
 {
+    /// <summary>Чат-модель: может быть активной (основной) или быстрой.</summary>
+    [JsonIgnore]
+    public bool IsChat => Role == ModelKind.Chat;
+
+    /// <summary>Номер минимальной сборки llama.cpp (bNNNNN → NNNNN); 0 — не задан.</summary>
+    [JsonIgnore]
+    public int MinLlamaBuildNumber => ModelCatalog.BuildNumber(MinLlamaBuild) is var n and > 0 ? n : 0;
+
     /// <summary>Описание на языке интерфейса.</summary>
     [JsonIgnore]
     public string LocalizedDescription => L.IsEnglish && !string.IsNullOrWhiteSpace(DescriptionEn) ? DescriptionEn : Description;
@@ -113,13 +130,26 @@ public sealed record CatalogModel(
     public bool HasTag(string tag) => Tags?.Any(t => string.Equals(t, tag, StringComparison.OrdinalIgnoreCase)) == true;
 }
 
-/// <summary>Встроенный каталог рекомендованных моделей для программирования.</summary>
+/// <summary>
+/// Разобранный каталог: версия (поле "version", 0 — нет), модели и необязательный срок действия (поле "expires",
+/// дата ISO 8601; для удалённого каталога: после этой даты он не принимается — защита от подмены старым подписанным).
+/// </summary>
+public sealed record CatalogSnapshot(long Version, IReadOnlyList<CatalogModel> Models, DateTimeOffset? Expires = null);
+
+/// <summary>
+/// Каталог рекомендованных моделей для программирования: встроенный в сборку или более новый удалённый
+/// (подписанный, см. <see cref="RemoteCatalog"/>), если он проверен и его версия выше встроенной.
+/// </summary>
 public static partial class ModelCatalog
 {
     internal const string ResourceName = "Offload.Models.catalog.json";
 
     // Lazy по умолчанию потокобезопасен (ExecutionAndPublication): каталог разбирается один раз.
-    private static readonly Lazy<IReadOnlyList<CatalogModel>> Lazy = new(LoadEmbedded);
+    private static readonly Lazy<CatalogSnapshot> Embedded = new(LoadEmbedded);
+
+    private static readonly object RemoteLock = new();
+    private static CatalogSnapshot? _remote;
+    private static bool _cacheLoaded;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -130,10 +160,74 @@ public static partial class ModelCatalog
     };
 
     /// <summary>Все модели каталога, отсортированные по Priority.</summary>
-    public static IReadOnlyList<CatalogModel> All => Lazy.Value;
+    public static IReadOnlyList<CatalogModel> All => Current.Models;
+
+    /// <summary>Действующий каталог: удалённый (из проверенного кэша), если он новее встроенного, иначе встроенный.</summary>
+    public static CatalogSnapshot Current
+    {
+        get
+        {
+            lock (RemoteLock)
+            {
+                if (!_cacheLoaded)
+                {
+                    _cacheLoaded = true;
+                    if (RemoteCatalog.LoadCached() is { } cached && cached.Version > Embedded.Value.Version) _remote = cached;
+                }
+                return _remote ?? Embedded.Value;
+            }
+        }
+    }
+
+    /// <summary>Версия встроенного каталога.</summary>
+    public static long EmbeddedVersion => Embedded.Value.Version;
+
+    /// <summary>Сейчас действует удалённый каталог (а не встроенный).</summary>
+    public static bool IsRemote => Current != Embedded.Value;
+
+    /// <summary>Применить проверенный удалённый каталог (только если он новее действующего).</summary>
+    internal static bool ApplyRemote(CatalogSnapshot snapshot)
+    {
+        lock (RemoteLock)
+        {
+            _cacheLoaded = true;
+            var current = _remote ?? Embedded.Value;
+            if (snapshot.Version <= current.Version) return false;
+            _remote = snapshot;
+            return true;
+        }
+    }
+
+    /// <summary>Только для тестов: забыть удалённый каталог (следующее обращение снова прочитает кэш).</summary>
+    internal static void ResetRemote()
+    {
+        lock (RemoteLock)
+        {
+            _remote = null;
+            _cacheLoaded = false;
+        }
+    }
+
+    /// <summary>Чат-модели каталога (role = chat): кандидаты в активную модель и рекомендации мастера.</summary>
+    public static IReadOnlyList<CatalogModel> ChatModels => [.. All.Where(m => m.IsChat)];
 
     public static CatalogModel? Find(string id) =>
         All.FirstOrDefault(m => string.Equals(m.Id, id, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// Есть ли IQ-тензоры в файле установленной модели (по каталогу и квантизации); null — неизвестно
+    /// (пользовательская модель или квантизации нет в каталоге).
+    /// </summary>
+    public static bool? HasIqTensors(InstalledModel? model)
+    {
+        if (model is null || model.IsCustom || Find(model.Id) is not { } c) return null;
+        return c.FindFile(model.Quant) is { } f ? f.IqTensors : null;
+    }
+
+    /// <summary>Номер сборки llama.cpp из тега bNNNNN; иначе -1.</summary>
+    public static int BuildNumber(string? tag) =>
+        tag is { Length: > 1 } && (tag[0] == 'b' || tag[0] == 'B')
+        && int.TryParse(tag.AsSpan(1), System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var n) ? n : -1;
 
     /// <summary>
     /// Название установленной модели на языке интерфейса: для модели из каталога с неизменённым названием —
@@ -147,16 +241,25 @@ public static partial class ModelCatalog
             : model.DisplayName;
     }
 
-    private static IReadOnlyList<CatalogModel> LoadEmbedded()
+    private static CatalogSnapshot LoadEmbedded() => ParseDocument(EmbeddedJson());
+
+    /// <summary>Текст встроенного catalog.json.</summary>
+    internal static string EmbeddedJson()
     {
         using var stream = typeof(ModelCatalog).Assembly.GetManifestResourceStream(ResourceName)
             ?? throw new InvalidOperationException(L.T("Встроенный каталог моделей не найден в сборке Offload.Models."));
         using var reader = new StreamReader(stream);
-        return Parse(reader.ReadToEnd());
+        return reader.ReadToEnd();
     }
 
     /// <summary>Разобрать и проверить JSON каталога ({"models": [...]}). Ошибки — InvalidDataException.</summary>
-    public static IReadOnlyList<CatalogModel> Parse(string json)
+    public static IReadOnlyList<CatalogModel> Parse(string json) => ParseDocument(json).Models;
+
+    /// <summary>
+    /// Разобрать и проверить JSON каталога вместе с версией ("version": целое, например 2026092400 — дата и номер
+    /// выпуска). Неизвестные поля пропускаются: более новый каталог читается и прежними версиями Offload.
+    /// </summary>
+    public static CatalogSnapshot ParseDocument(string json)
     {
         CatalogDocument? doc;
         try
@@ -169,8 +272,9 @@ public static partial class ModelCatalog
         }
         var models = doc?.Models ?? throw new InvalidDataException(L.T("Каталог моделей пуст."));
         Validate(models);
+        if (doc.Version < 0) throw new InvalidDataException(L.T("Каталог моделей: отрицательная версия."));
         // OrderBy устойчив: при равном Priority сохраняется порядок файла.
-        return models.OrderBy(m => m.Priority).ToArray();
+        return new CatalogSnapshot(doc.Version, models.OrderBy(m => m.Priority).ToArray(), doc.Expires);
     }
 
     private static void Validate(IReadOnlyList<CatalogModel> models)
@@ -207,6 +311,11 @@ public static partial class ModelCatalog
                 throw new InvalidDataException(Err(L.F("нет файла для квантизации {0}", noFile)));
             if (m.FindFile(m.DefaultQuant) is not { } def) throw new InvalidDataException(Err(L.T("нет файла квантизации по умолчанию")));
             if (m.ApproxSizeBytes != def.Size) throw new InvalidDataException(Err(L.T("размер не совпадает с файлом по умолчанию")));
+            if (!Enum.IsDefined(m.Role)) throw new InvalidDataException(Err(L.T("неверное назначение (role: chat, embed или rerank)")));
+            if (m.Pooling is not null && (m.Role != ModelKind.Embed || m.Pooling is not ("mean" or "cls" or "last")))
+                throw new InvalidDataException(Err(L.F("неверный пулинг «{0}» (mean, cls или last — только для role = embed)", m.Pooling)));
+            if (m.MinLlamaBuild is not null && !BuildTagRegex().IsMatch(m.MinLlamaBuild))
+                throw new InvalidDataException(Err(L.F("неверная минимальная сборка llama.cpp «{0}» (нужен тег вида b11000)", m.MinLlamaBuild)));
         }
     }
 
@@ -216,5 +325,8 @@ public static partial class ModelCatalog
     [GeneratedRegex("^[0-9a-f]{40}$")]
     private static partial Regex Sha1Regex();
 
-    private sealed record CatalogDocument(IReadOnlyList<CatalogModel>? Models);
+    [GeneratedRegex("^b[0-9]{1,9}$")]
+    private static partial Regex BuildTagRegex();
+
+    private sealed record CatalogDocument(IReadOnlyList<CatalogModel>? Models, long Version = 0, DateTimeOffset? Expires = null);
 }

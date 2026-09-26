@@ -31,7 +31,7 @@ internal static class ChildProcess
         public IReadOnlyDictionary<string, string?>? Environment { get; init; }
         public TimeSpan Timeout { get; init; } = TimeSpan.FromMinutes(2);
         public int MaxCaptureChars { get; init; } = 1_000_000;
-        public int TailLines { get; init; } = 0;
+        public int TailLines { get; init; }
         public int MaxLineChars { get; init; } = 2000;
         /// <summary>Вызывается на каждую строку stdout; false — остановить процесс (достаточно данных).</summary>
         public Func<string, bool>? OnStdOutLine { get; init; }
@@ -61,6 +61,9 @@ internal static class ChildProcess
         };
         if (rawArgs is not null) psi.Arguments = rawArgs;
         else foreach (var a in args!) psi.ArgumentList.Add(a);
+        // Фоновая задача в трее: окружение IDE (PATH, venv, JAVA_HOME…) поверх окружения трея, но под принудительными
+        // переменными вызывающего кода (CI=1, GIT_*, отключение телеметрии) — они накладываются ниже и важнее.
+        CallerEnvironment.ApplyTo(psi.Environment);
         if (o.Environment is not null)
         {
             foreach (var (k, v) in o.Environment)
@@ -146,14 +149,16 @@ internal static class ChildProcess
             ProcessRunner.KillTree(process);
             if (ct.IsCancellationRequested)
             {
-                try { await process.WaitForExitAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5)).ConfigureAwait(false); } catch { }
+                // Токен уже отменён — ждём завершения процесса без него, иначе ожидание оборвётся мгновенно.
+                try { await process.WaitForExitAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(5), CancellationToken.None).ConfigureAwait(false); } catch { }
                 throw;
             }
             timedOut = true;
-            try { await process.WaitForExitAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10)).ConfigureAwait(false); } catch { }
+            // Свой таймаут (o.Timeout) уже истёк — довершаем ожидание без внешнего токена по той же причине.
+            try { await process.WaitForExitAsync(CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10), CancellationToken.None).ConfigureAwait(false); } catch { }
         }
         // Потомки (msbuild-узлы и т.п.) могут держать каналы вывода открытыми — ждём недолго.
-        try { await Task.WhenAll(outDone.Task, errDone.Task).WaitAsync(TimeSpan.FromSeconds(3)).ConfigureAwait(false); } catch { }
+        try { await Task.WhenAll(outDone.Task, errDone.Task).WaitAsync(TimeSpan.FromSeconds(3), ct).ConfigureAwait(false); } catch { }
 
         int exit;
         try { exit = timedOut ? -1 : process.ExitCode; } catch { exit = -1; }

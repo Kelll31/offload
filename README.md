@@ -1,5 +1,7 @@
 # Offload
 
+**Русский** · [English](README.en.md)
+
 [![Release](https://img.shields.io/github/v/release/Kelll31/offload?label=%D1%80%D0%B5%D0%BB%D0%B8%D0%B7)](https://github.com/Kelll31/offload/releases/latest)
 [![Build](https://github.com/Kelll31/offload/actions/workflows/build.yml/badge.svg)](https://github.com/Kelll31/offload/actions/workflows/build.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -99,6 +101,15 @@ Offload забирает оба пункта на локальную модел�
 
 **Служебные:** `local_job` — список задач, статус (с ожиданием фоновой), diff, слияние/удаление песочницы, отмена, откат;
 `local_status` — состояние модели, скорость, экономия токенов.
+
+**Протокол MCP:** `local_verify`, `local_diagnostics`, `local_impact` и `local_status` кроме текста возвращают `structuredContent`
+по объявленной `outputSchema` (IDE разбирает итог без регулярок). Длинное отдаётся ресурсами, а в ответе — `resource_link`:
+`offload://runs/<id>` (полный лог прогона), `offload://jobs/<id>/diff` (diff задачи), `offload://project/map` (обзор проекта),
+`offload://memory` (память проекта); чтение — через те же проверки путей, секреты маскируются. Если IDE поддерживает elicitation,
+Offload спрашивает пользователя перед рискованным: `local_job merge` задачи, задержанной из-за `max_files` или находок ревью
+critical/high, `local_job revert force=true` поверх более поздних правок, и `local_verify` с командой не из белого списка
+(«разрешить один раз», список не меняется); без elicitation поведение прежнее. Прогресс map-reduce приходит с `total`,
+для аргументов промптов есть автодополнение (`kind`, пути).
 
 В Claude Code инструменты называются `mcp__offload__<имя>`. Пример запроса: *«используй offload: найди, где считается скидка,
 и почини баг с округлением — с тестом»* → `local_find_context` + `local_solve kind=bug`.
@@ -236,7 +247,9 @@ Offload — проект с открытым исходным кодом под 
    - описания MCP-инструментов — по-английски.
 4. Откройте Pull Request и коротко опишите, что и зачем изменено. Для интерфейса приложите скриншот.
 
-Если не знаете, с чего начать, — откройте Issue с вопросом, подскажем.
+Если не знаете, с чего начать, — откройте Issue с вопросом, подскажем. Подробные правила — в [CONTRIBUTING.md](CONTRIBUTING.md),
+планы — в [ROADMAP.md](ROADMAP.md), изменения — в [CHANGELOG.md](CHANGELOG.md). Уязвимости сообщайте приватно: [SECURITY.md](SECURITY.md),
+что защищает Offload и что нет — [модель угроз](docs/threat-model.md).
 
 ## Удаление
 

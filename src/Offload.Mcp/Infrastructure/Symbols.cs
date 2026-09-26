@@ -1,3 +1,4 @@
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace Offload.Mcp.Infrastructure;
@@ -5,8 +6,11 @@ namespace Offload.Mcp.Infrastructure;
 /// <summary>Язык исходного файла (по расширению) — определяет правила разбора символов.</summary>
 internal enum CodeLang { Unknown, CSharp, TypeScript, Python, Go, Java, Kotlin, Rust, Cpp, Pascal, Php, Ruby, Swift }
 
-/// <summary>Объявление в исходнике. Строки — с 1; EndLine — последняя строка тела (или строка объявления).</summary>
-internal sealed record CodeSymbol(string Name, string Kind, int Line, int EndLine, string? Container, string Signature)
+/// <summary>
+/// Объявление в исходнике. Строки — с 1; EndLine — последняя строка тела (или строка объявления). Params — число объявленных
+/// параметров метода/конструктора/делегата/локальной функции (C#, разбор Roslyn); −1 — неизвестно или неприменимо.
+/// </summary>
+internal sealed record CodeSymbol(string Name, string Kind, int Line, int EndLine, string? Container, string Signature, int Params = -1)
 {
     public bool IsType => Kind is "class" or "struct" or "interface" or "enum" or "record" or "trait" or "type" or "impl" or "object" or "namespace" or "module";
 
@@ -14,8 +18,10 @@ internal sealed record CodeSymbol(string Name, string Kind, int Line, int EndLin
 }
 
 /// <summary>
-/// Эвристический (без компилятора и language server) разбор объявлений: регулярные выражения по строкам + подсчёт скобок
-/// для границ тел (Python — по отступам). Цель — outline и навигация за миллисекунды, а не точная семантика.
+/// Разбор объявлений без компилятора и language server. C# — синтаксическое дерево Roslyn (Symbols.CSharp.cs, точные границы,
+/// многострочные сигнатуры, вложенность). Остальные языки — эвристика: регулярные выражения по строкам (с склейкой
+/// многострочных сигнатур) + подсчёт скобок вне строк/комментариев для границ тел (Python — по отступам).
+/// Цель — outline и навигация за миллисекунды, а не точная семантика.
 /// </summary>
 internal static partial class Symbols
 {
@@ -55,13 +61,35 @@ internal static partial class Symbols
     {
         var lang = LangOf(path);
         if (lang == CodeLang.Unknown || lines.Length == 0) return [];
-        var raw = lang == CodeLang.Python ? ParsePython(lines) : ParseBraced(lang, lines);
-        return raw;
+        switch (lang)
+        {
+            case CodeLang.CSharp:
+                try { return ParseCSharp(path, lines); }
+                catch (Exception ex) when (ex is InsufficientExecutionStackException or InvalidOperationException or ArgumentException)
+                {
+                    // Патологическая вложенность и т. п. — остаётся эвристика.
+                    Offload.Core.Logging.Log.Warn("symbols", $"Roslyn не разобрал {path}: {ex.Message}; эвристический разбор");
+                    return ParseBraced(lang, lines);
+                }
+            case CodeLang.Python:
+                return ParsePython(lines);
+            default:
+                return ParseBraced(lang, lines);
+        }
     }
 
     // ───────────────────────── языки со скобками ─────────────────────────
 
-    private sealed record Rule(Regex Regex, string Kind, int NameGroup = 1);
+    /// <summary>ContainerGroup — группа с именем типа-владельца (получатель метода Go).</summary>
+    private sealed record Rule(Regex Regex, string Kind, int NameGroup = 1, int ContainerGroup = 0);
+
+    /// <summary>Строки длиннее — не объявления (минифицированный код, данные); до этого предела правила работают с тайм-аутом.</summary>
+    private const int MaxDeclarationLine = 4000;
+
+    /// <summary>Многострочная сигнатура склеивается не более чем из стольких строк.</summary>
+    private const int MaxJoinedLines = 10;
+
+    private static Regex R(string pattern, RegexOptions extra = RegexOptions.None) => new(pattern, O | extra, TimeSpan.FromMilliseconds(250));
 
     private static Rule[] RulesFor(CodeLang lang) => lang switch
     {
@@ -84,120 +112,181 @@ internal static partial class Symbols
 
     private static readonly Rule[] CSharpRules =
     [
-        new(new Regex(@"^\s*namespace\s+([\w.]+)", O), "namespace"),
-        new(new Regex(@"^\s*(?:\[[^\]]*\]\s*)*" + CsMods + @"(?:record\s+(?:struct|class)|class|struct|interface|enum|record)\s+(\w+)", O), "type"),
-        new(new Regex(@"^\s*(?:\[[^\]]*\]\s*)*" + CsMods + @"delegate\s+[\w<>\[\],.?\s]+?\s(\w+)\s*[<(]", O), "delegate"),
+        new(R(@"^\s*namespace\s+([\w.]+)"), "namespace"),
+        new(R(@"^\s*(?:\[[^\]]*\]\s*)*" + CsMods + @"(?:record\s+(?:struct|class)|class|struct|interface|enum|record)\s+(\w+)"), "type"),
+        new(R(@"^\s*(?:\[[^\]]*\]\s*)*" + CsMods + @"delegate\s+[\w<>\[\],.?\s]+?\s(\w+)\s*[<(]"), "delegate"),
         // Конструктор: модификатор доступа + Имя( (имя совпадает с типом — проверяется при разборе).
-        new(new Regex(@"^\s*(?:\[[^\]]*\]\s*)*(?:public|private|protected|internal)(?:\s+(?:static|unsafe|extern))*\s+(\w+)\s*\(", O), "ctor"),
-        new(new Regex(@"^\s*(?:\[[^\]]*\]\s*)*" + CsMods + @"(?!return\b|await\b|throw\b|else\b|new\b|yield\b|goto\b|using\b|case\b)(?:\([^()]*\)|[\w<>\[\],.?]+(?:\s*<[^;=]*?>)?)\??\s+(?:[\w.<>]+\.)?(\w+)\s*(?:<[^>()]*>)?\s*\(", O), "method"),
-        new(new Regex(@"^\s*(?:\[[^\]]*\]\s*)*" + CsMods + @"(?!return\b|await\b|throw\b|else\b|new\b|using\b)[\w<>\[\],.?]+\??\s+(\w+)\s*(?:\{\s*(?:get|set|init)\b|=>)", O), "property"),
-        new(new Regex(@"^\s*(?:\[[^\]]*\]\s*)*" + CsMods + @"event\s+[\w<>\[\],.?]+\s+(\w+)", O), "event"),
+        new(R(@"^\s*(?:\[[^\]]*\]\s*)*(?:public|private|protected|internal)(?:\s+(?:static|unsafe|extern))*\s+(\w+)\s*\("), "ctor"),
+        new(R(@"^\s*(?:\[[^\]]*\]\s*)*" + CsMods + @"(?!return\b|await\b|throw\b|else\b|new\b|yield\b|goto\b|using\b|case\b)(?:\([^()]*\)|[\w<>\[\],.?]+(?:\s*<[^;=]*?>)?)\??\s+(?:[\w.<>]+\.)?(\w+)\s*(?:<[^>()]*>)?\s*\("), "method"),
+        new(R(@"^\s*(?:\[[^\]]*\]\s*)*" + CsMods + @"(?!return\b|await\b|throw\b|else\b|new\b|using\b)[\w<>\[\],.?]+\??\s+(\w+)\s*(?:\{\s*(?:get|set|init)\b|=>)"), "property"),
+        new(R(@"^\s*(?:\[[^\]]*\]\s*)*" + CsMods + @"event\s+[\w<>\[\],.?]+\s+(\w+)"), "event"),
     ];
 
     private static readonly Rule[] JavaRules =
     [
-        new(new Regex(@"^\s*(?:@\w+(?:\([^)]*\))?\s*)*(?:(?:public|private|protected|static|final|abstract|sealed|non-sealed|strictfp)\s+)*(?:class|interface|enum|record|@interface)\s+(\w+)", O), "type"),
-        new(new Regex(@"^\s*(?:@\w+(?:\([^)]*\))?\s*)*(?:(?:public|private|protected|static|final|abstract|synchronized|native|default|strictfp)\s+)*(?:<[^>]+>\s+)?(?!return\b|new\b|throw\b|else\b)[\w<>\[\],.?]+\s+(\w+)\s*\((?![^)]*\)\s*;\s*$)", O), "method"),
+        new(R(@"^\s*(?:@\w+(?:\([^)]*\))?\s*)*(?:(?:public|private|protected|static|final|abstract|sealed|non-sealed|strictfp)\s+)*(?:class|interface|enum|record|@interface)\s+(\w+)"), "type"),
+        new(R(@"^\s*(?:@\w+(?:\([^)]*\))?\s*)*(?:(?:public|private|protected|static|final|abstract|synchronized|native|default|strictfp)\s+)*(?:<[^>]+>\s+)?(?!return\b|new\b|throw\b|else\b)[\w<>\[\],.?]+\s+(\w+)\s*\((?![^)]*\)\s*;\s*$)"), "method"),
     ];
 
     private static readonly Rule[] KotlinRules =
     [
-        new(new Regex(@"^\s*(?:(?:public|private|protected|internal|open|abstract|sealed|data|enum|inline|value|annotation|inner)\s+)*(?:class|interface|object)\s+(\w+)", O), "type"),
-        new(new Regex(@"^\s*(?:(?:public|private|protected|internal|open|override|abstract|suspend|inline|operator|infix|tailrec|external)\s+)*fun\s+(?:<[^>]+>\s*)?(?:[\w.]+\.)?(\w+)\s*\(", O), "function"),
+        new(R(@"^\s*(?:(?:public|private|protected|internal|open|abstract|sealed|data|enum|inline|value|annotation|inner)\s+)*(?:class|interface|object)\s+(\w+)"), "type"),
+        new(R(@"^\s*(?:(?:public|private|protected|internal|open|override|abstract|suspend|inline|operator|infix|tailrec|external)\s+)*fun\s+(?:<[^>]+>\s*)?(?:[\w.]+\.)?(\w+)\s*\("), "function"),
     ];
 
     private static readonly Rule[] TsRules =
     [
-        new(new Regex(@"^\s*(?:export\s+)?(?:default\s+)?(?:declare\s+)?(?:abstract\s+)?class\s+(\w+)", O), "class"),
-        new(new Regex(@"^\s*(?:export\s+)?(?:declare\s+)?interface\s+(\w+)", O), "interface"),
-        new(new Regex(@"^\s*(?:export\s+)?(?:declare\s+)?(?:const\s+)?enum\s+(\w+)", O), "enum"),
-        new(new Regex(@"^\s*(?:export\s+)?(?:declare\s+)?type\s+(\w+)\s*(?:<[^=]*>)?\s*=", O), "type"),
-        new(new Regex(@"^\s*(?:export\s+)?(?:default\s+)?(?:declare\s+)?(?:async\s+)?function\s*\*?\s*(\w+)", O), "function"),
-        new(new Regex(@"^\s*(?:export\s+)?(?:const|let|var)\s+(\w+)\s*(?::[^=]+)?=\s*(?:async\s+)?(?:function\b|\([^)]*\)\s*(?::[^=]+)?=>|\w+\s*=>)", O), "function"),
-        new(new Regex(@"^\s*(?:(?:public|private|protected|static|readonly|async|override|abstract|get|set)\s+)*(?!if\b|for\b|while\b|switch\b|catch\b|function\b|return\b|new\b)(\w+)\s*(?:<[^>]*>)?\s*\([^;]*\)\s*(?::\s*[^{;]+)?\{\s*$", O), "method"),
+        new(R(@"^\s*(?:export\s+)?(?:default\s+)?(?:declare\s+)?(?:abstract\s+)?class\s+(\w+)"), "class"),
+        new(R(@"^\s*(?:export\s+)?(?:declare\s+)?interface\s+(\w+)"), "interface"),
+        new(R(@"^\s*(?:export\s+)?(?:declare\s+)?(?:const\s+)?enum\s+(\w+)"), "enum"),
+        new(R(@"^\s*(?:export\s+)?(?:declare\s+)?type\s+(\w+)\s*(?:<[^=]*>)?\s*="), "type"),
+        new(R(@"^\s*(?:export\s+)?(?:default\s+)?(?:declare\s+)?(?:async\s+)?function\s*\*?\s*(\w+)"), "function"),
+        new(R(@"^\s*(?:export\s+)?(?:const|let|var)\s+(\w+)\s*(?::[^=]+)?=\s*(?:async\s+)?(?:function\b|\([^)]*\)\s*(?::[^=]+)?=>|\w+\s*=>)"), "function"),
+        new(R(@"^\s*(?:(?:public|private|protected|static|readonly|async|override|abstract|get|set)\s+)*(?!if\b|for\b|while\b|switch\b|catch\b|function\b|return\b|new\b)(\w+)\s*(?:<[^>]*>)?\s*\([^;]*\)\s*(?::\s*[^{;]+)?\{\s*$"), "method"),
     ];
 
     private static readonly Rule[] GoRules =
     [
-        new(new Regex(@"^type\s+(\w+)\s+(?:struct|interface)\b", O), "type"),
-        new(new Regex(@"^type\s+(\w+)\s+", O), "type"),
-        new(new Regex(@"^func\s+(?:\([^)]*\)\s*)?(\w+)\s*[(\[]", O), "function"),
+        new(R(@"^type\s+(\w+)\s+(?:struct|interface)\b"), "type"),
+        new(R(@"^type\s+(\w+)\s+"), "type"),
+        // Метод: получатель «(r *Repo)» / «(Repo)» / «(r Repo[T])» — контейнер, чтобы находился «Repo.Save».
+        new(R(@"^func\s+\(\s*(?:\w+\s+)?\*?\s*(\w+)(?:\[[^\]]*\])?\s*\)\s*(\w+)\s*[(\[]"), "method", NameGroup: 2, ContainerGroup: 1),
+        new(R(@"^func\s+(?:\([^)]*\)\s*)?(\w+)\s*[(\[]"), "function"),
     ];
 
     private static readonly Rule[] RustRules =
     [
-        new(new Regex(@"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)", O), "module"),
-        new(new Regex(@"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:struct|enum|union|trait)\s+(\w+)", O), "type"),
-        new(new Regex(@"^\s*impl(?:<[^>]*>)?\s+(?:[\w:<>, ]+\s+for\s+)?([\w:]+)", O), "impl"),
-        new(new Regex(@"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:const\s+)?(?:async\s+)?(?:unsafe\s+)?(?:extern\s+""[^""]*""\s+)?fn\s+(\w+)", O), "function"),
+        new(R(@"^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+(\w+)"), "module"),
+        new(R(@"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:struct|enum|union|trait)\s+(\w+)"), "type"),
+        new(R(@"^\s*impl(?:<[^>]*>)?\s+(?:[\w:<>, ]+\s+for\s+)?([\w:]+)"), "impl"),
+        new(R(@"^\s*(?:pub(?:\([^)]*\))?\s+)?(?:const\s+)?(?:async\s+)?(?:unsafe\s+)?(?:extern\s+""[^""]*""\s+)?fn\s+(\w+)"), "function"),
     ];
 
     private static readonly Rule[] CppRules =
     [
-        new(new Regex(@"^\s*namespace\s+([\w:]+)\s*\{?", O), "namespace"),
-        new(new Regex(@"^\s*(?:template\s*<[^>]*>\s*)?(?:class|struct|union|enum(?:\s+class)?)\s+(?:\w+\s+)?(\w+)\s*(?:final\s*)?(?::[^;{]*)?\{?\s*$", O), "type"),
-        new(new Regex(@"^\s*(?:template\s*<[^>]*>\s*)?(?:(?:static|inline|virtual|explicit|constexpr|extern|friend|unsigned|signed|const)\s+)*(?!return\b|else\b|new\b|delete\b)[\w:<>*&,\s]+?[\s*&]+([\w:~]+)\s*\([^;]*\)\s*(?:const\s*)?(?:noexcept\s*)?(?:override\s*)?(?:final\s*)?\{?\s*$", O), "function"),
+        new(R(@"^\s*namespace\s+([\w:]+)\s*\{?"), "namespace"),
+        new(R(@"^\s*(?:template\s*<[^>]*>\s*)?(?:class|struct|union|enum(?:\s+class)?)\s+(?:\w+\s+)?(\w+)\s*(?:final\s*)?(?::[^;{]*)?\{?\s*$"), "type"),
+        new(R(@"^\s*(?:template\s*<[^>]*>\s*)?(?:(?:static|inline|virtual|explicit|constexpr|extern|friend|unsigned|signed|const)\s+)*(?!return\b|else\b|new\b|delete\b)[\w:<>*&,\s]+?[\s*&]+([\w:~]+)\s*\([^;]*\)\s*(?:const\s*)?(?:noexcept\s*)?(?:override\s*)?(?:final\s*)?\{?\s*$"), "function"),
+        // Конструктор/деструктор вне класса без типа результата: «Foo::Foo(int a) : x(a) {», «Foo::~Foo() {».
+        new(R(@"^\s*((?:\w+::)+~?\w+)\s*\([^;]*\)\s*(?:noexcept\s*)?(?::[^;{]*)?\{?\s*$"), "function"),
     ];
 
     private static readonly Rule[] PascalRules =
     [
-        new(new Regex(@"^\s*(\w+)\s*=\s*(?:packed\s+)?(?:class|record|interface|object)\b(?!\s*of\b)(?!\s*;)", O | RegexOptions.IgnoreCase), "type"),
-        new(new Regex(@"^\s*(?:class\s+)?(?:procedure|function|constructor|destructor)\s+([\w.]+)", O | RegexOptions.IgnoreCase), "method"),
+        new(R(@"^\s*(\w+)\s*=\s*(?:packed\s+)?(?:class|record|interface|object)\b(?!\s*of\b)(?!\s*;)", RegexOptions.IgnoreCase), "type"),
+        new(R(@"^\s*(?:class\s+)?(?:procedure|function|constructor|destructor)\s+([\w.]+)", RegexOptions.IgnoreCase), "method"),
     ];
 
     private static readonly Rule[] PhpRules =
     [
-        new(new Regex(@"^\s*(?:abstract\s+|final\s+)?(?:class|interface|trait|enum)\s+(\w+)", O), "type"),
-        new(new Regex(@"^\s*(?:(?:public|private|protected|static|abstract|final)\s+)*function\s+&?(\w+)", O), "function"),
+        new(R(@"^\s*(?:abstract\s+|final\s+)?(?:class|interface|trait|enum)\s+(\w+)"), "type"),
+        new(R(@"^\s*(?:(?:public|private|protected|static|abstract|final)\s+)*function\s+&?(\w+)"), "function"),
     ];
 
     private static readonly Rule[] RubyRules =
     [
-        new(new Regex(@"^\s*(?:class|module)\s+([\w:]+)", O), "type"),
-        new(new Regex(@"^\s*def\s+(?:self\.)?(\w+[?!=]?)", O), "method"),
+        new(R(@"^\s*(?:class|module)\s+([\w:]+)"), "type"),
+        new(R(@"^\s*def\s+(?:self\.)?(\w+[?!=]?)"), "method"),
     ];
 
     private static readonly Rule[] SwiftRules =
     [
-        new(new Regex(@"^\s*(?:(?:public|private|fileprivate|internal|open|final)\s+)*(?:class|struct|enum|protocol|extension|actor)\s+(\w+)", O), "type"),
-        new(new Regex(@"^\s*(?:(?:public|private|fileprivate|internal|open|final|static|override|mutating|class)\s+)*func\s+(\w+)", O), "function"),
+        new(R(@"^\s*(?:(?:public|private|fileprivate|internal|open|final)\s+)*(?:class|struct|enum|protocol|extension|actor)\s+(\w+)"), "type"),
+        new(R(@"^\s*(?:(?:public|private|fileprivate|internal|open|final|static|override|mutating|class)\s+)*func\s+(\w+)"), "function"),
     ];
 
     private static List<CodeSymbol> ParseBraced(CodeLang lang, string[] lines)
     {
         var rules = RulesFor(lang);
         var code = StripForBraces(lang, lines);
-        var found = new List<(string Name, string Kind, int Line)>();
+        var found = new List<(string Name, string Kind, int Line, string? Container, string Signature)>();
         for (var i = 0; i < lines.Length; i++)
         {
             var line = lines[i];
-            if (line.Length > 400 || code[i].Trim().Length == 0) continue;
-            foreach (var rule in rules)
-            {
-                var m = rule.Regex.Match(line);
-                if (!m.Success) continue;
-                var name = m.Groups[rule.NameGroup].Value;
-                var needsFilter = rule.Kind is "method" or "ctor" or "property" || lang == CodeLang.Cpp;
-                if (name.Length == 0 || needsFilter && Keywords.Contains(name)) continue;
-                var kind = rule.Kind == "type" ? TypeKind(line) : rule.Kind;
-                found.Add((name, kind, i + 1));
-                break;
-            }
+            if (line.Length > MaxDeclarationLine || code[i].Trim().Length == 0) continue;
+            // Многострочная сигнатура («foo(a,\n b) {») проверяется склеенной, если сама строка не подошла.
+            var joined = JoinSignature(lines, code, i);
+            var hit = MatchRules(lang, rules, line) ?? (joined is null ? null : MatchRules(lang, rules, joined));
+            if (hit is not { } h) continue;
+            found.Add((h.Name, h.Kind, i + 1, h.Container, Signature(joined ?? line)));
         }
 
         var result = new List<CodeSymbol>(found.Count);
         for (var k = 0; k < found.Count; k++)
         {
-            var (name, kind, line) = found[k];
+            var (name, kind, line, container, signature) = found[k];
             var next = k + 1 < found.Count ? found[k + 1].Line : lines.Length + 1;
             var end = lang is CodeLang.Pascal or CodeLang.Ruby ? EndByNext(lines, line, next) : BraceEnd(code, line - 1, next - 1);
-            result.Add(new CodeSymbol(name, kind, line, end, null, Signature(lines[line - 1])));
+            result.Add(new CodeSymbol(name, kind, line, end, container, signature));
         }
         var withContainers = AssignContainers(result);
         // Конструктор C#: имя совпадает с типом-контейнером; иначе это вызов вида «public Foo(...)» — редкость, отбрасываем.
         if (lang == CodeLang.CSharp)
             withContainers = withContainers.Where(s => s.Kind != "ctor" || s.Container?.Split('.')[^1] == s.Name).ToList();
         return withContainers;
+    }
+
+    /// <summary>Первое подходящее правило: имя, вид и явный контейнер (получатель Go, «Foo::» в C++).</summary>
+    private static (string Name, string Kind, string? Container)? MatchRules(CodeLang lang, Rule[] rules, string text)
+    {
+        foreach (var rule in rules)
+        {
+            Match m;
+            try { m = rule.Regex.Match(text); }
+            catch (RegexMatchTimeoutException) { continue; }
+            if (!m.Success) continue;
+            var name = m.Groups[rule.NameGroup].Value;
+            var container = rule.ContainerGroup > 0 && m.Groups[rule.ContainerGroup].Success ? m.Groups[rule.ContainerGroup].Value : null;
+            if (name.Contains("::", StringComparison.Ordinal))
+            {
+                // C++ «Foo::bar» (определение вне класса) → контейнер Foo, имя bar; Rust «impl a::B» → B.
+                var parts = name.Split("::", StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length == 0) continue;
+                name = parts[^1];
+                if (lang == CodeLang.Cpp && rule.Kind == "function" && parts.Length > 1) container = string.Join(".", parts[..^1]);
+            }
+            var needsFilter = rule.Kind is "method" or "ctor" or "property" || lang == CodeLang.Cpp;
+            if (name.Length == 0 || needsFilter && Keywords.Contains(name)) continue;
+            return (name, rule.Kind == "type" ? TypeKind(text) : rule.Kind, container);
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Многострочная сигнатура: если на строке остаётся незакрытая «(» (вне строк и комментариев), склеивает следующие строки
+    /// до её закрытия (не больше <see cref="MaxJoinedLines"/> строк и 2000 символов). Иначе — null.
+    /// </summary>
+    internal static string? JoinSignature(string[] lines, string[] code, int start)
+    {
+        var depth = ParenDepth(code[start], 0);
+        if (depth <= 0) return null;
+        var sb = new StringBuilder(lines[start].TrimEnd());
+        for (var j = start + 1; j < lines.Length && j < start + MaxJoinedLines; j++)
+        {
+            var part = lines[j].Trim();
+            if (sb.Length + part.Length > 2000 || lines[j].Length > MaxDeclarationLine) return null;
+            if (part.Length > 0)
+            {
+                if (sb[^1] != '(' && !part.StartsWith(')') && !part.StartsWith(',')) sb.Append(' ');
+                sb.Append(part);
+            }
+            depth = ParenDepth(code[j], depth);
+            if (depth > 0) continue;
+            // Скобка тела на следующей строке (стиль Allman) — тоже часть заголовка.
+            if (!code[j].Contains('{', StringComparison.Ordinal) && j + 1 < lines.Length && lines[j + 1].Trim() == "{") sb.Append(" {");
+            return sb.ToString();
+        }
+        return null;
+    }
+
+    private static int ParenDepth(string code, int depth)
+    {
+        foreach (var c in code)
+        {
+            if (c == '(') depth++;
+            else if (c == ')') depth--;
+        }
+        return depth;
     }
 
     private static string TypeKind(string line)
@@ -250,7 +339,8 @@ internal static partial class Symbols
             while (stack.Count > 0 && stack[^1].EndLine < s.Line) stack.RemoveAt(stack.Count - 1);
             var container = stack.Count > 0 ? string.Join(".", stack.Where(x => x.Kind != "namespace").Select(x => x.Name)) : null;
             if (string.IsNullOrEmpty(container)) container = null;
-            var withC = s with { Container = container };
+            // Явный контейнер (получатель метода Go, «Foo::bar» в C++) важнее вложенности по строкам.
+            var withC = s with { Container = s.Container ?? container };
             result.Add(withC);
             if ((s.IsType || s.Kind == "namespace") && s.EndLine > s.Line) stack.Add(withC);
         }
@@ -264,28 +354,31 @@ internal static partial class Symbols
 
     private static List<CodeSymbol> ParsePython(string[] lines)
     {
+        // Объявления и отступы — по тексту без строк и комментариев: «def» внутри docstring (""" … """) — не символ,
+        // а строки docstring с меньшим отступом не обрывают тело функции.
+        var code = StripForBraces(CodeLang.Python, lines);
         var result = new List<CodeSymbol>();
         var stack = new List<(int Indent, string Name)>();
         for (var i = 0; i < lines.Length; i++)
         {
-            var m = PyDecl().Match(lines[i]);
+            var m = PyDecl().Match(code[i]);
             if (!m.Success) continue;
             var isClass = m.Groups[4].Success;
-            var indent = (isClass ? m.Groups[3].Value : m.Groups[1].Value).Replace("\t", "    ").Length;
+            var indent = (isClass ? m.Groups[3].Value : m.Groups[1].Value).Replace("\t", "    ", StringComparison.Ordinal).Length;
             var name = isClass ? m.Groups[4].Value : m.Groups[2].Value;
             while (stack.Count > 0 && stack[^1].Indent >= indent) stack.RemoveAt(stack.Count - 1);
             var end = i + 1;
             for (var j = i + 1; j < lines.Length; j++)
             {
-                var t = lines[j];
-                if (t.Trim().Length == 0 || t.TrimStart().StartsWith('#')) continue;
-                var ind = (t.Length - t.TrimStart().Length);
+                var t = code[j];
+                if (t.Trim().Length == 0) continue;
+                var ind = t.Length - t.TrimStart().Length;
                 if (ind <= indent && !t.TrimStart().StartsWith(')')) break;
                 end = j + 1;
             }
             var container = stack.Count > 0 ? string.Join(".", stack.Select(s => s.Name)) : null;
             var kind = isClass ? "class" : container is not null && stack[^1].Indent < indent && IsClassName(result, stack[^1].Name) ? "method" : "function";
-            result.Add(new CodeSymbol(name, kind, i + 1, end, container, Signature(lines[i])));
+            result.Add(new CodeSymbol(name, kind, i + 1, end, container, Signature(JoinSignature(lines, code, i) ?? lines[i])));
             stack.Add((indent, name));
         }
         return result;
@@ -295,34 +388,87 @@ internal static partial class Symbols
 
     // ───────────────────────── общее ─────────────────────────
 
-    /// <summary>Строки без строковых литералов и комментариев (для подсчёта скобок). Приближение: без интерполяций и raw-строк.</summary>
+    /// <summary>
+    /// Строки без строковых литералов и комментариев (для подсчёта скобок и поиска объявлений). Литерал заменяется одним пробелом
+    /// в месте открытия; многострочные литералы — шаблоны JS/TS (`…${…}…`, с вложенностью), тройные кавычки Python/Java/Kotlin/Swift,
+    /// verbatim (@"…") и raw ("""…""") строки C#, raw-строки Go (`…`) и Rust (r#"…"#) — вырезаются целиком, и их строки становятся
+    /// пустыми. Приближение: символы препроцессора, heredoc и регулярные выражения-литералы не учитываются.
+    /// </summary>
     internal static string[] StripForBraces(CodeLang lang, string[] lines)
     {
         var result = new string[lines.Length];
-        var inBlock = false;
         var hashComments = lang is CodeLang.Python or CodeLang.Ruby;
+        var inBlock = false;
+        string? multiEnd = null;     // терминатор открытой многострочной строки
+        var multiEscapes = false;    // в ней действует «\»
+        var multiDoubled = false;    // verbatim C#: «""» внутри — кавычка
+        var inTemplateText = false;  // JS/TS: внутри текста шаблонной строки
+        var holes = new Stack<int>(); // JS/TS: глубина «{» в открытых ${…} (вложенные шаблоны)
         for (var i = 0; i < lines.Length; i++)
         {
             var line = lines[i];
-            var sb = new System.Text.StringBuilder(line.Length);
+            var sb = new StringBuilder(line.Length);
             var j = 0;
             while (j < line.Length)
             {
                 var c = line[j];
+                var next = j + 1 < line.Length ? line[j + 1] : '\0';
                 if (inBlock)
                 {
-                    if (c == '*' && j + 1 < line.Length && line[j + 1] == '/') { inBlock = false; j += 2; }
+                    if (c == '*' && next == '/') { inBlock = false; j += 2; }
                     else if (lang == CodeLang.Pascal && c == '}') { inBlock = false; j++; }
                     else j++;
                     continue;
                 }
-                if (c == '/' && j + 1 < line.Length && line[j + 1] == '/') break;
-                if (hashComments && c == '#') break;
-                if (c == '/' && j + 1 < line.Length && line[j + 1] == '*') { inBlock = true; j += 2; continue; }
-                if (lang == CodeLang.Pascal && c == '{') { inBlock = true; j++; continue; }
-                if (c is '"' or '\'' or '`')
+                if (multiEnd is not null)
                 {
-                    // Символ 'x' и строки: пропускаем до закрывающей кавычки той же строки.
+                    if (multiEscapes && c == '\\') j += 2;
+                    else if (multiDoubled && c == '"' && next == '"') j += 2;
+                    else if (string.CompareOrdinal(line, j, multiEnd, 0, multiEnd.Length) == 0) { j += multiEnd.Length; multiEnd = null; }
+                    else j++;
+                    continue;
+                }
+                if (inTemplateText)
+                {
+                    if (c == '\\') j += 2;
+                    else if (c == '`') { inTemplateText = false; j++; }
+                    else if (c == '$' && next == '{') { holes.Push(0); inTemplateText = false; j += 2; }
+                    else j++;
+                    continue;
+                }
+                var emit = holes.Count == 0;
+                if (c == '/' && next == '/' && !hashComments) break;
+                if (hashComments && c == '#') break;
+                if (c == '/' && next == '*') { inBlock = true; j += 2; continue; }
+                if (lang == CodeLang.Pascal && c == '{') { inBlock = true; j++; continue; }
+                if (holes.Count > 0 && c is '{' or '}')
+                {
+                    // Код внутри ${…}: «}» на нулевой глубине возвращает в текст шаблона.
+                    var depth = holes.Pop();
+                    if (c == '{') holes.Push(depth + 1);
+                    else if (depth > 0) holes.Push(depth - 1);
+                    else inTemplateText = true;
+                    j++;
+                    continue;
+                }
+                var open = MultiLineOpening(lang, line, j);
+                if (open.Length > 0)
+                {
+                    (multiEnd, multiEscapes, multiDoubled) = (open.End, open.Escapes, open.Doubled);
+                    j += open.Length;
+                    if (emit) sb.Append(' ');
+                    continue;
+                }
+                if (c == '`' && lang == CodeLang.TypeScript)
+                {
+                    inTemplateText = true;
+                    j++;
+                    if (emit) sb.Append(' ');
+                    continue;
+                }
+                if (c is '"' or '\'' or '`' && !(c == '\'' && lang == CodeLang.Rust && IsRustLifetime(line, j)))
+                {
+                    // Символ 'x' и однострочные строки: пропускаем до закрывающей кавычки той же строки.
                     var q = c;
                     j++;
                     while (j < line.Length && line[j] != q)
@@ -331,10 +477,10 @@ internal static partial class Symbols
                         j++;
                     }
                     j++;
-                    sb.Append(' ');
+                    if (emit) sb.Append(' ');
                     continue;
                 }
-                sb.Append(c);
+                if (emit) sb.Append(c);
                 j++;
             }
             result[i] = sb.ToString();
@@ -342,6 +488,56 @@ internal static partial class Symbols
         return result;
     }
 
+    private readonly record struct MultiOpen(int Length, string End, bool Escapes, bool Doubled);
+
+    /// <summary>Начало многострочного литерала в позиции j (длина префикса и терминатор) или Length = 0.</summary>
+    private static MultiOpen MultiLineOpening(CodeLang lang, string line, int j)
+    {
+        var c = line[j];
+        switch (lang)
+        {
+            case CodeLang.CSharp:
+            {
+                // raw: $…"""…""" (3+ кавычки, терминатор — столько же); verbatim: @"…", $@"…", @$"…" («""» внутри).
+                var k = j;
+                while (k < line.Length && line[k] == '$') k++;
+                var quotes = 0;
+                while (k + quotes < line.Length && line[k + quotes] == '"') quotes++;
+                if (quotes >= 3 && (k == j || c == '$')) return new MultiOpen(k - j + quotes, new string('"', quotes), false, false);
+                if (c == '@' && At(line, j + 1, "\"")) return new MultiOpen(2, "\"", false, true);
+                if (c == '@' && At(line, j + 1, "$\"") || c == '$' && At(line, j + 1, "@\"")) return new MultiOpen(3, "\"", false, true);
+                return default;
+            }
+            case CodeLang.Python:
+                if (At(line, j, "\"\"\"")) return new MultiOpen(3, "\"\"\"", true, false);
+                if (At(line, j, "'''")) return new MultiOpen(3, "'''", true, false);
+                return default;
+            case CodeLang.Java or CodeLang.Kotlin or CodeLang.Swift:
+                return At(line, j, "\"\"\"") ? new MultiOpen(3, "\"\"\"", lang != CodeLang.Kotlin, false) : default;
+            case CodeLang.Go:
+                return c == '`' ? new MultiOpen(1, "`", false, false) : default;
+            case CodeLang.Rust:
+            {
+                // r"…", r#"…"#, br##"…"## — без экранирования; обычные "…" в Rust тоже могут занимать несколько строк.
+                if (c == '"') return new MultiOpen(1, "\"", true, false);
+                var k = j;
+                if (c == 'b' && k + 1 < line.Length && line[k + 1] == 'r') k++;
+                if (line[k] != 'r' || j > 0 && (char.IsLetterOrDigit(line[j - 1]) || line[j - 1] == '_')) return default;
+                var hashes = 0;
+                while (k + 1 + hashes < line.Length && line[k + 1 + hashes] == '#') hashes++;
+                return At(line, k + 1 + hashes, "\"") ? new MultiOpen(k - j + 2 + hashes, "\"" + new string('#', hashes), false, false) : default;
+            }
+            default:
+                return default;
+        }
+    }
+
+    private static bool At(string line, int index, string text) =>
+        index >= 0 && index + text.Length <= line.Length && string.CompareOrdinal(line, index, text, 0, text.Length) == 0;
+
+    /// <summary>Rust: «'a» / «'static» — время жизни, а не символьный литерал ('a', '\n').</summary>
+    private static bool IsRustLifetime(string line, int j) =>
+        j + 1 < line.Length && (char.IsLetter(line[j + 1]) || line[j + 1] == '_') && !(j + 2 < line.Length && line[j + 2] == '\'');
     private static string Signature(string line)
     {
         var s = line.Trim();

@@ -133,6 +133,8 @@ public static class ModelManager
             HasMtp = model.HasMtp,
             Sampling = Clone(model.Sampling),
             IsCustom = false,
+            Kind = model.Role,
+            Pooling = model.Pooling,
             InstalledAtUtc = DateTime.UtcNow,
         };
         Register(installed);
@@ -216,14 +218,81 @@ public static class ModelManager
     {
         if (string.IsNullOrWhiteSpace(modelId)) throw new ArgumentException(L.T("Не указана модель."), nameof(modelId));
         var found = false;
+        var notChat = false;
         ConfigStore.Update(c =>
         {
             var m = c.Models.Installed.FirstOrDefault(x => string.Equals(x.Id, modelId, StringComparison.OrdinalIgnoreCase));
             if (m is null) return;
             found = true;
+            if (m.Kind != ModelKind.Chat)
+            {
+                notChat = true;
+                return;
+            }
             c.Models.ActiveModelId = m.Id;
+            // Активная модель — это роль quality: отдельная быстрая роль на ней же не нужна.
+            if (c.Models.Roles is { } roles && string.Equals(roles.Fast, m.Id, StringComparison.OrdinalIgnoreCase)) roles.Fast = null;
         });
         if (!found) throw new ModelException(L.F("Модель «{0}» не установлена.", modelId));
+        if (notChat)
+            throw new ModelException(L.F("«{0}» — модель эмбеддингов или реранкер: она не может быть активной. Назначьте её роли на вкладке «Модели».", modelId));
+    }
+
+    /// <summary>
+    /// Назначить установленную модель вспомогательной роли (fast/embed/rerank) или снять назначение (null).
+    /// Модель должна подходить роли (<see cref="ModelRoleConfig.IsCompatible"/>); быстрая роль не может совпадать с активной моделью.
+    /// </summary>
+    public static void AssignRole(ModelRole role, string? modelId)
+    {
+        if (role == ModelRole.Quality)
+        {
+            if (modelId is not null) SetActive(modelId);
+            return;
+        }
+        string? error = null;
+        ConfigStore.Update(c =>
+        {
+            if (modelId is null)
+            {
+                c.Assign(role, null);
+                return;
+            }
+            var m = c.Models.Installed.FirstOrDefault(x => string.Equals(x.Id, modelId, StringComparison.OrdinalIgnoreCase));
+            if (m is null)
+                error = L.F("Модель «{0}» не установлена.", modelId);
+            else if (!ModelRoleConfig.IsCompatible(m, role))
+                error = L.F("Модель «{0}» не подходит для этой роли.", m.DisplayName);
+            else if (role == ModelRole.Fast && string.Equals(c.Models.ActiveModelId, m.Id, StringComparison.OrdinalIgnoreCase))
+                error = L.T("Быстрая модель должна отличаться от активной: короткие задачи и так выполняет активная модель.");
+            else
+                c.Assign(role, m.Id);
+        });
+        if (error is not null) throw new ModelException(error);
+        Log.Info("models", $"Роль {role.Key()}: {modelId ?? "не назначена"}");
+    }
+
+    /// <summary>
+    /// Предупреждение перед активацией: установленная сборка llama.cpp старее, чем нужна модели (<c>minLlamaBuild</c> каталога).
+    /// null — всё в порядке, требование не задано, llama.cpp не установлен или его версия неизвестна.
+    /// </summary>
+    public static string? LlamaBuildWarning(string modelId, AppConfig cfg)
+    {
+        ArgumentNullException.ThrowIfNull(cfg);
+        var installed = cfg.Models.Installed.FirstOrDefault(m => string.Equals(m.Id, modelId, StringComparison.OrdinalIgnoreCase));
+        if (installed is { IsCustom: true }) return null;
+        return ModelCatalog.Find(modelId) is { } model ? LlamaBuildWarning(model, cfg) : null;
+    }
+
+    /// <inheritdoc cref="LlamaBuildWarning(string, AppConfig)"/>
+    public static string? LlamaBuildWarning(CatalogModel model, AppConfig cfg)
+    {
+        ArgumentNullException.ThrowIfNull(model);
+        ArgumentNullException.ThrowIfNull(cfg);
+        var need = model.MinLlamaBuildNumber;
+        var have = ModelCatalog.BuildNumber(cfg.Llama.InstalledTag);
+        if (need <= 0 || have <= 0 || have >= need) return null;
+        return L.F("Модели «{0}» нужна llama.cpp {1} или новее, а установлена {2}: сервер может не загрузить её. Обновите llama.cpp в разделе «Сервер» (если версия закреплена — снимите закрепление).",
+            model.LocalizedDisplayName, model.MinLlamaBuild, cfg.Llama.InstalledTag);
     }
 
     /// <summary>Удалить модель из списка и (опционально) файлы с диска.</summary>
@@ -282,6 +351,52 @@ public static class ModelManager
         Log.Info("models", $"Модель {entry.Id} удалена из списка{(deleteFiles ? " вместе с файлами" : "")}.");
     }
 
+    /// <summary>
+    /// Файлы, оставшиеся «сиротами» после замены модели (например, скачан другой квант той же модели): все шарды
+    /// <paramref name="previousFilePath"/>, которые есть на диске, лежат в папке моделей и не используются ни одной
+    /// установленной моделью. Пустой список — удалять нечего. Сами файлы не удаляются.
+    /// </summary>
+    public static IReadOnlyList<string> OrphanFiles(string? previousFilePath)
+    {
+        if (string.IsNullOrWhiteSpace(previousFilePath)) return [];
+        var cfg = ConfigStore.Current;
+        var dir = ModelsDir(cfg);
+        var used = cfg.Models.Installed.SelectMany(m => ShardFiles(m.FilePath)).ToList();
+        return ShardFiles(previousFilePath)
+            .Where(f => File.Exists(f) && IsInside(f, dir) && !used.Any(u => SamePath(u, f)))
+            .ToList();
+    }
+
+    /// <summary>
+    /// Удалить файлы-сироты прежней версии модели (см. <see cref="OrphanFiles"/>; условия проверяются заново, так что
+    /// файл, который тем временем снова стал нужен, не удаляется). Возвращает удалённые файлы; при ошибке —
+    /// <see cref="ModelException"/> со списком неудалённых.
+    /// </summary>
+    public static IReadOnlyList<string> DeleteOrphanFiles(string? previousFilePath)
+    {
+        var deleted = new List<string>();
+        var failed = new List<string>();
+        foreach (var file in OrphanFiles(previousFilePath))
+        {
+            try
+            {
+                File.Delete(file);
+                deleted.Add(file);
+                Log.Info("models", $"Удалён файл прежней версии модели: {file}");
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Log.Warn("models", $"Не удалось удалить {file}: {ex.Message}");
+                failed.Add(Path.GetFileName(file));
+            }
+        }
+        if (failed.Count > 0)
+            throw new ModelException(
+                L.F("Не удалось удалить файл(ы) модели: {0}. Возможно, модель сейчас загружена сервером — остановите сервер и повторите удаление.",
+                    string.Join(", ", failed)));
+        return deleted;
+    }
+
     /// <summary>Проверить, что файлы установленных моделей существуют; убрать пропавшие. Возвращает число удалённых записей.</summary>
     public static int Validate()
     {
@@ -318,14 +433,37 @@ public static class ModelManager
         {
             c.Models.Installed.Add(model);
         }
-        if (string.IsNullOrEmpty(c.Models.ActiveModelId) || !c.Models.Installed.Any(m => m.Id == c.Models.ActiveModelId))
+        if (model.Kind != ModelKind.Chat)
+        {
+            // Модель эмбеддингов/реранкер не становится активной; свободной роли назначается сама.
+            var role = model.Kind == ModelKind.Embed ? ModelRole.Embed : ModelRole.Rerank;
+            if (c.AssignedId(role) is null) c.Assign(role, model.Id);
+            FixActive(c);
+            return;
+        }
+        if (string.IsNullOrEmpty(c.Models.ActiveModelId) || !c.Models.Installed.Any(m => m.Id == c.Models.ActiveModelId && m.Kind == ModelKind.Chat))
             c.Models.ActiveModelId = model.Id;
     }
 
-    private static void FixActive(AppConfig c)
+    /// <summary>
+    /// Активная модель — установленная чат-модель (иначе первая такая или null); назначения ролей на удалённые
+    /// или неподходящие модели снимаются.
+    /// </summary>
+    internal static void FixActive(AppConfig c)
     {
-        if (c.Models.ActiveModelId is null || !c.Models.Installed.Any(m => m.Id == c.Models.ActiveModelId))
-            c.Models.ActiveModelId = c.Models.Installed.FirstOrDefault()?.Id;
+        if (c.Models.ActiveModelId is null || !c.Models.Installed.Any(m => m.Id == c.Models.ActiveModelId && m.Kind == ModelKind.Chat))
+            c.Models.ActiveModelId = c.Models.Installed.FirstOrDefault(m => m.Kind == ModelKind.Chat)?.Id;
+        c.Models.Roles ??= new ModelRoles();
+        foreach (var role in ModelRoleConfig.Auxiliary)
+        {
+            if (c.AssignedId(role) is { } id && c.RoleModel(role) is null)
+            {
+                Log.Info("models", $"Роль {role.Key()}: модель {id} больше не установлена или не подходит — назначение снято");
+                c.Assign(role, null);
+            }
+        }
+        if (c.Models.Roles.Fast is { } fast && string.Equals(fast, c.Models.ActiveModelId, StringComparison.OrdinalIgnoreCase))
+            c.Models.Roles.Fast = null;
     }
 
     /// <summary>

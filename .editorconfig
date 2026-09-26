@@ -1,0 +1,33 @@
+# Стиль и анализаторы Offload. Уровень анализа — AnalysisLevel в Directory.Build.props;
+# в CI предупреждения — ошибки (TreatWarningsAsErrors), поэтому шумные для проекта правила отключены здесь явно.
+root = true
+
+[*]
+charset = utf-8
+indent_style = space
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.{cs,csx}]
+indent_size = 4
+
+[*.{csproj,props,targets,xml,json,yml,yaml}]
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false
+
+[*.cs]
+# Интерфейс по-русски и форматирование в текущей культуре — намеренно (Ui.N, L.F).
+dotnet_diagnostic.CA1305.severity = none
+# Суффиксы вроде «…Exception»/«…Collection» и подчёркивания в именах — по соглашениям проекта.
+dotnet_diagnostic.CA1707.severity = none
+dotnet_diagnostic.CA1711.severity = none
+# Платформа — только Windows (net10.0-windows).
+dotnet_diagnostic.CA1416.severity = none
+
+[tests/**.cs]
+# Константные массивы в тестах и InlineData — читаемость важнее аллокаций.
+dotnet_diagnostic.CA1861.severity = none
+dotnet_diagnostic.CA1822.severity = none
+dotnet_diagnostic.CA2007.severity = none

@@ -37,6 +37,10 @@ internal static class UsageStats
         return savedIn * prices.CloudInputPricePerMTok / 1_000_000d + savedOut * prices.CloudOutputPricePerMTok / 1_000_000d;
     }
 
+    /// <summary>Число вызовов, завершившихся ошибкой (Ok = false), по инструментам.</summary>
+    public static IReadOnlyDictionary<string, int> ErrorsByTool(IEnumerable<UsageRecord> records) =>
+        records.Where(r => !r.Ok).GroupBy(r => r.Tool).ToDictionary(g => g.Key, g => g.Count());
+
     public static string Dollars(double value) =>
         value >= 100 ? $"${value:0}" : value >= 1 ? $"${value:0.00}" : value > 0 ? $"${value:0.000}" : "$0";
 

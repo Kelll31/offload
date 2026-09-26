@@ -1,0 +1,17 @@
+{
+  "Разрешить инструменты записи Offload без подтверждения": "Allow Offload write tools without confirmation",
+  "Инструменты записи для Claude Code включаются общим пунктом в разделе «IDE и агенты».": "Write tools for Claude Code are allowed by the shared option in the “IDEs and agents” section.",
+  "Инструменты записи уже разрешены во всех клиентах, где подключён Offload.": "Write tools are already allowed in every client where Offload is connected.",
+  "Инструменты записи нигде не разрешены без подтверждения.": "Write tools are not allowed without confirmation anywhere.",
+  "Не удалось изменить разрешения инструментов записи": "Could not change write tool permissions",
+  "{0}: инструменты записи Offload разрешены без подтверждения ({1}).": "{0}: Offload write tools are allowed without confirmation ({1}).",
+  "{0}: инструменты записи Offload снова спрашивают подтверждение ({1}).": "{0}: Offload write tools ask for confirmation again ({1}).",
+  "Не удалось изменить разрешения: {0}": "Could not change permissions: {0}",
+  "Действует в {0} — там, где Offload подключён. Инструменты записи создают и правят файлы проекта; каждая правка сохраняется и может быть отменена (local_job). Новые инструменты записи после обновления Offload сами не разрешаются — кроме Gemini CLI: там разрешение (trust) даётся всему серверу сразу.": "Applies to {0} — wherever Offload is connected. Write tools create and edit project files; every edit is saved and can be undone (local_job). New write tools added by an Offload update are never allowed automatically — except in Gemini CLI, where permission (trust) covers the whole server.",
+  "Новые инструменты записи ещё спрашивают подтверждение: {0} ({1}). Чтобы разрешить и их, включите пункт; чтобы снять разрешения везде, щёлкните по нему.": "New write tools still ask for confirmation: {0} ({1}). To allow them too, turn the option on; to revoke permissions everywhere, click it.",
+  "Разрешены только в: {0}. Щелчок по пункту снимет разрешения везде, повторный — разрешит во всех клиентах.": "Allowed only in: {0}. Clicking the option revokes permissions everywhere; clicking again allows them in every client.",
+  "{0} смогут без подтверждения поручать Offload создание и правку файлов проекта (каждую правку можно отменить через local_job). В Gemini CLI это доверие всему серверу (trust), включая инструменты будущих версий. Разрешить?": "{0} will be able to have Offload create and edit project files without confirmation (every edit can be undone via local_job). In Gemini CLI this trusts the whole server, including tools of future versions. Allow?",
+  "Offload не подключён ни к одному клиенту, где можно разрешить инструменты записи: подключите его к Claude Code, Cline, Roo Code, Kiro или Gemini CLI.": "Offload is not connected to any client where write tools can be allowed: connect it to Claude Code, Cline, Roo Code, Kiro or Gemini CLI.",
+  "Claude Code: инструменты записи Offload снова спрашивают подтверждение.": "Claude Code: Offload write tools ask for confirmation again.",
+  "Claude Code: инструменты Offload только для чтения разрешены без подтверждения.": "Claude Code: read-only Offload tools are allowed without confirmation."
+}

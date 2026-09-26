@@ -1,0 +1,16 @@
+<Project>
+  <!-- Версии пакетов NuGet — только здесь (Central Package Management). Новую зависимость добавлять осознанно:
+       exe самодостаточный, каждая библиотека увеличивает размер и поверхность атаки. -->
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Roslyn: только синтаксический разбор C# (символы, rename) в Offload.Mcp; без MSBuildWorkspace и компиляции. -->
+    <PackageVersion Include="Microsoft.CodeAnalysis.CSharp" Version="5.9.0" />
+    <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.12" />
+    <PackageVersion Include="Microsoft.Extensions.Hosting" Version="10.0.12" />
+    <PackageVersion Include="ModelContextProtocol" Version="2.2.0" />
+    <PackageVersion Include="xunit.v3" Version="4.0.1" />
+  </ItemGroup>
+</Project>

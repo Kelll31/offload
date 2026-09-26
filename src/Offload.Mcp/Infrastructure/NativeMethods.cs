@@ -100,6 +100,28 @@ internal static class NativeMethods
         }
     }
 
+    /// <summary>Подключиться к консоли процесса (-1 — родительского).</summary>
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool AttachConsole(int processId);
+
+    /// <summary>
+    /// Режим --mcp-http из терминала: exe собран как WinExe, и без этого вывод в stderr не виден. Если stderr уже
+    /// перенаправлен (запуск из другого процесса) — ничего не делаем.
+    /// </summary>
+    public static void AttachParentConsole()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        try
+        {
+            var h = GetStdHandle(-12);
+            if (h == IntPtr.Zero || h == new IntPtr(-1)) AttachConsole(-1);
+        }
+        catch
+        {
+            // Не критично: сообщения останутся в журнале.
+        }
+    }
+
     /// <summary>
     /// Сделать stdin/stdout/stderr процесса ненаследуемыми: дочерние процессы (git, cmd, opencode, трей)
     /// не должны получить копии каналов MCP — иначе IDE не увидит закрытия stdout и трей держал бы его вечно.

@@ -19,7 +19,8 @@ internal static class AskFilesTool
         var maxAnswer = Math.Clamp(maxAnswerTokens <= 0 ? 800 : maxAnswerTokens, 64, 4096);
 
         ctx.Progress.Report($"Reading {ToolHelpers.Plural(specs.Length, "path")}…");
-        var gathered = await FileGatherer.GatherAsync(specs, ctx.Roots, ctx.GatherOptions, ctx.Ct).ConfigureAwait(false);
+        var gathered = await FileGatherer.GatherAsync(specs, ctx.Roots, ctx.GatherOptions with { RedactSecrets = ctx.Cfg.Mcp.RedactSecrets }, ctx.Ct)
+            .ConfigureAwait(false);
         if (gathered.Files.Count == 0)
             throw new ToolException("No readable files for the given paths. " + gathered.CoverageLine());
 
@@ -28,7 +29,7 @@ internal static class AskFilesTool
             "\nThe material is numbered as '<line>| <code>'. Cite locations as path:line (for example src/app.cs:42).");
         var questionBlock = "QUESTION:\n" + q;
 
-        await using var slot = await GpuQueue.AcquireAsync(ctx.Cfg.Server.Parallel, ctx.Progress, ctx.Ct).ConfigureAwait(false);
+        await using var slot = await GpuQueue.AcquireAsync(ctx, ctx.Ct).ConfigureAwait(false);
         string answer;
         ChunkPlan plan;
         var budget = model.MaterialBudget(maxAnswer, system, questionBlock);
@@ -74,15 +75,19 @@ internal static class AskFilesTool
         var mapTokens = Math.Clamp(maxAnswer, 200, 700);
         var mapSystem = system + $"\nYou see only PART of the material. Answer using ONLY this part. If this part has nothing relevant, reply exactly: {NothingRelevant}";
         var partials = new List<string>();
+        // Шаги с известным числом: части + слияние (notifications/progress с total).
+        var steps = plan.Chunks.Count + 1;
         for (var i = 0; i < plan.Chunks.Count; i++)
         {
             ctx.Ct.ThrowIfCancellationRequested();
+            ctx.Progress.Step(i, steps, $"part {i + 1}/{plan.Chunks.Count}");
             var user = $"MATERIAL (part {i + 1} of {plan.Chunks.Count}):\n" + plan.Chunks[i].Render() + "\nQUESTION:\n" + question;
             var reply = await model.ChatAsync(mapSystem, user, mapTokens, $"part {i + 1}/{plan.Chunks.Count}", ctx.Ct).ConfigureAwait(false);
             var text = reply.Text.Trim();
             if (text.Length == 0 || text.Contains(NothingRelevant, StringComparison.OrdinalIgnoreCase) && text.Length < 60) continue;
             partials.Add(text);
         }
+        ctx.Progress.Step(plan.Chunks.Count, steps, "merging partial answers");
         if (partials.Count == 0) return ("The material does not contain an answer to the question (no part had relevant information).", plan);
         if (partials.Count == 1) return (Finalize(partials[0], false, format, maxAnswer), plan);
 

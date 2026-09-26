@@ -112,6 +112,8 @@ internal static class KnownIntegrations
                 .With("timeout", ClineTimeoutSec)
                 .With("autoApprove", ReadOnlyTools()),
             DroppedKeys = ["transport"],
+            RefreshableKeys = ["timeout", "autoApprove"],
+            Approval = new("autoApprove"),
         },
 
         new JsonIntegration("roo-code", "Roo Code", "Roo Code подхватит изменения автоматически.") // l10n-key
@@ -123,6 +125,8 @@ internal static class KnownIntegrations
                 .With("disabled", false)
                 .With("timeout", ClineTimeoutSec)
                 .With("alwaysAllow", ReadOnlyTools()),
+            RefreshableKeys = ["timeout", "alwaysAllow"],
+            Approval = new("alwaysAllow"),
         },
 
         new JsonIntegration("kilo-code", "Kilo Code", "Перезапустите Kilo Code.") // l10n-key
@@ -157,6 +161,8 @@ internal static class KnownIntegrations
             Entry = spec => Basic(spec)
                 .With("timeout", GeminiTimeoutMs)
                 .With("trust", false),
+            RefreshableKeys = ["timeout"],
+            Approval = new("trust", TrustFlag: true),
         },
 
         new JsonIntegration("zed", "Zed", "Zed применит настройки автоматически; если сервер не появился — перезапустите Zed.") // l10n-key
@@ -165,6 +171,7 @@ internal static class KnownIntegrations
             Targets = () => [Path.Combine(AppData, "Zed", "settings.json")],
             Container = ["context_servers"],
             Entry = spec => Basic(spec, env: true).With("timeout", ZedTimeoutSec),
+            RefreshableKeys = ["timeout"],
         },
 
         new JsonIntegration("visual-studio", "Visual Studio 2022/2026",
@@ -197,6 +204,8 @@ internal static class KnownIntegrations
             Entry = spec => Basic(spec)
                 .With("disabled", false)
                 .With("autoApprove", ReadOnlyTools()),
+            RefreshableKeys = ["autoApprove"],
+            Approval = new("autoApprove"),
         },
 
         new JsonIntegration("trae", "Trae", "Перезапустите Trae.") // l10n-key

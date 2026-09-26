@@ -137,6 +137,48 @@ internal static class GitHubReleases
         return null;
     }
 
+    /// <summary>
+    /// Релиз с конкретным тегом (для закреплённой сборки): сначала кэш (состав релиза с фиксированным тегом не меняется),
+    /// затем releases/tags/{tag}; ответ добавляется в кэш.
+    /// </summary>
+    public static async Task<LlamaRelease> GetByTagAsync(string tag, CancellationToken ct)
+    {
+        if (!IsBuildTag(tag)) throw new ArgumentException(L.F("Неверный тег сборки llama.cpp: «{0}».", tag), nameof(tag));
+        var cache = ReleaseCache.Load();
+        if (cache?.Releases.FirstOrDefault(r => string.Equals(r.Tag, tag, StringComparison.OrdinalIgnoreCase)) is { } cached)
+        {
+            Log.Debug("llama", $"Релиз llama.cpp {tag} взят из кэша");
+            return cached;
+        }
+        LlamaRelease rel;
+        try
+        {
+            rel = await GetReleaseByTagAsync(tag, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (HttpRequestException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        {
+            throw new LlamaBuildNotFoundException(L.F("Релиз llama.cpp {0} не найден на GitHub.", tag), ex);
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidOperationException(L.F("Не удалось получить сведения о релизах llama.cpp: {0}", Describe(ex)), ex);
+        }
+        if (cache is not null)
+        {
+            cache.Releases.Add(rel);
+            cache.Save();
+        }
+        else
+        {
+            new ReleaseCache { FetchedAtUtc = DateTime.MinValue, Releases = [rel] }.Save();
+        }
+        return rel;
+    }
+
     internal static async Task<LlamaRelease> GetReleaseByTagAsync(string tag, CancellationToken ct)
     {
         var json = await GetApiAsync($"{ApiBase}/repos/{LlamaReleaseResolver.Repo}/releases/tags/{Uri.EscapeDataString(tag)}", ct);
@@ -211,12 +253,24 @@ internal static class GitHubReleases
                 if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(url)) continue;
                 // Файл ещё загружается в релиз (state=starter) — пропускаем.
                 if (a.TryGetProperty("state", out var st) && st.ValueKind == JsonValueKind.String && st.GetString() != "uploaded") continue;
+                if (!IsTrustedAssetUrl(url))
+                {
+                    // Адрес и digest приходят из одного ответа: файл с чужого хоста или репозитория с «подходящей» суммой не берём.
+                    Log.Warn("llama", $"Файл релиза {name} отброшен: адрес не ведёт на github.com/{LlamaReleaseResolver.Repo}/releases/download/");
+                    continue;
+                }
                 var size = a.TryGetProperty("size", out var s) && s.TryGetInt64(out var sz) ? sz : 0;
                 assets.Add(new LlamaAsset(name, url, size, ParseDigest(a.TryGetProperty("digest", out var dg) ? dg.GetString() : null)));
             }
         }
         return new LlamaRelease(tag, published, assets);
     }
+
+    /// <summary>
+    /// Адрес файла релиза — только https://github.com/ggml-org/llama.cpp/releases/download/… (или тот же путь от
+    /// <see cref="WebBase"/> в тестах): зеркало API не выбирает, откуда качать; зеркало загрузок подставится позже.
+    /// </summary>
+    internal static bool IsTrustedAssetUrl(string? url) => NetworkOptions.IsReleaseAssetUrl(url, LlamaReleaseResolver.Repo, WebBase);
 
     /// <summary>"sha256:ABC…" → "abc…" (64 hex); прочие алгоритмы и мусор → null.</summary>
     internal static string? ParseDigest(string? digest)
@@ -250,7 +304,16 @@ internal static class GitHubReleases
 internal sealed class GitHubRateLimitException(string message) : Exception(message);
 
 /// <summary>Сеть доступна, но ни в одном из последних релизов нет нужной сборки.</summary>
-internal sealed class LlamaBuildNotFoundException(string message) : InvalidOperationException(message);
+internal sealed class LlamaBuildNotFoundException : InvalidOperationException
+{
+    public LlamaBuildNotFoundException(string message) : base(message)
+    {
+    }
+
+    public LlamaBuildNotFoundException(string message, Exception inner) : base(message, inner)
+    {
+    }
+}
 
 /// <summary>Кэш последнего удачного ответа GitHub (защита от лимита 60 запросов/ч и работы без сети).</summary>
 internal sealed class ReleaseCache
@@ -275,7 +338,12 @@ internal sealed class ReleaseCache
             if (!File.Exists(path)) return null;
             var c = JsonSerializer.Deserialize<ReleaseCache>(File.ReadAllText(path), Json.Options);
             if (c?.Releases is null) return null;
-            c.Releases = c.Releases.Where(r => r?.Assets is not null && !string.IsNullOrEmpty(r.Tag)).ToList();
+            c.Releases = c.Releases.Where(r => r?.Assets is not null && !string.IsNullOrEmpty(r.Tag))
+                // Кэш мог быть записан до проверки адресов — чужие адреса отбрасываются и здесь.
+                .Select(r => r.Assets.All(a => GitHubReleases.IsTrustedAssetUrl(a.DownloadUrl))
+                    ? r
+                    : r with { Assets = r.Assets.Where(a => GitHubReleases.IsTrustedAssetUrl(a.DownloadUrl)).ToList() })
+                .ToList();
             return c;
         }
         catch (Exception ex)
@@ -313,6 +381,12 @@ internal static class AssetSelector
                 return Simple(release, backend, $@"^llama-b\d+-bin-win-vulkan-{arch}\.zip$");
             case LlamaBackend.Sycl:
                 return Simple(release, backend, $@"^llama-b\d+-bin-win-sycl-{arch}\.zip$");
+            case LlamaBackend.OpenVino:
+                // Intel OpenVINO: версия runtime в имени (openvino-2026.4), сборка есть только для x64.
+                return Simple(release, backend, $@"^llama-b\d+-bin-win-openvino(?:-(?<v>\d+(?:\.\d+)*))?-{arch}\.zip$");
+            case LlamaBackend.OpenClAdreno:
+                // OpenCL для Adreno (Snapdragon X) — только ARM64.
+                return Simple(release, backend, $@"^llama-b\d+-bin-win-opencl-adreno-{arch}\.zip$");
             case LlamaBackend.Rocm:
             {
                 // hip-radeon — старое название той же сборки (до ~b10900), версия считается нулевой.

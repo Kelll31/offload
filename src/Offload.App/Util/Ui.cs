@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using Offload.Core.Logging;
 
 namespace Offload.App.Util;
@@ -14,7 +15,6 @@ internal static class Ui
         while (ex is AggregateException { InnerExceptions.Count: 1 } agg) ex = agg.InnerExceptions[0];
         return ex switch
         {
-            NotImplementedException => L.T("Эта функция ещё не реализована в текущей сборке Offload."),
             OperationCanceledException => L.T("Операция отменена."),
             UnauthorizedAccessException => L.F("Нет доступа: {0}", ex.Message),
             HttpRequestException h => L.F("Ошибка сети: {0}", h.Message),
@@ -84,12 +84,77 @@ internal static class Ui
     }
 
     public static void ShowError(IWin32Window? owner, string title, Exception ex) =>
-        ShowError(owner, title, FriendlyError(ex));
+        ShowErrorDialog(owner, title, FriendlyError(ex), ex);
 
-    public static void ShowError(IWin32Window? owner, string title, string details)
+    public static void ShowError(IWin32Window? owner, string title, string details) =>
+        ShowErrorDialog(owner, title, details, null);
+
+    /// <summary>
+    /// Окно ошибки (TaskDialog) с кнопками «Копировать подробности» (текст, версия, исключение — в буфер обмена,
+    /// окно остаётся открытым) и «Открыть журнал». Не в STA-потоке или без TaskDialog — обычный MessageBox.
+    /// </summary>
+    private static void ShowErrorDialog(IWin32Window? owner, string title, string details, Exception? ex)
     {
+        if (Thread.CurrentThread.GetApartmentState() == ApartmentState.STA)
+        {
+            try
+            {
+                var copy = new TaskDialogButton(L.T("Копировать подробности")) { AllowCloseDialog = false };
+                copy.Click += (_, _) =>
+                {
+                    if (!TrySetClipboard(ErrorReport(title, details, ex)))
+                        Log.Warn("ui", "Не удалось скопировать подробности ошибки в буфер обмена");
+                };
+                var openLog = new TaskDialogButton(L.T("Открыть журнал"));
+                var page = new TaskDialogPage
+                {
+                    Caption = Caption,
+                    Heading = title,
+                    Text = string.IsNullOrWhiteSpace(details) ? null : details,
+                    Icon = TaskDialogIcon.Error,
+                    AllowCancel = true,
+                    SizeToContent = true,
+                    Buttons = { copy, openLog, TaskDialogButton.OK },
+                    DefaultButton = TaskDialogButton.OK,
+                };
+                var result = owner is Control { IsDisposed: false, IsHandleCreated: true, Visible: true } c
+                    ? TaskDialog.ShowDialog(c, page)
+                    : TaskDialog.ShowDialog(page, TaskDialogStartupLocation.CenterScreen);
+                if (result == openLog) OpenLog();
+                return;
+            }
+            catch (Exception dialogError) when (dialogError is InvalidOperationException or System.ComponentModel.Win32Exception or ExternalException or EntryPointNotFoundException)
+            {
+                Log.Warn("ui", $"Окно ошибки не показано: {dialogError.Message}");
+            }
+        }
         var text = string.IsNullOrWhiteSpace(details) ? title : $"{title}.{Environment.NewLine}{Environment.NewLine}{details}";
         Show(owner, text, MessageBoxButtons.OK, MessageBoxIcon.Error);
+    }
+
+    /// <summary>Текст для «Копировать подробности»: заголовок, пояснение, версии и исключение целиком.</summary>
+    internal static string ErrorReport(string title, string details, Exception? ex)
+    {
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine(title);
+        if (!string.IsNullOrWhiteSpace(details)) sb.AppendLine(details);
+        sb.AppendLine();
+        sb.AppendLine($"Offload {Offload.Core.AppInfo.Version}, {Environment.OSVersion.VersionString}, {System.Runtime.InteropServices.RuntimeInformation.FrameworkDescription}");
+        if (Log.CurrentFile is { } log) sb.AppendLine($"Log: {log}");
+        if (ex is not null)
+        {
+            sb.AppendLine();
+            sb.AppendLine(ex.ToString());
+        }
+        return sb.ToString().TrimEnd();
+    }
+
+    /// <summary>Открыть журнал программы (app.log) в Блокноте; журнала нет — папку журналов.</summary>
+    public static void OpenLog()
+    {
+        var file = Log.CurrentFile;
+        if (file is not null && File.Exists(file)) OpenInNotepad(file);
+        else OpenFolder(Offload.Core.AppPaths.LogsDir);
     }
 
     public static void Info(IWin32Window? owner, string text) =>

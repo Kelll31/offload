@@ -545,7 +545,7 @@ internal sealed class InstallStep : WizardStep
                     }
                     if (s.PreapproveReadTools && !ClaudeCodeExtras.AreToolsPreapproved())
                     {
-                        var r = ClaudeCodeExtras.PreapproveTools(includeWriteTools: false);
+                        var r = ClaudeCodeExtras.AllowReadTools();
                         if (!r.Ok) errors.Add(L.F("Разрешения Claude Code: {0}", r.Message));
                     }
                 }

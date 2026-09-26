@@ -15,6 +15,8 @@ internal sealed class PromptPage : PageBase
     private readonly NumericUpDown _maxFileKb = Kit.Number(16, 65536, 512, 100);
     private readonly NumericUpDown _maxResponse = Kit.Number(1000, 500000, 12000, 100, increment: 1000);
     private readonly CheckBox _restrictWrites = Kit.Check(L.T("Разрешать запись файлов только внутри рабочей папки IDE"));
+    private readonly CheckBox _redactSecrets = Kit.Check(L.T("Скрывать значения секретов (ключи, токены, пароли) в тексте, который видят модели"));
+    private readonly CheckBox _protectBuildFiles = Kit.Check(L.T("Запрещать инструментам правку файлов сборки (*.csproj, package.json, Makefile…) без явного разрешения"));
     private readonly NumericUpDown _priceIn = Kit.Number(0, 1000, 3, 90, decimals: 2, increment: 0.5m);
     private readonly NumericUpDown _priceOut = Kit.Number(0, 1000, 15, 90, decimals: 2, increment: 0.5m);
     private readonly Button _save;
@@ -49,6 +51,8 @@ internal sealed class PromptPage : PageBase
         limits.AddField(L.T("Максимальная длина ответа:"), _maxResponse, L.T("символов — чтобы не расходовать токены IDE"));
         root.AddRow(limits);
         root.AddRow(_restrictWrites);
+        root.AddRow(_redactSecrets);
+        root.AddRow(_protectBuildFiles);
 
         root.AddRow(Kit.Section(L.T("Цены облачной модели (для оценки экономии)")));
         var prices = Kit.Grid();
@@ -68,6 +72,8 @@ internal sealed class PromptPage : PageBase
         _maxFileKb.ValueChanged += (_, _) => MarkDirty();
         _maxResponse.ValueChanged += (_, _) => MarkDirty();
         _restrictWrites.CheckedChanged += (_, _) => MarkDirty();
+        _redactSecrets.CheckedChanged += (_, _) => MarkDirty();
+        _protectBuildFiles.CheckedChanged += (_, _) => MarkDirty();
         _priceIn.ValueChanged += (_, _) => MarkDirty();
         _priceOut.ValueChanged += (_, _) => MarkDirty();
 
@@ -103,6 +109,8 @@ internal sealed class PromptPage : PageBase
             _maxFileKb.Value = Math.Clamp(m.MaxFileBytes / 1024, (int)_maxFileKb.Minimum, (int)_maxFileKb.Maximum);
             _maxResponse.Value = Math.Clamp(m.MaxResponseChars, (int)_maxResponse.Minimum, (int)_maxResponse.Maximum);
             _restrictWrites.Checked = m.RestrictWritesToWorkspace;
+            _redactSecrets.Checked = m.RedactSecrets;
+            _protectBuildFiles.Checked = m.ProtectBuildFiles;
             _priceIn.Value = Math.Clamp((decimal)m.CloudInputPricePerMTok, _priceIn.Minimum, _priceIn.Maximum);
             _priceOut.Value = Math.Clamp((decimal)m.CloudOutputPricePerMTok, _priceOut.Minimum, _priceOut.Maximum);
             _preset.SelectedIndex = DetectPreset();
@@ -205,6 +213,8 @@ internal sealed class PromptPage : PageBase
             if (m.MaxTotalBytes < m.MaxFileBytes) m.MaxTotalBytes = m.MaxFileBytes;
             m.MaxResponseChars = (int)_maxResponse.Value;
             m.RestrictWritesToWorkspace = _restrictWrites.Checked;
+            m.RedactSecrets = _redactSecrets.Checked;
+            m.ProtectBuildFiles = _protectBuildFiles.Checked;
             m.CloudInputPricePerMTok = (double)_priceIn.Value;
             m.CloudOutputPricePerMTok = (double)_priceOut.Value;
         }), L.T("Не удалось сохранить настройки"));

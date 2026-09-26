@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <UseWindowsForms>true</UseWindowsForms>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <NoWarn>$(NoWarn);WFO5001;WFO5002;WFO1000</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Offload.App\Offload.App.csproj" />
+    <ProjectReference Include="..\..\src\Offload.Core\Offload.Core.csproj" />
+    <ProjectReference Include="..\..\src\Offload.Integrations\Offload.Integrations.csproj" />
+  </ItemGroup>
+</Project>

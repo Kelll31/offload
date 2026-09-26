@@ -1,3 +1,4 @@
+using Offload.Core.Usage;
 using Offload.Llama;
 
 namespace Offload.App.Services;
@@ -26,13 +27,28 @@ internal interface IAppShell
     /// <summary>Найденное при запуске обновление llama.cpp (null — нет или не проверялось).</summary>
     LlamaUpdateInfo? PendingLlamaUpdate { get; set; }
 
+    /// <summary>Найденное обновление самого Offload (null — нет или не проверялось).</summary>
+    AppUpdateInfo? PendingAppUpdate { get; set; }
+
+    /// <summary>Идёт выход из программы (после <see cref="ExitAsync"/>, если пользователь его не отменил).</summary>
+    bool IsExiting { get; }
+
+    /// <summary>MCP-процесс IDE записал обращение к модели (событие — в потоке интерфейса).</summary>
+    event EventHandler<UsageRecord>? UsageRecorded;
+
+    /// <summary>Сообщить о новой записи статистики (из любого потока; событие поднимается в потоке интерфейса).</summary>
+    void ReportUsageRecorded(UsageRecord record);
+
     /// <summary>Открыть (активировать) панель управления на вкладке (см. <see cref="Tabs"/>).</summary>
     void ShowMainWindow(string? tab = null);
 
     void ShowSetupWizard();
 
-    /// <summary>Всплывающее уведомление трея. force — показать, даже если уведомления выключены (ответ на действие пользователя).</summary>
-    void Notify(string title, string text, ToolTipIcon icon = ToolTipIcon.Info, bool force = false);
+    /// <summary>
+    /// Всплывающее уведомление трея. force — показать, даже если уведомления выключены (ответ на действие пользователя).
+    /// tab — раздел, который откроет щелчок по уведомлению (null — окно на текущем разделе).
+    /// </summary>
+    void Notify(string title, string text, ToolTipIcon icon = ToolTipIcon.Info, bool force = false, string? tab = null);
 
     /// <summary>Выполнить действие в потоке интерфейса.</summary>
     void PostToUi(Action action);

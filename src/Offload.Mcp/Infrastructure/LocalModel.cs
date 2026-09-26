@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 using Offload.Core.Config;
 using Offload.Core.Logging;
 using Offload.Llama;
@@ -10,6 +11,9 @@ internal sealed record ModelReply(string Text, ChatResult Raw)
 {
     public bool Truncated => Raw.Truncated;
 }
+
+/// <summary>Ответ со структурированным выводом: текст и разобранный JSON (null — модель выдала не JSON).</summary>
+internal sealed record ModelJsonReply(ModelReply Reply, JsonElement? Json);
 
 /// <summary>Запрос не помещается в контекст модели (сервер вернул ошибку контекста).</summary>
 internal sealed class ContextExceededException(string message) : Exception(message);
@@ -30,6 +34,63 @@ internal sealed class ToolStats
 
     /// <summary>Токены кода, записанного на диск локальной моделью (облачной не пришлось его генерировать).</summary>
     public long TokensWritten { get; set; }
+
+    /// <summary>Символы материала, просмотренного детерминированным инструментом (индекс, поиск, вывод команд) вместо IDE.</summary>
+    public long ScannedChars { get; private set; }
+
+    public int ScannedFiles { get; private set; }
+
+    /// <summary>Оценка токенов просмотренного материала (≈3 символа на токен, без обращения к серверу).</summary>
+    public long ScannedTokens => (long)Math.Ceiling(ScannedChars / 3.0);
+
+    /// <summary>Суммарное ожидание слота GPU за вызов.</summary>
+    public TimeSpan QueueWait { get; private set; }
+
+    /// <summary>Образец материала, отправленного модели (для калибровки оценки токенов по /tokenize).</summary>
+    public string? MaterialSample { get; private set; }
+
+    /// <summary>Поправка «точные токены / эвристика» для этого вызова (null — только эвристика).</summary>
+    public double? TokenRatio { get; set; }
+
+    public void AddScanned(long chars, int files = 0)
+    {
+        lock (_lock)
+        {
+            ScannedChars += Math.Max(0, chars);
+            ScannedFiles += Math.Max(0, files);
+        }
+    }
+
+    /// <summary>Учесть просмотренные файлы индекса: символы строк плюс переводы строк.</summary>
+    public void AddScanned(IEnumerable<SourceFile> files)
+    {
+        long chars = 0;
+        var count = 0;
+        foreach (var f in files)
+        {
+            count++;
+            chars += f.Lines.Length;
+            foreach (var l in f.Lines) chars += l.Length;
+        }
+        AddScanned(chars, count);
+    }
+
+    public void AddQueueWait(TimeSpan waited)
+    {
+        if (waited <= TimeSpan.Zero) return;
+        lock (_lock) QueueWait += waited;
+    }
+
+    /// <summary>Запомнить самый объёмный запрос (до 24 тыс. символов) как образец для калибровки.</summary>
+    public void NoteSample(string text)
+    {
+        if (string.IsNullOrEmpty(text)) return;
+        var sample = text.Length <= TokenCounter.MaxSampleChars ? text : text[..TokenCounter.MaxSampleChars];
+        lock (_lock)
+        {
+            if (MaterialSample is null || sample.Length > MaterialSample.Length) MaterialSample = sample;
+        }
+    }
 
     public void Add(ChatResult r)
     {
@@ -61,13 +122,18 @@ internal sealed class ToolStats
 /// Обращение к локальной модели: сборка ChatRequest из настроек модели (сэмплинг, отключение размышлений),
 /// потоковая генерация с «пульсом» прогресса, очистка ответа.
 /// </summary>
-internal sealed class LocalModel(LlamaClient client, AppConfig cfg, ProgressReporter progress, ToolStats stats)
+/// <param name="role">Роль сервера, к которому обращается клиент (<see cref="ModelRouting"/>): его модель задаёт сэмплинг и контекст.</param>
+internal sealed class LocalModel(LlamaClient client, AppConfig cfg, ProgressReporter progress, ToolStats stats, ModelRole role = ModelRole.Quality)
 {
     /// <summary>Предел одного обращения к модели — защита от зависшего сервера (пульс прогресса иначе держал бы вызов вечно).</summary>
     public static TimeSpan CallTimeout { get; set; } = TimeSpan.FromMinutes(30);
 
     public LlamaClient Client => client;
-    public InstalledModel? Model { get; } = cfg.ActiveModel();
+
+    /// <summary>Роль модели этого вызова (quality — основная, fast — быстрая).</summary>
+    public ModelRole Role => role;
+
+    public InstalledModel? Model { get; } = cfg.RoleModel(role);
     public int ContextPerSlot { get; private set; } = 8192;
     public ServerProps? Props { get; private set; }
 
@@ -88,6 +154,7 @@ internal sealed class LocalModel(LlamaClient client, AppConfig cfg, ProgressRepo
     {
         Props = await client.GetPropsAsync(ct).ConfigureAwait(false);
         var ctx = Props?.ContextPerSlot ?? 0;
+        if (ctx <= 0 && role != ModelRole.Quality && Model is not null) ctx = ModelRoleConfig.AuxContext(role, Model);
         if (ctx <= 0) ctx = cfg.Server.ContextSize > 0 ? cfg.Server.ContextSize : Model?.RecommendedContext ?? 0;
         if (ctx <= 0) ctx = 8192;
         ContextPerSlot = ctx;
@@ -119,7 +186,7 @@ internal sealed class LocalModel(LlamaClient client, AppConfig cfg, ProgressRepo
     /// (ChatRequest.ChatTemplateKwargs {"enable_thinking": false} или ReasoningEffort "low");
     /// ответ дополнительно очищается от &lt;think&gt; в OutputCleaner.
     /// </summary>
-    internal static ChatRequest BuildRequest(InstalledModel? model, IReadOnlyList<ChatMessage> messages, int maxTokens)
+    internal static ChatRequest BuildRequest(InstalledModel? model, IReadOnlyList<ChatMessage> messages, int maxTokens, ResponseFormat? format = null)
     {
         var s = model?.Sampling;
         IReadOnlyDictionary<string, object>? kwargs = null;
@@ -144,12 +211,49 @@ internal sealed class LocalModel(LlamaClient client, AppConfig cfg, ProgressRepo
             Stop: null,
             PresencePenalty: s is { PresencePenalty: > 0 } ? s.PresencePenalty : null,
             ChatTemplateKwargs: kwargs,
-            ReasoningEffort: effort);
+            ReasoningEffort: effort,
+            ResponseFormat: format);
     }
 
-    public async Task<ModelReply> ChatAsync(string system, string user, int maxTokens, string label, CancellationToken ct)
+    public Task<ModelReply> ChatAsync(string system, string user, int maxTokens, string label, CancellationToken ct) =>
+        SendAsync(BuildRequest(Model, [ChatMessage.System(system), ChatMessage.User(user)], maxTokens), system, user, label, ct);
+
+    /// <summary>
+    /// Запрос со структурированным выводом (ROADMAP §9.2): response_format json_schema — llama-server ограничивает генерацию
+    /// грамматикой схемы. Json — разобранный ответ (null, если ответ всё же не JSON: например, обрезан по max_tokens).
+    /// </summary>
+    public async Task<ModelJsonReply> ChatJsonAsync(string system, string user, ResponseFormat format, int maxTokens, string label, CancellationToken ct)
     {
-        var request = BuildRequest(Model, [ChatMessage.System(system), ChatMessage.User(user)], maxTokens);
+        ArgumentNullException.ThrowIfNull(format);
+        var reply = await SendAsync(BuildRequest(Model, [ChatMessage.System(system), ChatMessage.User(user)], maxTokens, format),
+            system, user, label, ct).ConfigureAwait(false);
+        return new ModelJsonReply(reply, TryParseJson(reply.Text));
+    }
+
+    /// <summary>JSON из ответа модели: целиком или внутри ```json … ``` (на случай, если сервер не применил схему).</summary>
+    internal static JsonElement? TryParseJson(string text)
+    {
+        var t = text.Trim();
+        if (t.StartsWith("```", StringComparison.Ordinal))
+        {
+            var firstLine = t.IndexOf('\n');
+            var fence = t.LastIndexOf("```", StringComparison.Ordinal);
+            if (firstLine > 0 && fence > firstLine) t = t[(firstLine + 1)..fence].Trim();
+        }
+        if (t.Length == 0 || t[0] is not ('{' or '[')) return null;
+        try
+        {
+            using var doc = JsonDocument.Parse(t);
+            return doc.RootElement.Clone();
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private async Task<ModelReply> SendAsync(ChatRequest request, string system, string user, string label, CancellationToken ct)
+    {
         var promptEstimate = Tokens.Estimate(system) + Tokens.Estimate(user);
         long deltas = 0;
         var firstTokenTicks = 0L;
@@ -187,27 +291,55 @@ internal sealed class LocalModel(LlamaClient client, AppConfig cfg, ProgressRepo
             }
         }
         stats.Add(result);
+        stats.NoteSample(user);
         var text = OutputCleaner.StripThink(result.Content);
         if (text.Length == 0 && !string.IsNullOrWhiteSpace(result.Content))
             Log.Debug("mcp", "Ответ модели состоял только из размышлений");
         return new ModelReply(text, result);
     }
 
-    /// <summary>Ошибки llama-server (тексты на русском) → понятные IDE сообщения на английском.</summary>
+    /// <summary>
+    /// Ошибки llama-server → понятные IDE сообщения на английском. Классификация — по LlamaApiException.Kind
+    /// (его выставляет слой Llama по типу ошибки/кодам), подробности — только из Detail: Message локализован для UI.
+    /// </summary>
     internal static Exception MapError(LlamaApiException ex)
     {
-        Log.Warn("mcp", $"llama-server: {ex.StatusCode}: {ex.Message}");
-        var msg = ex.Message;
-        if (ex.StatusCode == 401)
-            return new ToolException("The local model server rejected Offload's API key (401). Restart the server from the Offload tray app so the keys match.");
-        if (ex.StatusCode == 503)
-            return new ToolException("The local model is still loading. Retry in a few seconds.");
-        if (msg.Contains("контекст", StringComparison.OrdinalIgnoreCase) || msg.Contains("context", StringComparison.OrdinalIgnoreCase))
-            return new ContextExceededException("The request does not fit into the local model's context window.");
-        if (ex.StatusCode is null)
-            return new ToolException("Lost connection to the local model server (it may have restarted or crashed). Retry once; if it repeats, check the Offload tray app. Details: " + msg);
-        if (ex.StatusCode >= 500)
-            return new ToolException($"The local model server failed (HTTP {ex.StatusCode}): {msg}. Retry once or do the task yourself.");
-        return new ToolException($"The local model server rejected the request (HTTP {ex.StatusCode}): {msg}");
+        Log.Warn("mcp", $"llama-server: {ex.Kind} {ex.StatusCode}: {ex.Message}");
+        var detail = EnglishDetail(ex.Detail);
+        var suffix = detail is null ? "" : " Details: " + detail;
+        switch (ex.Kind)
+        {
+            case LlamaErrorKind.Unauthorized:
+                return new ToolException("The local model server rejected Offload's API key (401). Restart the server from the Offload tray app so the keys match.");
+            case LlamaErrorKind.Loading:
+                return new ToolException("The local model is still loading. Retry in a few seconds.");
+            case LlamaErrorKind.ContextExceeded:
+                var sizes = ex.PromptTokens is int p && ex.ContextSize is int c ? $" ({p} tok requested, context {c} tok)" : "";
+                return new ContextExceededException($"The request does not fit into the local model's context window{sizes}.");
+            case LlamaErrorKind.NotRunning:
+                return new ToolException("The local model server is not running (connection refused). Start it from the Offload tray app, or retry once: it may be restarting." + suffix);
+            case LlamaErrorKind.ConnectionFailed:
+            case LlamaErrorKind.ConnectionLost:
+                return new ToolException("Lost connection to the local model server (it may have restarted or crashed). Retry once; if it repeats, check the Offload tray app." + suffix);
+        }
+        var status = ex.StatusCode is int code ? $"HTTP {code}" : "no HTTP status";
+        if (ex.Kind == LlamaErrorKind.ServerError || ex.StatusCode >= 500)
+            return new ToolException($"The local model server failed ({status}).{suffix} Retry once or do the task yourself.");
+        return new ToolException($"The local model server rejected the request ({status}).{suffix}");
+    }
+
+    /// <summary>
+    /// Подробность для IDE (до 300 символов, в одну строку). Текст с нелатинскими буквами (локализованный UI/ОС) отбрасывается —
+    /// сообщения для модели только на английском; полный текст остаётся в журнале.
+    /// </summary>
+    internal static string? EnglishDetail(string? detail)
+    {
+        if (string.IsNullOrWhiteSpace(detail)) return null;
+        foreach (var ch in detail)
+        {
+            if (ch > '\u007f' && char.IsLetter(ch)) return null;
+        }
+        var s = string.Join(' ', detail.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
+        return s.Length <= 300 ? s : s[..300] + "…";
     }
 }

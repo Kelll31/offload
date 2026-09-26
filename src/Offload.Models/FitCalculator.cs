@@ -39,6 +39,13 @@ public static class FitCalculator
     /// <summary>Резерв видеопамяти под систему/рабочий стол/буферы вычислений, байт.</summary>
     public const long VramReserveBytes = 1L * 1024 * 1024 * 1024;
 
+    /// <summary>
+    /// Бюджет видеопамяти для модели: объём карты минус резерв; если другие программы уже заняли больше резерва —
+    /// минус их занятость (фон рабочего стола входит в резерв, поэтому не вычитается дважды).
+    /// </summary>
+    public static long VramBudget(long vramBytes, long otherVramBytes = 0) =>
+        Math.Max(0, vramBytes - Math.Max(VramReserveBytes, Math.Max(0, otherVramBytes)));
+
     private const long GiB = 1024L * 1024 * 1024;
     private const long MiB = 1024L * 1024;
 
@@ -113,6 +120,22 @@ public static class FitCalculator
         return baseBytes + Math.Max(0, totalContextTokens) * 1024L;
     }
 
+    /// <summary>
+    /// Архитектуры-энкодеры (BERT и родственные, GGUF general.architecture): llama.cpp не создаёт для них KV-кэш —
+    /// весь вход обрабатывается одним проходом, память = веса + буфер вычислений.
+    /// </summary>
+    private static readonly HashSet<string> EncoderArchitectures = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "bert", "nomic-bert", "nomic-bert-moe", "jina-bert-v2", "jina-bert-v3", "neo-bert", "modern-bert", "gemma-embedding", "t5encoder",
+    };
+
+    /// <summary>
+    /// Нужен ли модели KV-кэш. Чат-модели — всегда. Эмбеддинги/реранкеры на архитектуре-энкодере (bge-reranker — bert) — нет;
+    /// на декодере (Qwen3-Embedding — qwen3, каузальное внимание) llama.cpp выделяет кэш на один слот, и он учитывается.
+    /// </summary>
+    internal static bool HasKvCache(CatalogModel model) =>
+        model.IsChat || string.IsNullOrWhiteSpace(model.Architecture) || !EncoderArchitectures.Contains(model.Architecture.Trim());
+
     /// <summary>Сколько ОЗУ оставить системе и программам: 25 % памяти, но от 2 до 6 ГиБ.</summary>
     public static long RamReserveBytes(HardwareInfo hw) => Math.Clamp(hw.TotalRamBytes / 4, 2 * GiB, 6 * GiB);
 
@@ -120,32 +143,44 @@ public static class FitCalculator
     /// 0 — подобрать автоматически: наибольший из [DefaultContext, 64K, 32K, 16K], который помещается
     /// (не больше NativeContext; при нехватке памяти — до 8K).
     /// </param>
-    public static FitResult Evaluate(CatalogModel model, long weightsBytes, HardwareInfo hw, int contextSize = 0, string cacheType = "q8_0", int parallel = 1)
+    /// <param name="maxContext">Верхняя граница автоподбора контекста (0 — без границы); сама граница — тоже кандидат.</param>
+    /// <param name="otherVramBytes">Сколько видеопамяти уже занято другими программами (см. <see cref="VramBudget"/>).</param>
+    public static FitResult Evaluate(CatalogModel model, long weightsBytes, HardwareInfo hw, int contextSize = 0, string cacheType = "q8_0", int parallel = 1,
+        int maxContext = 0, long otherVramBytes = 0)
     {
         ArgumentNullException.ThrowIfNull(model);
         ArgumentNullException.ThrowIfNull(hw);
         var weights = weightsBytes > 0 ? weightsBytes : model.ApproxSizeBytes;
         parallel = Math.Max(1, parallel);
+        if (!model.IsChat)
+        {
+            // Эмбеддинги/реранк: сервер роли всегда с одним слотом (-np 1), контекст — рабочий контекст модели
+            // (без автоподбора под агента: он рассчитан на чат-модели и отсёк бы контекст 8K).
+            parallel = 1;
+            if (contextSize <= 0) contextSize = model.DefaultContext > 0 ? model.DefaultContext : MinContext;
+        }
+        var hasKv = HasKvCache(model);
         cacheType = string.IsNullOrWhiteSpace(cacheType) ? "f16" : cacheType;
 
         var vram = hw.PrimaryVramBytes >= MinUsableVramBytes ? hw.PrimaryVramBytes : 0;
-        var budget = Math.Max(0, vram - VramReserveBytes);
+        var budget = VramBudget(vram, otherVramBytes);
         var ramTotal = Math.Max(0, hw.TotalRamBytes);
         var ramBudget = Math.Max(0, ramTotal - RamReserveBytes(hw));
 
         var native = model.NativeContext > 0 ? model.NativeContext : int.MaxValue;
         var explicitCtx = contextSize > 0;
+        var limit = maxContext > 0 ? Math.Min(native, Math.Max(maxContext, MinContext)) : native;
         int[] candidates = explicitCtx
             ? [Math.Min(contextSize, native)]
-            : new[] { model.DefaultContext }.Concat(AutoContexts).Append(MinContext)
-                .Where(c => c > 0 && c <= native).Distinct().OrderDescending().ToArray();
+            : new[] { model.DefaultContext, maxContext }.Concat(AutoContexts).Append(MinContext)
+                .Where(c => c > 0 && c <= limit).Distinct().OrderDescending().ToArray();
         if (candidates.Length == 0) candidates = [Math.Min(MinContext, native)];
 
         // Сколько памяти нужно при данном контексте (без учёта того, где она находится).
         Need NeedFor(int ctx)
         {
-            var kv = KvCacheBytes(model.Kv, ctx, cacheType) * parallel;
-            var state = model.Kv.RecurrentStateBytes * parallel;
+            var kv = hasKv ? KvCacheBytes(model.Kv, ctx, cacheType) * parallel : 0;
+            var state = hasKv ? model.Kv.RecurrentStateBytes * parallel : 0;
             var compute = ComputeBufferBytes(model, weights, ctx * parallel);
             return new Need(ctx, kv, state, compute, weights + kv + state + compute);
         }
@@ -222,7 +257,7 @@ public static class FitCalculator
     }
 
     /// <summary>Лучшая модель каталога для этого оборудования (баланс качества и скорости).</summary>
-    public static CatalogModel Recommend(HardwareInfo hw) => Recommend(hw, ModelCatalog.All);
+    public static CatalogModel Recommend(HardwareInfo hw) => Recommend(hw, ModelCatalog.ChatModels);
 
     /// <summary>
     /// Основной ориентир — Qwen3.8-27B (лучшее качество среди локальных моделей для кода):

@@ -11,6 +11,10 @@ namespace Offload.Llama;
 /// остальные карты от Maxwell до Hopper работают через PTX JIT). CUDA 13 — только для Blackwell (cc ≥ 10),
 /// которого нет в сборке 12.4: в CUDA 13.x замечены ошибки вычислений с IQ-квантами (llama.cpp #21255),
 /// а в каталоге много UD-квантов unsloth с IQ-тензорами. Старый драйвер → Vulkan.
+/// Если известно, есть ли IQ-тензоры в выбранной модели (поле каталога <c>iqTensors</c>), выбор остаётся тем же
+/// (консервативно: для карт до Blackwell сборка CUDA 13 не даёт выигрыша — код для них тот же PTX), меняется пояснение:
+/// без IQ-тензоров предупреждение не нужно, а для Blackwell/ARM64 с IQ-моделью (есть только CUDA 13) — нужно.
+/// OpenVINO (Intel) и OpenCL Adreno (Snapdragon X) — только ручной выбор.
 /// </summary>
 internal static class BackendAdvisor
 {
@@ -29,7 +33,17 @@ internal static class BackendAdvisor
     private static string IqNote =>
         L.T("CUDA 13 не выбрана: в сборках CUDA 13.x замечены ошибки вычислений с IQ-квантами (llama.cpp #21255), а они есть во многих моделях каталога.");
 
-    public static BackendRecommendation Recommend(HardwareInfo hw)
+    /// <summary>Пояснение для сборки CUDA 12 с учётом модели: без IQ-тензоров предупреждение про CUDA 13 не нужно.</summary>
+    private static string Cuda12Note(bool? iq) => iq == false ? "" : IqNote;
+
+    /// <summary>Предупреждение, когда доступна только CUDA 13, а в выбранной модели есть IQ-тензоры.</summary>
+    private static string IqWarning(bool? iq) => iq == true
+        ? " " + L.T("В выбранной модели есть IQ-тензоры, а в сборках CUDA 13.x с ними замечены ошибки вычислений (llama.cpp #21255): если ответы окажутся бессмысленными, выберите квантизацию без IQ или сборку Vulkan.")
+        : "";
+
+    /// <param name="hw">Оборудование.</param>
+    /// <param name="modelHasIqTensors">Есть ли IQ-тензоры в выбранной модели; null — неизвестно (считаем, что есть).</param>
+    public static BackendRecommendation Recommend(HardwareInfo hw, bool? modelHasIqTensors = null)
     {
         ArgumentNullException.ThrowIfNull(hw);
         var nvidia = NvidiaGpus(hw);
@@ -39,14 +53,14 @@ internal static class BackendAdvisor
         {
             if (nvidia.Count > 0 && driver is not null && driver >= MinDriverCuda13)
                 return new(LlamaBackend.Cuda13,
-                    L.F("Windows на ARM с видеокартой {0}: для ARM64 есть только сборка CUDA 13.", nvidia[0].Name));
+                    L.F("Windows на ARM с видеокартой {0}: для ARM64 есть только сборка CUDA 13.", nvidia[0].Name) + IqWarning(modelHasIqTensors));
             return new(LlamaBackend.Cpu, L.T("Windows на ARM: используется сборка llama.cpp для процессора ARM64."));
         }
 
         var primary = hw.PrimaryGpu;
         var discrete = primary is { IsIntegrated: false };
         if (nvidia.Count > 0 && (!discrete || primary!.Vendor == GpuVendor.Nvidia))
-            return RecommendNvidia(nvidia, driver);
+            return RecommendNvidia(nvidia, driver, modelHasIqTensors);
 
         if (primary is null || !discrete)
         {
@@ -69,7 +83,7 @@ internal static class BackendAdvisor
         };
     }
 
-    private static BackendRecommendation RecommendNvidia(List<GpuInfo> gpus, Version? driver)
+    private static BackendRecommendation RecommendNvidia(List<GpuInfo> gpus, Version? driver, bool? iq)
     {
         var name = gpus[0].Name;
         var ccs = gpus.Select(ComputeCapability).ToList();
@@ -81,7 +95,7 @@ internal static class BackendAdvisor
             var bw = gpus.First(g => ComputeCapability(g) is { Major: >= 10 }).Name;
             if (driver is null || driver >= MinDriverCuda13)
                 return new(LlamaBackend.Cuda13,
-                    L.F("Видеокарта {0} (Blackwell) поддерживается только сборкой CUDA 13 (драйвер {1}).", bw, drv));
+                    L.F("Видеокарта {0} (Blackwell) поддерживается только сборкой CUDA 13 (драйвер {1}).", bw, drv) + IqWarning(iq));
             return new(LlamaBackend.Vulkan,
                 L.F("Для видеокарты {0} нужна сборка CUDA 13 и драйвер NVIDIA 580 или новее (установлен {1}). Пока выбрана сборка Vulkan — обновите драйвер, чтобы получить максимальную скорость.",
                     bw, drv));
@@ -97,7 +111,7 @@ internal static class BackendAdvisor
         if (driver is null)
             return new(LlamaBackend.Cuda12,
                 L.F("Видеокарта {0}: выбрана сборка CUDA 12.4. Версию драйвера определить не удалось — нужен драйвер {1} или новее. {2}",
-                    name, FormatDriver(need), IqNote));
+                    name, FormatDriver(need), Cuda12Note(iq)).TrimEnd());
 
         if (driver < need)
             return new(LlamaBackend.Vulkan,
@@ -107,10 +121,10 @@ internal static class BackendAdvisor
         var cc = ccs[0] is { } c0 ? $" (compute capability {c0.Major}.{c0.Minor})" : "";
         return allNative
             ? new(LlamaBackend.Cuda12,
-                L.F("Видеокарта {0}{1}, драйвер {2}: выбрана сборка CUDA 12.4 — в ней есть готовый код для этой карты. {3}", name, cc, drv, IqNote))
+                L.F("Видеокарта {0}{1}, драйвер {2}: выбрана сборка CUDA 12.4 — в ней есть готовый код для этой карты. {3}", name, cc, drv, Cuda12Note(iq)).TrimEnd())
             : new(LlamaBackend.Cuda12,
                 L.F("Видеокарта {0}{1}, драйвер {2}: выбрана сборка CUDA 12.4. Ядра для этой карты компилирует драйвер, поэтому первый запуск может занять несколько минут. {3}",
-                    name, cc, drv, IqNote));
+                    name, cc, drv, Cuda12Note(iq)).TrimEnd());
     }
 
     public static IReadOnlyList<LlamaBackend> Available(HardwareInfo hw)
@@ -122,6 +136,8 @@ internal static class BackendAdvisor
         if (hw.IsArm64)
         {
             if (nvidia.Count > 0) list.Add(LlamaBackend.Cuda13);
+            // Snapdragon X: OpenCL-сборка для Adreno — только ручной выбор.
+            if (hw.Gpus.Any(g => IsAdreno(g.Name))) list.Add(LlamaBackend.OpenClAdreno);
             list.Add(LlamaBackend.Cpu);
             return list;
         }
@@ -140,6 +156,8 @@ internal static class BackendAdvisor
         if (hw.Gpus.Any(g => g.Vendor == GpuVendor.Amd && IsRocmCapable(g.Name))) list.Add(LlamaBackend.Rocm);
         if (hw.Gpus.Any(g => g.Vendor == GpuVendor.Intel && (!g.IsIntegrated || g.Name.Contains("Arc", StringComparison.OrdinalIgnoreCase))))
             list.Add(LlamaBackend.Sycl);
+        // OpenVINO работает и на встроенной графике Intel — только ручной выбор.
+        if (hw.Gpus.Any(g => g.Vendor == GpuVendor.Intel)) list.Add(LlamaBackend.OpenVino);
         list.Add(LlamaBackend.Cpu);
 
         var rec = Recommend(hw).Backend;
@@ -165,6 +183,8 @@ internal static class BackendAdvisor
         LlamaBackend.Vulkan => L.T("Vulkan (любая видеокарта)"),
         LlamaBackend.Rocm => "AMD ROCm (HIP)",
         LlamaBackend.Sycl => "Intel SYCL (oneAPI)",
+        LlamaBackend.OpenVino => "Intel OpenVINO",
+        LlamaBackend.OpenClAdreno => "Qualcomm Adreno (OpenCL)",
         LlamaBackend.Cpu => L.T("Только процессор"),
         _ => backend.ToString(),
     };
@@ -240,6 +260,9 @@ internal static class BackendAdvisor
                || Regex.IsMatch(n, @"RADEON\s*(\(TM\)\s*)?[678]\d0M\b", RegexOptions.CultureInvariant)
                || Regex.IsMatch(n, @"RADEON\s*(\(TM\)\s*)?80[4-6]0S\b", RegexOptions.CultureInvariant);
     }
+
+    /// <summary>Графика Qualcomm Adreno (Snapdragon X).</summary>
+    internal static bool IsAdreno(string name) => name.Contains("Adreno", StringComparison.OrdinalIgnoreCase);
 
     private static string Short(string name)
     {

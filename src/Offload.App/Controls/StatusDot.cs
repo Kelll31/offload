@@ -3,7 +3,10 @@ using System.Drawing.Drawing2D;
 
 namespace Offload.App.Controls;
 
-/// <summary>Цветной круглый индикатор состояния.</summary>
+/// <summary>
+/// Цветной круглый индикатор состояния. Цвет недоступен экранному диктору — владелец задаёт текст состояния
+/// в AccessibleName (например, «Состояние сервера: работает»).
+/// </summary>
 internal sealed class StatusDot : Control
 {
     private Color _color = Color.Gray;
@@ -18,6 +21,7 @@ internal sealed class StatusDot : Control
         Margin = new Padding(0, 4, 8, 4);
         Anchor = AnchorStyles.Left;
         TabStop = false;
+        AccessibleRole = AccessibleRole.Indicator;
     }
 
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]

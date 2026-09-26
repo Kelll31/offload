@@ -35,6 +35,8 @@ public sealed class ReleaseSelectionTests
     [InlineData(LlamaBackend.Cpu, true, "llama-b11102-bin-win-cpu-arm64.zip", null)]
     [InlineData(LlamaBackend.Rocm, false, "llama-b11102-bin-win-rocm-10.0-x64.zip", null)]
     [InlineData(LlamaBackend.Sycl, false, "llama-b11102-bin-win-sycl-x64.zip", null)]
+    [InlineData(LlamaBackend.OpenVino, false, "llama-b11102-bin-win-openvino-2026.4-x64.zip", null)]
+    [InlineData(LlamaBackend.OpenClAdreno, true, "llama-b11102-bin-win-opencl-adreno-arm64.zip", null)]
     public void Select_b11102(LlamaBackend backend, bool arm64, string main, string? runtime)
     {
         var sel = LlamaReleaseResolver.Select(Load("b11102"), backend, arm64);
@@ -50,6 +52,8 @@ public sealed class ReleaseSelectionTests
     [InlineData(LlamaBackend.Vulkan, true)]
     [InlineData(LlamaBackend.Rocm, true)]
     [InlineData(LlamaBackend.Sycl, true)]
+    [InlineData(LlamaBackend.OpenVino, true)]
+    [InlineData(LlamaBackend.OpenClAdreno, false)]
     public void Select_MissingArm64Builds_ReturnNull(LlamaBackend backend, bool arm64) =>
         Assert.Null(LlamaReleaseResolver.Select(Load("b11102"), backend, arm64));
 
@@ -129,8 +133,8 @@ public sealed class ReleaseSelectionTests
           {"tag_name":"v0.4.1","draft":false,"assets":[{"name":"nightly-tag.txt","browser_download_url":"u","size":7}]},
           {"tag_name":"b11103","draft":true,"assets":[]},
           {"tag_name":"b11102","draft":false,"prerelease":true,"published_at":"2026-09-22T13:23:34Z",
-           "assets":[{"name":"llama-b11102-bin-win-cpu-x64.zip","browser_download_url":"u","size":5,"state":"uploaded"},
-                     {"name":"llama-b11102-bin-win-vulkan-x64.zip","browser_download_url":"u","size":5,"state":"starter"}]}
+           "assets":[{"name":"llama-b11102-bin-win-cpu-x64.zip","browser_download_url":"https://github.com/ggml-org/llama.cpp/releases/download/b11102/llama-b11102-bin-win-cpu-x64.zip","size":5,"state":"uploaded"},
+                     {"name":"llama-b11102-bin-win-vulkan-x64.zip","browser_download_url":"https://github.com/ggml-org/llama.cpp/releases/download/b11102/llama-b11102-bin-win-vulkan-x64.zip","size":5,"state":"starter"}]}
         ]
         """;
         var list = GitHubReleases.ParseReleaseList(json);
@@ -138,6 +142,26 @@ public sealed class ReleaseSelectionTests
         Assert.Equal("b11102", r.Tag);
         // Незагруженный (state=starter) архив пропускается.
         Assert.Equal("llama-b11102-bin-win-cpu-x64.zip", Assert.Single(r.Assets).Name);
+    }
+
+    [Theory]
+    [InlineData("http://evil/x.zip")]
+    [InlineData("https://evil.example/ggml-org/llama.cpp/releases/download/b11102/llama-b11102-bin-win-cpu-x64.zip")]
+    [InlineData("https://github.com/attacker/llama.cpp/releases/download/b11102/llama-b11102-bin-win-cpu-x64.zip")]
+    public void ParseRelease_ForeignDownloadUrl_AssetDropped(string url)
+    {
+        // Зеркало API отдаёт и адрес, и digest: файл не из github.com/ggml-org/llama.cpp/releases/download/ не берётся.
+        var json = $$"""
+        {"tag_name":"b11102","assets":[
+          {"name":"llama-b11102-bin-win-cpu-x64.zip","browser_download_url":"{{url}}","size":5,"state":"uploaded",
+           "digest":"sha256:{{new string('a', 64)}}"},
+          {"name":"llama-b11102-bin-win-vulkan-x64.zip","browser_download_url":"https://github.com/ggml-org/llama.cpp/releases/download/b11102/llama-b11102-bin-win-vulkan-x64.zip","size":5,"state":"uploaded"}]}
+        """;
+        using var doc = JsonDocument.Parse(json);
+
+        var r = GitHubReleases.ParseRelease(doc.RootElement);
+
+        Assert.Equal("llama-b11102-bin-win-vulkan-x64.zip", Assert.Single(r.Assets).Name);
     }
 
     [Fact]
@@ -172,7 +196,7 @@ public sealed class GitHubReleasesTests : IDisposable
     private static Func<FakeRequest, Stream, CancellationToken, Task> GitHub(string stableTag, Func<string>? list = null) =>
         async (req, s, _) =>
         {
-            if (req.Path.EndsWith("/releases/latest/download/nightly-tag.txt"))
+            if (req.Path.EndsWith("/releases/latest/download/nightly-tag.txt", StringComparison.Ordinal))
                 await FakeHttpServer.WriteResponseAsync(s, 200, stableTag + "\n", "text/plain");
             else if (req.Path.Contains("/releases/tags/"))
             {
@@ -265,7 +289,7 @@ public sealed class GitHubReleasesTests : IDisposable
     {
         await using var server = new FakeHttpServer(async (req, s, _) =>
         {
-            if (req.Path.EndsWith("nightly-tag.txt")) await FakeHttpServer.WriteResponseAsync(s, 200, "b11102", "text/plain");
+            if (req.Path.EndsWith("nightly-tag.txt", StringComparison.Ordinal)) await FakeHttpServer.WriteResponseAsync(s, 200, "b11102", "text/plain");
             else
                 await FakeHttpServer.WriteResponseAsync(s, 403, "{\"message\":\"API rate limit exceeded\"}", headers: new Dictionary<string, string>
                 {

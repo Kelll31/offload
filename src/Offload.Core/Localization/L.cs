@@ -19,6 +19,7 @@ public static class L
     private static readonly object Gate = new();
     private static readonly CultureInfo Ru = CultureInfo.GetCultureInfo("ru-RU");
     private static readonly CultureInfo En = CultureInfo.GetCultureInfo("en-US");
+    private static readonly JsonSerializerOptions EnglishJsonOptions = new() { ReadCommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true };
 
     /// <summary>Действующий язык интерфейса: ru или en.</summary>
     public static string Language { get; private set; } = Russian;
@@ -113,8 +114,7 @@ public static class L
                 if (stream is null) continue;
                 try
                 {
-                    var part = JsonSerializer.Deserialize<Dictionary<string, string>>(stream,
-                        new JsonSerializerOptions { ReadCommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true });
+                    var part = JsonSerializer.Deserialize<Dictionary<string, string>>(stream, EnglishJsonOptions);
                     if (part is null) continue;
                     foreach (var (k, v) in part)
                         if (!string.IsNullOrEmpty(v)) table[k] = v;

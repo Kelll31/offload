@@ -11,7 +11,7 @@ using Offload.Models;
 
 namespace Offload.App.Forms.Pages;
 
-/// <summary>Вкладка «Модели»: каталог, загрузка, выбор активной модели, свои GGUF-файлы.</summary>
+/// <summary>Вкладка «Модели»: каталог, загрузка, выбор активной модели, роли моделей, свои GGUF-файлы.</summary>
 internal sealed class ModelsPage : PageBase
 {
     private readonly Label _hardware = Kit.Hint(L.T("Определение оборудования…"));
@@ -41,6 +41,26 @@ internal sealed class ModelsPage : PageBase
     private readonly ComboBox _filter = Kit.Combo(230);
     private readonly Label _shown = Kit.Label("", Theme.Regular(8.5f), Theme.TextMuted);
 
+    // Роли моделей (ROADMAP §5.2): основная — активная модель, остальные — вспомогательные серверы.
+    private readonly Label _qualityModel = Kit.Label("");
+    private readonly Label _qualityStatus = Kit.Label("", Theme.Regular(8.5f), Theme.TextMuted);
+    private readonly Dictionary<ModelRole, ComboBox> _roleCombos = new()
+    {
+        [ModelRole.Fast] = Kit.Combo(260),
+        [ModelRole.Embed] = Kit.Combo(260),
+        [ModelRole.Rerank] = Kit.Combo(260),
+    };
+    private readonly Dictionary<ModelRole, Label> _roleStatus = new()
+    {
+        [ModelRole.Fast] = Kit.Label("", Theme.Regular(8.5f), Theme.TextMuted),
+        [ModelRole.Embed] = Kit.Label("", Theme.Regular(8.5f), Theme.TextMuted),
+        [ModelRole.Rerank] = Kit.Label("", Theme.Regular(8.5f), Theme.TextMuted),
+    };
+    private readonly Dictionary<ModelRole, List<string?>> _roleItems = [];
+    private readonly Label _roleBudget = Kit.Wrap("");
+    private bool _fillingRoles;
+    private int _budgetVersion;
+
     private HardwareInfo? _hw;
     private CancellationTokenSource? _downloadCts;
     private string? _downloadingName;
@@ -57,7 +77,7 @@ internal sealed class ModelsPage : PageBase
         _list.SelectedIndexChanged += (_, _) => ShowDetails();
         _list.DoubleClick += async (_, _) =>
         {
-            if (ModelListBinder.Selected(_list) is { IsInstalled: true, IsActive: false }) await ActivateAsync();
+            if (ModelListBinder.Selected(_list) is { IsInstalled: true, IsActive: false } row && CanBeActive(row)) await ActivateAsync();
         };
         _quant.SelectedIndexChanged += (_, _) => UpdateDisk();
         _progress.CancelRequested += (_, _) => _downloadCts?.Cancel();
@@ -89,6 +109,8 @@ internal sealed class ModelsPage : PageBase
 
         card.AddRow(_disk);
 
+        root.AddRow(BuildRolesCard());
+
         var folderRow = Kit.Table(100, 0);
         var folderButtons = Kit.Flow(_addCustom, Kit.Button(L.T("Открыть папку"), (_, _) => OpenModelsFolder(), 110), _changeFolder);
         folderButtons.WrapContents = false;
@@ -102,6 +124,31 @@ internal sealed class ModelsPage : PageBase
         Controls.Add(root);
         UpdateFolder();
         ShowDetails();
+    }
+
+    /// <summary>Карточка «Роли моделей»: основная (активная), быстрая, эмбеддинги, реранк; состояние серверов и бюджет видеопамяти.</summary>
+    private CardPanel BuildRolesCard()
+    {
+        var card = new CardPanel { ColumnCount = 1 };
+        card.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        card.Margin = new Padding(0, 0, 0, 6);
+        card.AddRow(Kit.Label(L.T("Роли моделей"), Theme.Semibold(10f)));
+        card.AddRow(Kit.Hint(L.T("Основная модель — активная. Быстрая берёт короткие задачи IDE (сообщения коммитов, сводки журналов, поиск контекста), эмбеддинги и реранк нужны для поиска по коду. Вспомогательные серверы запускаются при первом запросе и занимают видеопамять вместе с основным.")));
+
+        var grid = Kit.Table(0, 0, 100);
+        grid.Margin = new Padding(0, 4, 0, 0);
+        grid.AddRow(Kit.Label(L.T("Основная (качество):")), _qualityModel, _qualityStatus);
+        grid.AddRow(Kit.Label(L.T("Быстрая:")), _roleCombos[ModelRole.Fast], _roleStatus[ModelRole.Fast]);
+        grid.AddRow(Kit.Label(L.T("Эмбеддинги:")), _roleCombos[ModelRole.Embed], _roleStatus[ModelRole.Embed]);
+        grid.AddRow(Kit.Label(L.T("Реранк:")), _roleCombos[ModelRole.Rerank], _roleStatus[ModelRole.Rerank]);
+        foreach (var (role, combo) in _roleCombos)
+            combo.SelectedIndexChanged += async (_, _) => await AssignRoleAsync(role);
+        _qualityModel.Margin = new Padding(0, 6, 8, 3);
+        foreach (var l in _roleStatus.Values.Append(_qualityStatus)) l.Margin = new Padding(0, 6, 0, 0);
+        card.AddRow(grid);
+        _roleBudget.Visible = false;
+        card.AddRow(_roleBudget);
+        return card;
     }
 
     public override string Key => Tabs.Models;
@@ -146,7 +193,11 @@ internal sealed class ModelsPage : PageBase
         else UpdateFolder();
     }
 
-    public override void OnServerStateChanged() => UpdateUiState();
+    public override void OnServerStateChanged()
+    {
+        UpdateUiState();
+        UpdateRoleStatus();
+    }
 
     /// <summary>Перестроить список (выделение сохраняется).</summary>
     private void Reload()
@@ -168,6 +219,152 @@ internal sealed class ModelsPage : PageBase
         }
         UpdateFolder();
         ShowDetails();
+        FillRoles(cfg);
+    }
+
+    /// <summary>Списки моделей для ролей (подходящие установленные модели) и выбранные значения — без срабатывания назначения.</summary>
+    private void FillRoles(AppConfig cfg)
+    {
+        _fillingRoles = true;
+        try
+        {
+            var active = cfg.ActiveModel();
+            _qualityModel.Text = Texts.ModelName(active);
+            foreach (var (role, combo) in _roleCombos)
+            {
+                var ids = new List<string?> { null };
+                var names = new List<string> { L.T("— не использовать —") };
+                foreach (var m in cfg.Models.Installed
+                             .Where(m => ModelRoleConfig.IsCompatible(m, role) && !(role == ModelRole.Fast && m.Id == active?.Id))
+                             .OrderBy(Texts.ModelName, StringComparer.CurrentCultureIgnoreCase))
+                {
+                    ids.Add(m.Id);
+                    names.Add(string.IsNullOrWhiteSpace(m.Quant) ? Texts.ModelName(m) : $"{Texts.ModelName(m)}  ({m.Quant})");
+                }
+                _roleItems[role] = ids;
+                combo.BeginUpdate();
+                combo.Items.Clear();
+                foreach (var n in names) combo.Items.Add(n);
+                var assigned = cfg.RoleModel(role)?.Id;
+                combo.SelectedIndex = Math.Max(0, ids.FindIndex(id => string.Equals(id, assigned, StringComparison.OrdinalIgnoreCase)));
+                combo.EndUpdate();
+                combo.Enabled = !IsBusy && ids.Count > 1;
+            }
+        }
+        finally
+        {
+            _fillingRoles = false;
+        }
+        UpdateRoleStatus();
+        _ = UpdateRoleBudgetAsync(cfg);
+    }
+
+    /// <summary>Состояние основного сервера и серверов ролей.</summary>
+    private void UpdateRoleStatus()
+    {
+        _qualityStatus.Text = Texts.State(Shell.Server.State);
+        var cfg = ConfigStore.Current;
+        var snapshot = Shell.Server.Aux.Snapshot();
+        foreach (var (role, label) in _roleStatus)
+        {
+            var status = snapshot.FirstOrDefault(x => x.Role == role);
+            var (text, color) = RoleStatusText(cfg.RoleModel(role) is not null, status);
+            label.Text = text;
+            label.ForeColor = color;
+        }
+    }
+
+    private static (string Text, Color Color) RoleStatusText(bool assigned, AuxServerStatus? status)
+    {
+        if (!assigned) return ("", Theme.TextMuted);
+        switch (status?.State)
+        {
+            case ServerState.Running:
+                var port = Uri.TryCreate(status.BaseUrl, UriKind.Absolute, out var uri) ? uri.Port : 0;
+                return (port > 0 ? L.F("работает, порт {0}", port) : L.T("работает"), Theme.OkText);
+            case ServerState.Starting:
+                return (L.T("загружается…"), Theme.TextMuted);
+            case ServerState.Failed:
+                return (L.F("ошибка: {0}", status.Error ?? L.T("подробности — в журнале")), Theme.ErrorText);
+        }
+        return status?.Error is { } error
+            ? (L.F("не запустился: {0}", error), Theme.ErrorText)
+            : (L.T("запустится по первому запросу"), Theme.TextMuted);
+    }
+
+    /// <summary>Хватит ли видеопамяти на все назначенные роли вместе (оценка FitCalculator, только предупреждение).</summary>
+    private async Task UpdateRoleBudgetAsync(AppConfig cfg)
+    {
+        var version = ++_budgetVersion;
+        var hw = _hw;
+        if (hw is null)
+        {
+            _roleBudget.Visible = false;
+            return;
+        }
+        RoleBudgetResult? budget;
+        try
+        {
+            var (catalog, _) = ModelRows.Catalog();
+            budget = await Task.Run(() => RoleBudget.Evaluate(cfg, hw, catalog, ReadHeader));
+        }
+        catch (Exception ex)
+        {
+            Log.Debug("ui", $"Оценка памяти ролей: {ex.Message}");
+            budget = null;
+        }
+        if (IsDisposed || version != _budgetVersion) return;
+        if (budget is not { HasAuxiliary: true })
+        {
+            _roleBudget.Visible = false;
+            return;
+        }
+        _roleBudget.Visible = true;
+        if (budget.Fits)
+        {
+            _roleBudget.ForeColor = Theme.TextMuted;
+            _roleBudget.Text = budget.VramBudgetBytes > 0
+                ? L.F("Все роли вместе: ≈{0} видеопамяти из {1} доступных.", FileUtil.FormatBytes(budget.TotalVramBytes), FileUtil.FormatBytes(budget.VramBudgetBytes))
+                : L.F("Все роли вместе: ≈{0} памяти из {1} доступных.", FileUtil.FormatBytes(budget.TotalRamBytes), FileUtil.FormatBytes(budget.RamBudgetBytes));
+        }
+        else
+        {
+            _roleBudget.ForeColor = Theme.WarnText;
+            _roleBudget.Text = budget.VramBudgetBytes > 0 && budget.TotalVramBytes > budget.VramBudgetBytes
+                ? L.F("⚠ Модели всех ролей вместе не помещаются в видеопамять: нужно ≈{0}, доступно ≈{1}. Вспомогательные серверы будут работать медленнее (часть слоёв на процессоре) или не запустятся — выберите модели поменьше или снимите роль.",
+                    FileUtil.FormatBytes(budget.TotalVramBytes), FileUtil.FormatBytes(budget.VramBudgetBytes))
+                : L.F("⚠ Модели всех ролей вместе не помещаются в память: нужно ≈{0} ОЗУ, доступно ≈{1}. Выберите модели поменьше или снимите роль.",
+                    FileUtil.FormatBytes(budget.TotalRamBytes), FileUtil.FormatBytes(budget.RamBudgetBytes));
+        }
+    }
+
+    private static GgufInfo? ReadHeader(string path)
+    {
+        try
+        {
+            return File.Exists(path) ? GgufReader.Read(path) : null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidDataException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Назначить роли модель из списка: сохранить, остановить сервер роли со старой моделью.</summary>
+    private async Task AssignRoleAsync(ModelRole role)
+    {
+        if (_fillingRoles || !_roleItems.TryGetValue(role, out var ids)) return;
+        var index = _roleCombos[role].SelectedIndex;
+        if (index < 0 || index >= ids.Count) return;
+        var id = ids[index];
+        if (string.Equals(id, ConfigStore.Current.RoleModel(role)?.Id, StringComparison.OrdinalIgnoreCase)) return;
+        await RunBusyAsync(async () =>
+        {
+            await Task.Run(() => ModelManager.AssignRole(role, id));
+            await Shell.Server.Aux.SyncWithConfigAsync();
+        }, L.T("Не удалось назначить модель роли"));
+        Shell.ConfigChanged();
+        if (!IsActive) Reload();
     }
 
     private void ShowDetails()
@@ -194,6 +391,8 @@ internal sealed class ModelsPage : PageBase
             if (c.NativeContext > 0) facts.Add(L.F("контекст до {0}", Ui.Tokens(c.NativeContext)));
             if (!string.IsNullOrWhiteSpace(c.License)) facts.Add(L.F("лицензия {0}", c.License));
             if (c.GoodToolCalling) facts.Add(L.T("надёжно вызывает инструменты"));
+            if (c.Role == ModelKind.Embed) facts.Add(L.T("модель эмбеддингов — назначается роли «Эмбеддинги», активной быть не может"));
+            if (c.Role == ModelKind.Rerank) facts.Add(L.T("реранкер — назначается роли «Реранк», активной быть не может"));
             if (facts.Count > 0) desc = $"{desc}{Environment.NewLine}{string.Join(" · ", facts)}";
         }
         if (row.Installed is { } inst) desc = L.F("{0}{1}Файл: {2}", desc, Environment.NewLine, inst.FilePath);
@@ -208,6 +407,11 @@ internal sealed class ModelsPage : PageBase
         {
             _fit.Text = _hw is null ? L.T("Оценка появится после определения оборудования.") : "";
             _fit.ForeColor = Theme.TextMuted;
+        }
+        if (row.Catalog is { } needs && ModelManager.LlamaBuildWarning(needs, ConfigStore.Current) is { } buildWarning)
+        {
+            _fit.Text = _fit.Text.Length > 0 ? $"{_fit.Text}{Environment.NewLine}⚠ {buildWarning}" : $"⚠ {buildWarning}";
+            if (_fit.ForeColor != Theme.ErrorText) _fit.ForeColor = Theme.WarnText;
         }
 
         _quant.Items.Clear();
@@ -234,12 +438,17 @@ internal sealed class ModelsPage : PageBase
         var downloading = _downloadCts is not null;
         _download.Enabled = !IsBusy && row?.Catalog is not null && !DiskInsufficient(row);
         _download.Text = row?.IsInstalled == true ? L.T("Скачать заново") : L.T("Скачать");
-        _activate.Enabled = !IsBusy && row is { IsInstalled: true, IsActive: false };
+        _activate.Enabled = !IsBusy && row is { IsInstalled: true, IsActive: false } && CanBeActive(row);
+        foreach (var (role, combo) in _roleCombos)
+            combo.Enabled = !IsBusy && _roleItems.TryGetValue(role, out var ids) && ids.Count > 1;
         _remove.Enabled = !IsBusy && row is { IsInstalled: true };
         _quant.Enabled = !downloading && _quant.Items.Count > 1;
         _addCustom.Enabled = !IsBusy;
         _changeFolder.Enabled = !downloading;
     }
+
+    /// <summary>Чат-модель: её можно сделать активной (модели эмбеддингов и реранкеры — только роли).</summary>
+    private static bool CanBeActive(ModelRow row) => row.IsChat;
 
     private string? SelectedQuant() =>
         _quant.SelectedIndex >= 0 && _quant.SelectedIndex < _quantItems.Count ? _quantItems[_quant.SelectedIndex].Quant : null;
@@ -319,6 +528,9 @@ internal sealed class ModelsPage : PageBase
             return;
 
         var quant = SelectedQuant();
+        // Файл уже установленной версии этой модели: после загрузки другого кванта он может остаться ненужным.
+        var previousFile = ConfigStore.Current.Models.Installed
+            .FirstOrDefault(m => string.Equals(m.Id, model.Id, StringComparison.OrdinalIgnoreCase))?.FilePath;
         using var cts = new CancellationTokenSource();
         _downloadCts = cts;
         _downloadingName = model.LocalizedDisplayName;
@@ -357,7 +569,14 @@ internal sealed class ModelsPage : PageBase
         Shell.ConfigChanged();
         Reload();
         if (installed is null) return;
-        Shell.Notify(L.T("Модель скачана"), L.F("«{0}» готова к работе.", Texts.ModelName(installed)));
+        Shell.Notify(L.T("Модель скачана"), L.F("«{0}» готова к работе.", Texts.ModelName(installed)), tab: Tabs.Models);
+        await OfferDeleteOldFilesAsync(installed, previousFile);
+        if (installed.Kind != ModelKind.Chat)
+        {
+            // Модель эмбеддингов/реранкер не бывает активной: если роль была свободна, она назначена автоматически.
+            Reload();
+            return;
+        }
         var active = ConfigStore.Current.ActiveModel();
         if (active?.Id != installed.Id &&
             Ui.Confirm(Owner, L.F("Модель «{0}» установлена. Сделать её активной?", Texts.ModelName(installed))))
@@ -367,10 +586,71 @@ internal sealed class ModelsPage : PageBase
         Reload();
     }
 
+    /// <summary>
+    /// После загрузки другого кванта той же модели прежний файл больше не используется — предложить удалить его
+    /// (сами никогда не удаляем: файлы моделей большие, пользователь мог держать их намеренно).
+    /// </summary>
+    private async Task OfferDeleteOldFilesAsync(InstalledModel installed, string? previousFile)
+    {
+        if (string.IsNullOrWhiteSpace(previousFile)) return;
+        IReadOnlyList<string> orphans;
+        long size;
+        try
+        {
+            (orphans, size) = await Task.Run(() =>
+            {
+                var files = ModelManager.OrphanFiles(previousFile);
+                return (files, files.Sum(f => File.Exists(f) ? new FileInfo(f).Length : 0L));
+            });
+        }
+        catch (Exception ex)
+        {
+            Log.Debug("models", $"Поиск файлов прежней версии: {ex.Message}");
+            return;
+        }
+        if (orphans.Count == 0 || IsDisposed) return;
+
+        // Сервер держит открытым старый файл, если эта модель активна и запущена: перед удалением — перезапуск с новым.
+        var serverHolds = ConfigStore.Current.ActiveModel()?.Id == installed.Id &&
+                          Shell.Server.State is ServerState.Running or ServerState.Starting;
+        var text = L.F("Старый файл этой модели больше не используется:{0}{1}{0}{0}Освободится {2}.",
+            Environment.NewLine, string.Join(Environment.NewLine, orphans), FileUtil.FormatBytes(size));
+        if (serverHolds)
+            text += Environment.NewLine + Environment.NewLine + L.T("Сервер сейчас работает со старым файлом — перед удалением он будет перезапущен с новым.");
+
+        var yes = new TaskDialogButton(L.T("Удалить"));
+        var keep = new TaskDialogButton(L.T("Оставить"));
+        var page = new TaskDialogPage
+        {
+            Caption = Ui.Caption,
+            Heading = L.F("Удалить прежнюю версию «{0}»?", Texts.ModelName(installed)),
+            Text = text,
+            Icon = TaskDialogIcon.Information,
+            Buttons = { yes, keep },
+            DefaultButton = keep,
+            AllowCancel = true,
+        };
+        var owner = Owner;
+        var result = owner is null ? TaskDialog.ShowDialog(page) : TaskDialog.ShowDialog(owner, page);
+        if (result != yes) return;
+
+        await RunBusyAsync(async () =>
+        {
+            if (serverHolds && !await Shell.Server.RestartAsync() && Shell.Server.State is ServerState.Running or ServerState.Starting)
+                await Shell.Server.StopAsync();
+            var deleted = await Task.Run(() => ModelManager.DeleteOrphanFiles(previousFile));
+            Log.Info("models", $"Удалены файлы прежней версии {installed.Id}: {string.Join(", ", deleted)}");
+        }, L.T("Не удалось удалить файлы прежней версии модели"));
+    }
+
     private async Task ActivateAsync()
     {
         var row = ModelListBinder.Selected(_list);
-        if (row?.Installed is not { } inst) return;
+        if (row?.Installed is not { } inst || !CanBeActive(row)) return;
+        // Модели новой архитектуры нужна свежая llama.cpp (minLlamaBuild каталога).
+        if (ModelManager.LlamaBuildWarning(inst.Id, ConfigStore.Current) is { } warning &&
+            !Ui.Confirm(Owner, L.F("{0}{1}{1}Всё равно сделать модель активной?", warning, Environment.NewLine), warning: true))
+            return;
         await RunBusyAsync(() => Shell.SwitchModelAsync(inst.Id, Owner), L.T("Не удалось сменить модель"));
         Reload();
     }
@@ -407,6 +687,9 @@ internal sealed class ModelsPage : PageBase
             var isActive = cfg.ActiveModel()?.Id == inst.Id;
             if (isActive && Shell.Server.State is ServerState.Running or ServerState.Starting)
                 await Shell.Server.StopAsync();
+            // Сервер роли держит файл модели открытым — остановить до удаления.
+            foreach (var role in ModelRoleConfig.Auxiliary.Where(r => string.Equals(cfg.RoleModel(r)?.Id, inst.Id, StringComparison.OrdinalIgnoreCase)))
+                await Shell.Server.Aux.StopAsync(role);
             await Task.Run(() => ModelManager.Remove(inst.Id, deleteFiles));
             Log.Info("models", $"Модель удалена: {inst.DisplayName} (файлы {(deleteFiles ? "удалены" : "оставлены")})");
         }, L.T("Не удалось удалить модель"));
@@ -443,7 +726,7 @@ internal sealed class ModelsPage : PageBase
         }
     }
 
-    private void OpenModelsFolder() => Ui.OpenFolder(ModelsDir());
+    private static void OpenModelsFolder() => Ui.OpenFolder(ModelsDir());
 
     private void ChangeFolder()
     {

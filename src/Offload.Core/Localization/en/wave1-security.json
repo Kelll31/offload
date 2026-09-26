@@ -1,0 +1,3 @@
+{
+  "Не удалось получить контрольную сумму {0} ({1}) — GitHub API недоступен или исчерпан лимит запросов. Повторите установку позже. Непроверенные файлы не устанавливаются.": "Could not get the checksum of {0} ({1}): the GitHub API is unavailable or the rate limit is exhausted. Try the installation again later. Unverified files are not installed."
+}

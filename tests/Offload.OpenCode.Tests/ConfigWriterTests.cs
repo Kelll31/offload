@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Offload.Core;
 using Offload.Core.Config;
+using Offload.Integrations;
 
 namespace Offload.OpenCode.Tests;
 
@@ -33,6 +34,14 @@ internal static class TestConfig
 
     public static JsonObject ReadJson(string path) =>
         JsonNode.Parse(File.ReadAllText(path))!.AsObject();
+
+    /// <summary>Разбор JSONC (комментарии и висячие запятые допускаются).</summary>
+    public static JsonObject ReadJsonc(string path) =>
+        JsonNode.Parse(File.ReadAllText(path), documentOptions: new JsonDocumentOptions
+        {
+            CommentHandling = JsonCommentHandling.Skip,
+            AllowTrailingCommas = true,
+        })!.AsObject();
 }
 
 [Collection("AppPaths")]
@@ -314,7 +323,7 @@ public class ConfigWriterTests
     }
 
     [Fact]
-    public void RegisterGlobal_PrefersJsoncAndRewritesComments()
+    public void RegisterGlobal_PrefersJsoncAndKeepsComments()
     {
         using var home = new TempHome();
         Directory.CreateDirectory(home.GlobalOpenCodeDir);
@@ -333,13 +342,21 @@ public class ConfigWriterTests
         OpenCodeConfigWriter.RegisterGlobal(TestConfig.Make());
         Assert.False(File.Exists(Path.Combine(home.GlobalOpenCodeDir, "opencode.json")));
         var text = File.ReadAllText(jsonc);
-        var root = JsonNode.Parse(text)!.AsObject(); // теперь строгий JSON
+        // Комментарии и чужие строки остаются как были — правка точечная.
+        Assert.Contains("  // мой конфиг", text);
+        Assert.Contains("  \"theme\": \"opencode\", /* блок */", text);
+        Assert.Contains("    \"ollama\": { \"npm\": \"@ai-sdk/openai-compatible\", },", text);
+        var root = TestConfig.ReadJsonc(jsonc);
         Assert.Equal("opencode", (string?)root["theme"]);
         Assert.NotNull(root["provider"]!["ollama"]);
-        Assert.NotNull(root["provider"]!["offload"]);
-        Assert.Equal("$schema", root.First().Key);
+        Assert.Equal(TestConfig.Key, (string?)root["provider"]!["offload"]!["options"]!["apiKey"]);
+        Assert.Null(root["$schema"]); // в существующий файл схема не добавляется
         var backup = Assert.Single(Directory.GetFiles(AppPaths.BackupsDir));
-        Assert.Equal(original, File.ReadAllText(backup)); // комментарии сохранены в копии
+        Assert.Equal(original, File.ReadAllText(backup));
+
+        // Отмена возвращает файл к исходному тексту.
+        OpenCodeConfigWriter.UnregisterGlobal();
+        Assert.Equal(original, File.ReadAllText(jsonc));
     }
 
     [Fact]
@@ -403,19 +420,18 @@ public class ConfigWriterTests
     }
 
     [Fact]
-    public void GlobalDir_CanBeOverriddenByEnv()
+    public void GlobalDir_FollowsSandboxAndXdgConfigHome()
     {
-        using var home = new TempHome();
-        OpenCodeConfigWriter.GlobalConfigDirOverride = null;
-        var dir = Path.Combine(home.Path, "env-global");
-        Environment.SetEnvironmentVariable(OpenCodeConfigWriter.GlobalDirEnvVar, dir);
-        try
+        using (var home = new TempHome())
+            Assert.Equal(home.GlobalOpenCodeDir, OpenCodeGlobalConfig.ConfigDir);
+
+        var xdg = Path.Combine(Path.GetTempPath(), "pc-tests-xdg-" + Guid.NewGuid().ToString("N"));
+        using (new TempHome(new Dictionary<string, string> { ["XDG_CONFIG_HOME"] = xdg }))
         {
-            Assert.Equal(dir, OpenCodeConfigWriter.GlobalConfigDir());
+            Assert.Equal(Path.Combine(xdg, "opencode"), OpenCodeGlobalConfig.ConfigDir);
+            OpenCodeConfigWriter.RegisterGlobal(TestConfig.Make());
+            Assert.True(File.Exists(Path.Combine(xdg, "opencode", "opencode.json")));
         }
-        finally
-        {
-            Environment.SetEnvironmentVariable(OpenCodeConfigWriter.GlobalDirEnvVar, null);
-        }
+        try { Directory.Delete(xdg, true); } catch { }
     }
 }

@@ -43,6 +43,9 @@ internal sealed class GatherResult
     /// <summary>Сработал лимит перебора (слишком много файлов под шаблоном).</summary>
     public string? LimitNote { get; set; }
 
+    /// <summary>Сколько значений секретов замаскировано в прочитанном тексте (Mcp.RedactSecrets).</summary>
+    public int RedactedSecrets { get; set; }
+
     public int TotalTokens => Files.Sum(f => f.EstTokens);
 
     /// <summary>«coverage: full (5 files)» / «coverage: 3/5 files; skipped: a.bin (binary), …».</summary>
@@ -56,7 +59,8 @@ internal sealed class GatherResult
         notes.AddRange(Skipped.Select(s => $"{s.Display} ({s.Reason})"));
         if (extraNotes is not null) notes.AddRange(extraNotes);
         if (LimitNote is not null) notes.Add(LimitNote);
-        if (covered == total && notes.Count == 0) return $"coverage: full ({total} file{(total == 1 ? "" : "s")})";
+        var redacted = RedactedSecrets > 0 ? $" · {RedactedSecrets} secret value{(RedactedSecrets == 1 ? "" : "s")} redacted" : "";
+        if (covered == total && notes.Count == 0) return $"coverage: full ({total} file{(total == 1 ? "" : "s")}){redacted}";
         var sb = new StringBuilder($"coverage: {covered}/{total} files");
         if (notes.Count > 0)
         {
@@ -64,16 +68,18 @@ internal sealed class GatherResult
             sb.Append(string.Join(", ", notes.Take(8)));
             if (notes.Count > 8) sb.Append($", +{notes.Count - 8} more");
         }
-        return sb.ToString();
+        return sb.Append(redacted).ToString();
     }
 }
 
+/// <param name="RedactSecrets">Маскировать значения секретов в прочитанном тексте (Mcp.RedactSecrets, по умолчанию да).</param>
 internal sealed record GatherOptions(
     int MaxFileBytes,
     long MaxTotalBytes,
     IReadOnlyList<string> SecretPatterns,
     int MaxFiles = 400,
-    int MaxEntriesVisited = 30_000);
+    int MaxEntriesVisited = 30_000,
+    bool RedactSecrets = true);
 
 /// <summary>
 /// Сбор файлов по путям/папкам/glob: в git-репозитории — через «git ls-files -co --exclude-standard» (учёт .gitignore),
@@ -306,6 +312,13 @@ internal static class FileGatherer
             var truncated = size > read;
             var (text, format) = TextCodec.Decode(data, truncated);
             result.TotalBytes += read;
+            // Единая точка: всё, что читается для локальной модели (ask_files, справочные файлы write_file/edit_files),
+            // проходит здесь. Строка подключения в appsettings.json не должна попасть в ответ, который уйдёт в облако.
+            if (options.RedactSecrets)
+            {
+                text = SecretRedactor.Redact(text, full, out var redacted);
+                result.RedactedSecrets += redacted;
+            }
             return new GatheredFile
             {
                 FullPath = full,

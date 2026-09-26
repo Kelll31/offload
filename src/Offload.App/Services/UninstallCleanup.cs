@@ -7,8 +7,15 @@ namespace Offload.App.Services;
 
 /// <summary>
 /// «Offload.exe --uninstall-cleanup» (вызывает деинсталлятор): остановить трей, отключить Offload
-/// от всех IDE, убрать инструкции и разрешения Claude Code, провайдера из глобального конфига OpenCode
-/// и автозапуск. Ошибки только журналируются — удаление программы не должно прерываться.
+/// от всех IDE, убрать все дополнения Claude Code (<see cref="ClaudeCodeExtras.RemoveAll"/>) и секции инструкций
+/// в файлах других клиентов (<see cref="ClientGuidance.RemoveAll"/>), провайдера
+/// из глобального конфига OpenCode и автозапуск. Ошибки только журналируются — удаление программы не должно прерываться.
+/// <para>
+/// Изолированный OpenCode (<c>OpenCodeInstaller.Uninstall</c>) здесь намеренно не удаляется: он лежит в
+/// %LOCALAPPDATA%\Offload, и деинсталлятор (installer/Offload.iss, usPostUninstall) отдельно спрашивает, удалять ли
+/// эту папку вместе с моделями и llama.cpp. «Нет» означает сохранить всё для повторной установки, «Да» — папка
+/// удаляется целиком, включая OpenCode. Файлы вне этой папки (конфиги IDE, ~/.claude) снимаются здесь всегда.
+/// </para>
 /// </summary>
 internal static class UninstallCleanup
 {
@@ -28,8 +35,10 @@ internal static class UninstallCleanup
             for (var i = 0; i < 40 && IpcClient.IsTrayRunning(); i++) Thread.Sleep(250);
         });
         Step("отключение от IDE", () => IntegrationRegistry.UnregisterAllAsync().GetAwaiter().GetResult()); // l10n-ignore
-        Step("инструкции Claude Code", () => Report(ClaudeCodeExtras.RemoveGuidance())); // l10n-ignore
-        Step("разрешения Claude Code", () => Report(ClaudeCodeExtras.RevokeToolApprovals())); // l10n-ignore
+        // Все дополнения сразу (навык, правило, субагент, разрешения) — новое дополнение не будет забыто.
+        Step("дополнения Claude Code", () => { foreach (var r in ClaudeCodeExtras.RemoveAll()) Report(r); }); // l10n-ignore
+        // Секции Offload в AGENTS.md (Codex) и GEMINI.md (Gemini CLI); текст пользователя в этих файлах остаётся.
+        Step("инструкции для других клиентов", () => { foreach (var r in ClientGuidance.RemoveAll()) Report(r); }); // l10n-ignore
         Step("глобальный конфиг OpenCode", OpenCodeConfigWriter.UnregisterGlobal); // l10n-ignore
         Step("автозапуск", () => Autostart.Set(false)); // l10n-ignore
 

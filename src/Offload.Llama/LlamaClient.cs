@@ -33,7 +33,35 @@ public sealed record ChatRequest(
     /// </summary>
     IReadOnlyDictionary<string, object>? ChatTemplateKwargs = null,
     /// <summary>reasoning_effort: для gpt-oss — "low"/"medium"/"high"; "none" отключает рассуждения на стороне llama-server.</summary>
-    string? ReasoningEffort = null);
+    string? ReasoningEffort = null,
+    /// <summary>Структурированный ответ (response_format с json_schema): llama-server ограничивает генерацию грамматикой схемы.</summary>
+    ResponseFormat? ResponseFormat = null);
+
+/// <summary>
+/// response_format {"type":"json_schema","json_schema":{"name":…,"strict":…,"schema":{…}}} (OpenAI) — llama-server
+/// превращает схему в грамматику, и модель не может выдать ничего, кроме подходящего JSON.
+/// </summary>
+public sealed record ResponseFormat(string Name, JsonElement Schema, bool Strict = true)
+{
+    /// <summary>Формат по тексту JSON-схемы. Неверный JSON — JsonException.</summary>
+    public static ResponseFormat JsonSchema(string name, string schemaJson, bool strict = true)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(name);
+        using var doc = JsonDocument.Parse(schemaJson);
+        if (doc.RootElement.ValueKind != JsonValueKind.Object)
+            throw new ArgumentException("JSON-схема должна быть объектом", nameof(schemaJson)); // l10n-ignore: ошибка программиста
+        return new ResponseFormat(name, doc.RootElement.Clone(), strict);
+    }
+}
+
+/// <summary>Результат /v1/embeddings: векторы в порядке входных текстов.</summary>
+public sealed record EmbeddingResult(IReadOnlyList<float[]> Vectors, int PromptTokens, TimeSpan Duration);
+
+/// <summary>Оценка документа реранкером: индекс во входном списке и релевантность (чем больше, тем ближе к запросу).</summary>
+public sealed record RerankScore(int Index, double Score);
+
+/// <summary>Результат /v1/rerank: оценки по убыванию релевантности.</summary>
+public sealed record RerankResult(IReadOnlyList<RerankScore> Scores, int PromptTokens, TimeSpan Duration);
 
 public sealed record ChatResult(
     string Content,
@@ -52,13 +80,21 @@ public sealed record ChatResult(
 
 /// <summary>Сведения о работающем сервере (/props, /v1/models).</summary>
 public sealed record ServerProps(
-    /// <summary>Контекст одного слота (токенов).</summary>
+    /// <summary>
+    /// Контекст, гарантированный одному запросу (токенов). При общем KV-кэше (-kvu) — доля слота: n_ctx / total_slots.
+    /// </summary>
     int ContextPerSlot,
     int TotalSlots,
     string? ModelPath,
     string? ModelAlias,
     string? BuildInfo)
 {
+    /// <summary>
+    /// Общий KV-кэш, который делят слоты (-kvu, n_ctx из /props при нескольких слотах); null — у каждого слота свой контекст.
+    /// Один запрос может занять больше ContextPerSlot, только если остальные слоты свободны.
+    /// </summary>
+    public int? SharedContext { get; init; }
+
     /// <summary>Шаблон чата модели поддерживает вызов инструментов (chat_template_caps.supports_tool_calls).</summary>
     public bool? SupportsToolCalls { get; init; }
 
@@ -70,7 +106,7 @@ public sealed record ServerProps(
 /// Клиент OpenAI-совместимого API llama-server (Bearer = ApiKey).
 /// Используется MCP-инструментами, проверкой в мастере и панелью статуса.
 /// </summary>
-public sealed class LlamaClient
+public sealed partial class LlamaClient
 {
     /// <summary>Потолок для коротких служебных запросов (/health, /props, /tokenize), если вызывающий не задал свой.</summary>
     private static readonly TimeSpan ShortRequestTimeout = TimeSpan.FromSeconds(30);
@@ -81,10 +117,21 @@ public sealed class LlamaClient
         ApiKey = apiKey;
     }
 
-    public static LlamaClient FromConfig(AppConfig cfg) => new(cfg.Server.BaseUrl, cfg.Server.ApiKey);
+    /// <summary>Клиент сервера из настроек. Общий KV-кэш — как его включает LlamaServerArgs.Build (-kvu при нескольких слотах).</summary>
+    public static LlamaClient FromConfig(AppConfig cfg) =>
+        new(cfg.Server.BaseUrl, cfg.Server.ApiKey) { UnifiedKv = LlamaServerArgs.UsesUnifiedKv(cfg.Server) };
 
     public string BaseUrl { get; }
     public string ApiKey { get; }
+
+    /// <summary>Имя модели в запросах (--alias сервера): offload у основного, offload-fast/-embed/-rerank у вспомогательных.</summary>
+    public string Model { get; init; } = LlamaServerArgs.DefaultAlias;
+
+    /// <summary>
+    /// Слоты сервера делят общий KV-кэш (-kvu): тогда /props сообщает в n_ctx слота весь буфер (контекст × слоты),
+    /// а на один запрос гарантирована только доля n_ctx / total_slots.
+    /// </summary>
+    public bool UnifiedKv { get; init; }
 
     /// <summary>GET /health: 200 → Ready, 503 → Loading, нет соединения → Down.</summary>
     public async Task<HealthState> GetHealthAsync(CancellationToken ct = default)
@@ -129,7 +176,7 @@ public sealed class LlamaClient
                 return null;
             }
             var json = await resp.Content.ReadAsStringAsync(cts.Token);
-            return ParseProps(json);
+            return ParseProps(json, UnifiedKv);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -142,7 +189,8 @@ public sealed class LlamaClient
         }
     }
 
-    internal static ServerProps ParseProps(string json)
+    /// <param name="unifiedKv">Слоты делят общий KV-кэш: n_ctx из /props — весь буфер, на запрос приходится n_ctx / total_slots.</param>
+    internal static ServerProps ParseProps(string json, bool unifiedKv = false)
     {
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
@@ -155,16 +203,29 @@ public sealed class LlamaClient
         if (root.TryGetProperty("chat_template_caps", out var caps) && caps.ValueKind == JsonValueKind.Object)
             tools = GetBool(caps, "supports_tool_calls") ?? GetBool(caps, "supports_tools");
 
+        var slots = Math.Max(1, ChatStreamParser.GetInt(root, "total_slots") ?? 1);
+        var (perRequest, shared) = SplitContext(nCtx, slots, unifiedKv);
         return new ServerProps(
-            nCtx,
-            ChatStreamParser.GetInt(root, "total_slots") ?? 1,
+            perRequest,
+            slots,
             GetString(root, "model_path"),
             GetString(root, "model_alias"),
             GetString(root, "build_info"))
         {
+            SharedContext = shared,
             SupportsToolCalls = tools,
             IsSleeping = GetBool(root, "is_sleeping"),
         };
+    }
+
+    /// <summary>
+    /// Контекст на запрос и общий буфер. Без -kvu llama-server сам делит -c на слоты и сообщает долю слота;
+    /// с -kvu каждый слот «видит» весь буфер, поэтому гарантированная доля — n_ctx / slots.
+    /// </summary>
+    internal static (int PerRequest, int? Shared) SplitContext(int reportedCtx, int slots, bool unifiedKv)
+    {
+        if (!unifiedKv || slots <= 1 || reportedCtx <= 0) return (reportedCtx, null);
+        return (Math.Max(1, reportedCtx / slots), reportedCtx);
     }
 
     /// <summary>
@@ -176,7 +237,7 @@ public sealed class LlamaClient
     {
         ArgumentNullException.ThrowIfNull(request);
         using var req = LocalHttp.Request(HttpMethod.Post, BaseUrl + "/v1/chat/completions", ApiKey);
-        req.Content = JsonContent(BuildChatBody(request));
+        req.Content = JsonContent(BuildChatBody(request, Model));
         req.Headers.Accept.ParseAdd("text/event-stream");
 
         var sw = Stopwatch.StartNew();
@@ -191,11 +252,28 @@ public sealed class LlamaClient
         }
         catch (HttpRequestException ex) when (LocalHttp.IsConnectionRefused(ex))
         {
-            throw new LlamaApiException(LlamaErrorText.NotRunning(BaseUrl), null, ex);
+            throw new LlamaApiException(LlamaErrorText.NotRunning(BaseUrl), null, ex)
+            {
+                Kind = LlamaErrorKind.NotRunning,
+                Detail = $"nothing is listening on {BaseUrl} ({LocalHttp.InvariantReason(ex)})",
+            };
         }
         catch (Exception ex) when (ex is HttpRequestException or IOException)
         {
-            throw new LlamaApiException(L.F("Нет связи с llama-server ({0}): {1}", BaseUrl, ex.Message), null, ex);
+            throw new LlamaApiException(L.F("Нет связи с llama-server ({0}): {1}", BaseUrl, ex.Message), null, ex)
+            {
+                Kind = LlamaErrorKind.ConnectionFailed,
+                Detail = $"cannot connect to {BaseUrl} ({LocalHttp.InvariantReason(ex)})",
+            };
+        }
+        catch (OperationCanceledException ex)
+        {
+            // Не отмена вызывающего — сработал ConnectTimeout обработчика.
+            throw new LlamaApiException(L.F("Нет связи с llama-server ({0}): {1}", BaseUrl, L.T("превышено время подключения")), null, ex)
+            {
+                Kind = LlamaErrorKind.ConnectionFailed,
+                Detail = $"timed out connecting to {BaseUrl}",
+            };
         }
 
         using (resp)
@@ -230,23 +308,31 @@ public sealed class LlamaClient
             catch (Exception ex) when (ex is IOException or HttpRequestException)
             {
                 throw new LlamaApiException(
-                    L.T("Соединение с llama-server прервалось во время генерации (сервер перезапущен или завершился с ошибкой)."), null, ex);
+                    L.T("Соединение с llama-server прервалось во время генерации (сервер перезапущен или завершился с ошибкой)."), null, ex)
+                {
+                    Kind = LlamaErrorKind.ConnectionLost,
+                    Detail = $"the connection was closed during generation ({LocalHttp.InvariantReason(ex)})",
+                };
             }
 
             if (!parser.Done && parser.FinishReason is null)
                 throw new LlamaApiException(
-                    L.T("Ответ llama-server оборвался до завершения генерации (сервер перезапущен или завершился с ошибкой)."));
+                    L.T("Ответ llama-server оборвался до завершения генерации (сервер перезапущен или завершился с ошибкой)."))
+                {
+                    Kind = LlamaErrorKind.ConnectionLost,
+                    Detail = "the response stream ended before generation finished",
+                };
             return parser.ToResult(sw.Elapsed);
         }
     }
 
-    internal static byte[] BuildChatBody(ChatRequest request)
+    internal static byte[] BuildChatBody(ChatRequest request, string? model = null)
     {
         using var ms = new MemoryStream();
         using (var w = new Utf8JsonWriter(ms))
         {
             w.WriteStartObject();
-            w.WriteString("model", LlamaServerArgs.DefaultAlias);
+            w.WriteString("model", string.IsNullOrWhiteSpace(model) ? LlamaServerArgs.DefaultAlias : model);
             w.WriteStartArray("messages");
             foreach (var m in request.Messages)
             {
@@ -278,6 +364,18 @@ public sealed class LlamaClient
                 w.WriteStartArray("stop");
                 foreach (var s in stop) w.WriteStringValue(s);
                 w.WriteEndArray();
+            }
+            if (request.ResponseFormat is { } format)
+            {
+                w.WriteStartObject("response_format");
+                w.WriteString("type", "json_schema");
+                w.WriteStartObject("json_schema");
+                w.WriteString("name", format.Name);
+                w.WriteBoolean("strict", format.Strict);
+                w.WritePropertyName("schema");
+                format.Schema.WriteTo(w);
+                w.WriteEndObject();
+                w.WriteEndObject();
             }
             w.WriteEndObject();
         }

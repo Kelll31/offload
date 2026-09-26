@@ -21,20 +21,8 @@ internal static partial class CodeRules
 
     private const RegexOptions O = RegexOptions.CultureInvariant | RegexOptions.Compiled;
 
-    private static readonly Rule[] SecretRules =
-    [
-        new("aws-key", "high", new Regex(@"\b(AKIA|ASIA)[0-9A-Z]{16}\b", O), "AWS access key id"),
-        new("private-key", "high", new Regex(@"-----BEGIN (?:RSA |EC |DSA |OPENSSH |PGP |ENCRYPTED )?PRIVATE KEY", O), "private key material"),
-        new("github-token", "high", new Regex(@"\b(?:ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{30,}\b|\bgithub_pat_[A-Za-z0-9_]{40,}\b", O), "GitHub token"),
-        new("slack-token", "high", new Regex(@"\bxox[abposr]-[A-Za-z0-9-]{10,}", O), "Slack token"),
-        new("google-key", "high", new Regex(@"\bAIza[0-9A-Za-z_\-]{35}\b", O), "Google API key"),
-        new("openai-key", "high", new Regex(@"\bsk-(?:proj-|ant-(?:api\d+-)?)?[A-Za-z0-9_\-]{20,}\b", O), "OpenAI/Anthropic-style API key"),
-        new("stripe-key", "high", new Regex(@"\b(?:sk|rk)_live_[0-9a-zA-Z]{20,}\b", O), "Stripe live key"),
-        new("jwt", "medium", new Regex(@"\beyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}", O), "JWT token"),
-        new("conn-string-password", "high", new Regex(@"(?i)(?:password|pwd)\s*=\s*[^;""'\s{$][^;""']{3,}", O), "password in a connection string"),
-        new("hardcoded-secret", "medium", new Regex(@"(?i)\b(?:password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret)\b[""']?\s*[:=]\s*[""'][^""'\s]{6,}[""']", O), "hard-coded credential"),
-        new("url-credentials", "high", new Regex(@"\b[a-z][a-z0-9+.-]*://[^/\s:@""']+:[^/\s@""']{3,}@[\w.-]+", O), "credentials inside a URL"),
-    ];
+    /// <summary>Шаблоны секретов общие с маскированием содержимого (<see cref="SecretRedactor"/>).</summary>
+    private static SecretRule[] SecretRules => SecretRedactor.Rules;
 
     private static readonly CodeLang[] Cs = [CodeLang.CSharp];
     private static readonly CodeLang[] Js = [CodeLang.TypeScript];
@@ -119,10 +107,7 @@ internal static partial class CodeRules
         return v.Length <= 6 ? "****" : v[..4] + new string('*', Math.Min(12, v.Length - 4)) + $" ({v.Length} chars)";
     }
 
-    [GeneratedRegex(@"(?i)(example|placeholder|changeme|your[_-]?|xxx|\*\*\*|<[^>]+>|\$\{|\{\{|dummy|sample|test|fake|redacted|process\.env|os\.environ|Environment\.)", RegexOptions.CultureInvariant)]
-    private static partial Regex Placeholder();
-
-    private static bool LooksLikePlaceholder(string value) => Placeholder().IsMatch(value);
+    private static bool LooksLikePlaceholder(string value) => SecretRedactor.LooksLikePlaceholder(value);
 
     /// <summary>Строка с секретом — не показывать её текст целиком.</summary>
     public static string RedactLine(string line)

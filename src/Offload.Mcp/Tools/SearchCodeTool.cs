@@ -1,10 +1,14 @@
 using System.Text;
 using System.Text.RegularExpressions;
+using Offload.Mcp.Index;
 using Offload.Mcp.Infrastructure;
 
 namespace Offload.Mcp.Tools;
 
-/// <summary>local_search_code: поиск по тексту/regex/слову/имени файла с ограничением результатов и короткими сниппетами (без модели).</summary>
+/// <summary>
+/// local_search_code: поиск по тексту/regex/слову/имени файла с ограничением результатов и короткими сниппетами (без модели).
+/// Кандидаты для text/word — из словаря постоянного индекса (читаются только файлы, где строка может встретиться); имена файлов — без чтения.
+/// </summary>
 internal static class SearchCodeTool
 {
     public static async Task<string> RunAsync(ToolContext ctx, string? query, string? mode, string[]? paths, bool caseSensitive, int contextLines,
@@ -17,8 +21,14 @@ internal static class SearchCodeTool
         maxResults = Math.Clamp(maxResults <= 0 ? 60 : maxResults, 1, 500);
 
         ctx.Progress.Report("Indexing files…");
-        var index = await CodeIndex.LoadAsync(ctx, paths, codeOnly: false, ctx.Ct).ConfigureAwait(false);
-        if (m == "file") return FindFiles(index, q, maxResults);
+        using var index = await CodeIndex.OpenAsync(ctx, paths, codeOnly: false, ctx.Ct).ConfigureAwait(false);
+        if (m == "file")
+        {
+            // Поиск по именам: просмотрен только список путей, а не содержимое (текст файлов не читается).
+            ctx.Stats.AddScanned(index.Files.Sum(f => (long)f.Display.Length + 1));
+            return FindFiles(index, q, maxResults);
+        }
+        ctx.Stats.AddScanned(index.TotalChars, index.Files.Count);
 
         Regex regex;
         try
@@ -40,9 +50,18 @@ internal static class SearchCodeTool
         var hits = 0;
         var filesWithHits = 0;
         var truncated = false;
-        foreach (var f in index.Files.OrderBy(f => f.IsTest).ThenBy(f => f.Display, StringComparer.OrdinalIgnoreCase))
+        // Строка из символов идентификатора: читаем только файлы, в словаре которых она есть (надмножество совпадений). Словарь
+        // построен по замаскированному тексту — при выключенном маскировании секретов просматриваем все файлы. Без учёта регистра
+        // с буквой k (совпадает со знаком Кельвина U+212A) отсев не надмножество — тоже все файлы.
+        HashSet<long>? candidates = m is "text" or "word" && ctx.Cfg.Mcp.RedactSecrets && IndexTokens.CanPrune(q, caseSensitive)
+            ? index.CandidateFiles(q, wholeWord: m == "word", caseSensitive)
+            : null;
+        foreach (var file in index.Files.OrderBy(f => f.IsTest).ThenBy(f => f.Display, StringComparer.OrdinalIgnoreCase))
         {
             ctx.Ct.ThrowIfCancellationRequested();
+            if (candidates is not null && !candidates.Contains(file.Id)) continue;
+            var f = index.Text(file);
+            if (f is null) continue;
             List<int> lines;
             try
             {
@@ -96,7 +115,7 @@ internal static class SearchCodeTool
         return sb.ToString();
     }
 
-    private static string FindFiles(CodeIndexResult index, string q, int max)
+    private static string FindFiles(IndexView index, string q, int max)
     {
         Regex? glob = Glob.HasWildcards(q) ? Glob.ToRegex(q.Replace('\\', '/')) : null;
         var matches = index.Files
@@ -108,7 +127,7 @@ internal static class SearchCodeTool
             .ToList();
         if (matches.Count == 0) return $"No files match \"{q}\". {index.CoverageNote()}";
         var sb = new StringBuilder();
-        foreach (var f in matches.Take(max)) sb.Append(f.Display).Append($"  ({f.Lines.Length} lines)\n");
+        foreach (var f in matches.Take(max)) sb.Append(f.Display).Append($"  ({f.LineCount} lines)\n");
         if (matches.Count > max) sb.Append($"… {matches.Count - max} more\n");
         return sb.ToString().TrimEnd();
     }

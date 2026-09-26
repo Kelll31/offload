@@ -1,4 +1,5 @@
 using Offload.Core.Config;
+using Offload.Core.Hardware;
 
 namespace Offload.Llama.Tests;
 
@@ -46,7 +47,10 @@ public sealed class ServerArgsTests
         Assert.Equal(@"C:\pc\models\Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf", ValueOf(a, "-m"));
         Assert.Equal("127.0.0.1", ValueOf(a, "--host"));
         Assert.Equal("18080", ValueOf(a, "--port"));
-        Assert.Equal("pc-secret", ValueOf(a, "--api-key"));
+        // Ключ — в окружении процесса, не в командной строке (её видит любой процесс пользователя).
+        Assert.DoesNotContain("--api-key", a);
+        Assert.DoesNotContain("--api-key-file", a);
+        Assert.DoesNotContain(a, x => x.Contains("pc-secret", StringComparison.Ordinal));
         Assert.Equal(LlamaServerArgs.DefaultAlias, ValueOf(a, "--alias"));
         Assert.Equal("65536", ValueOf(a, "-c"));
         Assert.Equal("1", ValueOf(a, "-np"));
@@ -107,6 +111,34 @@ public sealed class ServerArgsTests
         Assert.Equal("131072", ValueOf(plan.Arguments, "-c"));
         Assert.Equal(65536, plan.ContextSize);
         Assert.Equal(2, plan.Parallel);
+    }
+
+    [Theory]
+    [InlineData(0, 1)]
+    [InlineData(-5, 1)]
+    [InlineData(ServerSettings.MaxParallel, ServerSettings.MaxParallel)]
+    [InlineData(ServerSettings.MaxParallel + 1, ServerSettings.MaxParallel)]
+    [InlineData(64, ServerSettings.MaxParallel)]
+    public void Parallel_ClampedToSharedLimit(int configured, int expected)
+    {
+        var plan = LlamaServerArgs.Build(Cfg(s => s.Parallel = configured), Model(), Exe);
+        Assert.Equal(expected, plan.Parallel);
+        Assert.Equal(expected.ToString(System.Globalization.CultureInfo.InvariantCulture), ValueOf(plan.Arguments, "-np"));
+    }
+
+    [Theory]
+    [InlineData("", false)]
+    [InlineData("--top-n-sigma 1.5", false)]
+    [InlineData("--chat-template-kwargs '{\"enable_thinking\":false}'", false)]
+    [InlineData("--x \"a \\\" b\"", false)]
+    [InlineData("--x \"\"", false)]
+    [InlineData("--x \"abc", true)]
+    [InlineData("--x 'abc", true)]
+    [InlineData("--x \"abc\\\"", true)]
+    [InlineData("--x '\"' \"'\"", false)]
+    public void HasUnclosedQuote_MatchesSplitRules(string line, bool expected)
+    {
+        Assert.Equal(expected, LlamaServerArgs.HasUnclosedQuote(line));
     }
 
     [Fact]
@@ -201,10 +233,90 @@ public sealed class ServerArgsTests
     }
 
     [Fact]
-    public void Describe_MasksApiKey()
+    public void Describe_HasNoApiKey()
     {
         var text = LlamaServerArgs.Describe(LlamaServerArgs.Build(Cfg(), Model(), Exe));
         Assert.DoesNotContain("pc-secret", text);
-        Assert.Contains("--api-key ***", text);
+        Assert.DoesNotContain("--api-key", text);
+    }
+
+    [Fact]
+    public void NoApiKey_NoKeyFileArgument()
+    {
+        var a = LlamaServerArgs.Build(Cfg(s => s.ApiKey = ""), Model(), Exe).Arguments;
+        Assert.DoesNotContain("--api-key-file", a);
+        Assert.DoesNotContain("--api-key", a);
+    }
+
+    [Fact]
+    public void Environment_CarriesKey_AndRemovesInheritedWhenEmpty()
+    {
+        var env = LlamaServerArgs.BuildEnvironment(Cfg());
+        Assert.Equal("pc-secret", env[LlamaServerArgs.ApiKeyEnvVar]);
+        // Без ключа унаследованный LLAMA_API_KEY из окружения пользователя убирается.
+        var none = LlamaServerArgs.BuildEnvironment(Cfg(s => s.ApiKey = "  "));
+        Assert.True(none.ContainsKey(LlamaServerArgs.ApiKeyEnvVar));
+        Assert.Null(none[LlamaServerArgs.ApiKeyEnvVar]);
+    }
+
+    [Fact]
+    public void ExtraArgs_CannotOverrideApiKey()
+    {
+        var a = LlamaServerArgs.Build(Cfg(s => s.ExtraArgs = "--api-key other --api-key-file C:/keys/x.txt -ub 512"), Model(), Exe).Arguments;
+        Assert.DoesNotContain("other", a);
+        Assert.DoesNotContain("C:/keys/x.txt", a);
+        Assert.DoesNotContain("--api-key-file", a);
+        Assert.DoesNotContain("--api-key", a);
+        Assert.Equal("512", ValueOf(a, "-ub"));
+    }
+
+    [Fact]
+    public void AutoPlacement_ExplicitContextAndCpuMoe()
+    {
+        var placement = new ServerPlacement(16384, 12, "оценка");
+        var plan = LlamaServerArgs.Build(Cfg(), Model(), Exe, placement);
+        Assert.Equal("16384", ValueOf(plan.Arguments, "-c"));
+        Assert.Equal("12", ValueOf(plan.Arguments, "--n-cpu-moe"));
+        Assert.Equal(16384, plan.ContextSize);
+        Assert.Equal(12, plan.CpuMoeLayers);
+        Assert.Same(placement, plan.Placement);
+
+        // -c — общий пул: контекст слота × слоты.
+        var two = LlamaServerArgs.Build(Cfg(s => s.Parallel = 2), Model(), Exe, placement);
+        Assert.Equal("32768", ValueOf(two.Arguments, "-c"));
+        Assert.Equal(16384, two.ContextSize);
+
+        // Все эксперты в видеопамяти — флаг не нужен, но это уже решение «Авто», а не --fit.
+        var full = LlamaServerArgs.Build(Cfg(), Model(), Exe, new ServerPlacement(65536, 0, "оценка"));
+        Assert.DoesNotContain("--n-cpu-moe", full.Arguments);
+        Assert.Equal(0, full.CpuMoeLayers);
+
+        // Контекст не больше родного; у плотной модели выгрузка экспертов не передаётся.
+        Assert.Equal("8192", ValueOf(LlamaServerArgs.Build(Cfg(), Model(m => m.NativeContext = 8192), Exe, placement).Arguments, "-c"));
+        Assert.DoesNotContain("--n-cpu-moe", LlamaServerArgs.Build(Cfg(), Model(m => m.IsMoe = false), Exe, placement).Arguments);
+    }
+
+    [Fact]
+    public void AutoPlacement_IgnoredWhenUserSetValues()
+    {
+        var placement = new ServerPlacement(16384, 12, "оценка");
+        var ctx = LlamaServerArgs.Build(Cfg(s => s.ContextSize = 40000), Model(), Exe, placement);
+        Assert.Equal("40000", ValueOf(ctx.Arguments, "-c"));
+        Assert.DoesNotContain("--n-cpu-moe", ctx.Arguments);
+        Assert.Null(ctx.Placement);
+
+        var moeOff = LlamaServerArgs.Build(Cfg(s => s.CpuMoeLayers = 0), Model(), Exe, placement);
+        Assert.Equal("65536", ValueOf(moeOff.Arguments, "-c"));
+        Assert.DoesNotContain("--n-cpu-moe", moeOff.Arguments);
+
+        var moeSet = LlamaServerArgs.Build(Cfg(s => s.CpuMoeLayers = 5), Model(), Exe, placement);
+        Assert.Equal("5", ValueOf(moeSet.Arguments, "--n-cpu-moe"));
+        Assert.Equal("65536", ValueOf(moeSet.Arguments, "-c"));
+
+        // Без оценки — как раньше: рекомендованный контекст, размещение решает --fit.
+        var none = LlamaServerArgs.Build(Cfg(), Model(), Exe);
+        Assert.Equal("65536", ValueOf(none.Arguments, "-c"));
+        Assert.Equal(-1, none.CpuMoeLayers);
+        Assert.Null(none.Placement);
     }
 }

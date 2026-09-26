@@ -3,8 +3,12 @@
     <RootNamespace>Offload.Mcp</RootNamespace>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="ModelContextProtocol" Version="2.2.0" />
-    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.12" />
+    <PackageReference Include="ModelContextProtocol" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
+    <!-- Постоянный индекс кода (DataDir/index/*.db); нативная e_sqlite3 попадает в single-file exe (IncludeNativeLibrariesForSelfExtract). -->
+    <PackageReference Include="Microsoft.Data.Sqlite" />
+    <!-- Точный синтаксический разбор C# (ROADMAP §6.2): символы, ссылки, rename с перегрузками. -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Offload.Core\Offload.Core.csproj" />

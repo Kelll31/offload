@@ -20,6 +20,9 @@ internal sealed class LocalHub : IDisposable
     public int PageSize { get; set; } = 1000;
     public ConcurrentQueue<string> Log { get; } = new();
 
+    /// <summary>Заголовок Authorization каждого запроса (путь, значение или null).</summary>
+    public ConcurrentQueue<(string Path, string? Authorization)> Auth { get; } = new();
+
     /// <summary>Оборвать ответ файла после стольких байт (имитация обрыва связи); -1 — нет.</summary>
     public long FailAfterBytes { get; set; } = -1;
 
@@ -57,6 +60,7 @@ internal sealed class LocalHub : IDisposable
     {
         var path = Uri.UnescapeDataString(ctx.Request.Url!.AbsolutePath);
         Log.Enqueue($"{ctx.Request.HttpMethod} {ctx.Request.Url.PathAndQuery} range={ctx.Request.Headers["Range"]}");
+        Auth.Enqueue((path, ctx.Request.Headers["Authorization"]));
         try
         {
             if (path.StartsWith("/api/models/", StringComparison.Ordinal) && path.Contains("/tree/"))

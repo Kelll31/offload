@@ -23,7 +23,7 @@ internal sealed class CodexIntegration : IntegrationBase
 
     private static string[] Table(string name) => ["mcp_servers", name];
 
-    private FileProbe Probe(string path, McpServerSpec? spec, string name)
+    private static FileProbe Probe(string path, McpServerSpec? spec, string name)
     {
         try
         {
@@ -35,6 +35,7 @@ internal sealed class CodexIntegration : IntegrationBase
             if (patcher.Main is null) return new FileProbe(path, ProbeState.Absent);
             var info = ReadEntry(patcher);
             var ours = info.Command is not null && CommandPath.IsOffload(info.Command, spec?.Command);
+            if (ours && spec is not null && StaleDefaultKeys(patcher, PreviousDefaults).Count > 0) info = info with { StaleDefaults = true };
             return new FileProbe(path, ours ? ProbeState.Ours : ProbeState.Foreign, info);
         }
         catch (Exception ex) when (DescribeFailure(path, ex) is { } msg)
@@ -56,12 +57,40 @@ internal sealed class CodexIntegration : IntegrationBase
         return Probe(ConfigPath!, spec, spec.Name).ToStatus(spec);
     }
 
+    internal override IReadOnlyList<FileProbe> ProbeEntries(McpServerSpec spec) =>
+        IsClientInstalled() ? [Probe(ConfigPath!, spec, spec.Name)] : [];
+
     /// <summary>Новый текст config.toml с нашей таблицей (или null, если менять нечего). Результат проверяется повторным разбором.</summary>
-    internal static string? BuildRegistered(string text, McpServerSpec spec)
+    /// <summary>
+    /// Прежние значения по умолчанию (текст TOML) для <c>startup_timeout_sec</c> / <c>tool_timeout_sec</c>: такое значение записал
+    /// Offload, и при смене умолчания его можно заменить. Меняя <see cref="StartupTimeoutSec"/> или <see cref="ToolTimeoutSec"/>,
+    /// добавьте сюда старое значение. Прочие значения считаются выбором пользователя и сохраняются.
+    /// </summary>
+    internal static readonly IReadOnlyDictionary<string, string[]> PreviousDefaults = new Dictionary<string, string[]>
+    {
+        ["startup_timeout_sec"] = [],
+        ["tool_timeout_sec"] = [],
+    };
+
+    /// <summary>Ключи основной таблицы со значением по умолчанию прежней версии Offload.</summary>
+    internal static IReadOnlyList<string> StaleDefaultKeys(TomlTablePatcher p, IReadOnlyDictionary<string, string[]> previous)
+    {
+        var stale = new List<string>();
+        foreach (var (key, values) in previous)
+        {
+            if (values.Length == 0 || p.MainValue(key) is not { ValueStart: >= 0 } kv) continue;
+            var raw = p.Document.Text[kv.ValueStart..kv.ValueEnd].Trim();
+            if (values.Contains(raw, StringComparer.Ordinal)) stale.Add(key);
+        }
+        return stale;
+    }
+
+    internal static string? BuildRegistered(string text, McpServerSpec spec, IReadOnlyDictionary<string, string[]>? previousDefaults = null)
     {
         var doc = TomlDocument.Parse(text);
         var patcher = new TomlTablePatcher(doc, Table(spec.Name));
-        if (patcher.Main is not null && ReadEntry(patcher).Matches(spec) && CommandPath.IsOffload(ReadEntry(patcher).Command, spec.Command))
+        var stale = patcher.Main is null ? [] : StaleDefaultKeys(patcher, previousDefaults ?? PreviousDefaults);
+        if (patcher.Main is not null && stale.Count == 0 && ReadEntry(patcher).Matches(spec) && CommandPath.IsOffload(ReadEntry(patcher).Command, spec.Command))
             return null;
 
         var owned = new List<(string, string)>
@@ -81,6 +110,9 @@ internal sealed class CodexIntegration : IntegrationBase
             ("tool_timeout_sec", ToolTimeoutSec.ToString(CultureInfo.InvariantCulture)),
             ("enabled", "true"),
         };
+        // Устаревшие умолчания Offload переписываются, как свои ключи; значения пользователя остаются.
+        owned.AddRange(defaults.Where(d => stale.Contains(d.Item1)));
+        defaults.RemoveAll(d => stale.Contains(d.Item1));
         var updated = patcher.SetTable(owned, defaults);
         Verify(patcher, updated, spec);
         return updated;
@@ -138,6 +170,38 @@ internal sealed class CodexIntegration : IntegrationBase
             Log.Warn("Integrations", $"{Id}: {msg}");
             return Task.FromResult(new IntegrationResult(false, msg));
         }
+    }
+
+    /// <summary>Только путь к exe (ключ command); остальные ключи таблицы, умолчания и подтаблицы не трогаются.</summary>
+    internal override Task<IntegrationResult?> RepairPathAsync(McpServerSpec spec, CancellationToken ct = default)
+    {
+        if (!IsClientInstalled()) return Task.FromResult<IntegrationResult?>(null);
+        var path = ConfigPath!;
+        if (Probe(path, spec, spec.Name).Need(spec) != RepairNeed.PathMoved) return Task.FromResult<IntegrationResult?>(null);
+        try
+        {
+            var res = ConfigFile.Edit(path, snap => BuildPathRepaired(snap.Text, spec));
+            return Task.FromResult<IntegrationResult?>(res.Outcome == WriteOutcome.Written
+                ? new IntegrationResult(true, MsgRegistered(path), res.BackupPath)
+                : null);
+        }
+        catch (Exception ex) when (DescribeFailure(path, ex) is { } msg)
+        {
+            Log.Warn("Integrations", $"{Id}: {msg}");
+            return Task.FromResult<IntegrationResult?>(new IntegrationResult(false, msg));
+        }
+    }
+
+    /// <summary>Текст с новым путём к exe в нашей таблице или null, если запись не «наша с отсутствующим exe».</summary>
+    internal static string? BuildPathRepaired(string text, McpServerSpec spec)
+    {
+        var patcher = new TomlTablePatcher(TomlDocument.Parse(text), Table(spec.Name));
+        if (patcher.Unsupported is not null || patcher.Main is null) return null;
+        var info = ReadEntry(patcher);
+        if (!CommandPath.IsOffload(info.Command, spec.Command) || IntegrationBase.NeedOf(info, spec) != RepairNeed.PathMoved) return null;
+        var updated = patcher.SetTable([("command", TomlDocument.FormatString(spec.Command))], []);
+        Verify(patcher, updated, spec);
+        return updated;
     }
 
     public override Task<IntegrationResult> UnregisterAsync(CancellationToken ct = default)

@@ -34,7 +34,8 @@ internal sealed class McpHarness : IAsyncDisposable
         _serverTask = _sp.GetRequiredService<McpServer>().RunAsync(_cts.Token);
     }
 
-    public static async Task<McpHarness> StartAsync(string workspace)
+    /// <param name="configure">Донастройка клиента (например, capability elicitation и её обработчик).</param>
+    public static async Task<McpHarness> StartAsync(string workspace, Action<McpClientOptions>? configure = null)
     {
         var h = new McpHarness();
         var options = new McpClientOptions
@@ -47,6 +48,7 @@ internal sealed class McpHarness : IAsyncDisposable
         {
             Roots = [new Root { Uri = new Uri(workspace + "\\").AbsoluteUri, Name = "ws" }],
         });
+        configure?.Invoke(options);
         h.Client = await McpClient.CreateAsync(new StreamClientTransport(h._c2s.Writer.AsStream(), h._s2c.Reader.AsStream()), options);
         return h;
     }
@@ -152,6 +154,7 @@ public class EndToEndTests
         Assert.Contains("\"enable_thinking\":false", body);
         Assert.Contains("\"stream\":true", body);
 
+        Assert.True(await UsageRecorder.FlushAsync(TimeSpan.FromSeconds(10)), "запись статистики не завершилась");
         var usage = UsageLog.ReadAll();
         var rec = Assert.Single(usage);
         Assert.Equal(McpToolNames.AskFiles, rec.Tool);
@@ -170,7 +173,7 @@ public class EndToEndTests
         llama.Responder = req =>
         {
             var user = FakeLlamaServer.UserText(req);
-            if (user.StartsWith("PARTIAL ANSWERS")) return "MERGED ANSWER";
+            if (user.StartsWith("PARTIAL ANSWERS", StringComparison.Ordinal)) return "MERGED ANSWER";
             return user.Contains("file 2 line 7 ") ? "found in m2.txt:8" : "NOTHING RELEVANT";
         };
         await using var h = await McpHarness.StartAsync(env.Workspace);

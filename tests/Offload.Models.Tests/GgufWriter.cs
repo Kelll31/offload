@@ -73,7 +73,7 @@ internal sealed class GgufWriter
 
     public byte[] Build()
     {
-        var o = new Out(BigEndian);
+        using var o = new Out(BigEndian);
         o.Raw("GGUF"u8.ToArray());
         o.U32(Version);
         o.U64(TensorCount);
@@ -111,10 +111,12 @@ internal sealed class GgufWriter
             .BigU8Array("tokenizer.ggml.token_type", 200_000)
             .Str("tokenizer.chat_template", template);
 
-    private sealed class Out(bool bigEndian)
+    private sealed class Out(bool bigEndian) : IDisposable
     {
         private readonly MemoryStream _ms = new();
         private readonly byte[] _b = new byte[8];
+
+        public void Dispose() => _ms.Dispose();
 
         public void Raw(byte[] bytes) => _ms.Write(bytes);
 

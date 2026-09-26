@@ -24,6 +24,9 @@ internal sealed class MainForm : Form
     private PageBase? _current;
     private bool _allowClose;
     private bool _hintShown;
+    // Восстановленное положение до первого показа: если при переносе на монитор с другим масштабом WinForms
+    // пересчитает размер, он возвращается к сохранённому.
+    private Rectangle? _pendingPlacement;
 
     public MainForm(IAppShell shell)
     {
@@ -94,7 +97,8 @@ internal sealed class MainForm : Form
         Controls.Add(content);
         Controls.Add(_nav);
 
-        Select(_pages[0].Key);
+        var lastTab = ConfigStore.Current.Ui.LastTab;
+        Select(_pages.Any(p => p.Key == lastTab) ? lastTab! : _pages[0].Key);
         UpdateNavStatus();
         _statusTimer = new System.Windows.Forms.Timer { Interval = 5000 };
         _statusTimer.Tick += (_, _) => UpdateNavStatus();
@@ -115,6 +119,12 @@ internal sealed class MainForm : Form
 
     /// <summary>Ключ открытой страницы.</summary>
     public string? CurrentKey => _current?.Key;
+
+    /// <summary>Число разделов (для подсказки о Ctrl+1…9).</summary>
+    public int PageCount => _pages.Count;
+
+    /// <summary>Не восстанавливать сохранённое положение (окно пересоздаётся с положением предыдущего).</summary>
+    public bool SkipSavedPlacement { get; set; }
 
     private static string GroupOf(string key) => key switch
     {
@@ -217,6 +227,13 @@ internal sealed class MainForm : Form
         if (_pages.OfType<ServerPage>().FirstOrDefault() is { } page) await page.RunUpdateAsync();
     }
 
+    /// <summary>Запустить обновление Offload (уведомление или пункт меню трея).</summary>
+    public async Task RunAppUpdateAsync()
+    {
+        ShowTab(Tabs.About);
+        if (_pages.OfType<AboutPage>().FirstOrDefault() is { } page) await page.RunUpdateAsync();
+    }
+
     /// <summary>Описание выполняющихся длительных операций (для подтверждения выхода) или null.</summary>
     public string? BusyDescription
     {
@@ -293,10 +310,69 @@ internal sealed class MainForm : Form
         Theme.ApplyWindowFrame(this);
     }
 
+    protected override void OnLoad(EventArgs e)
+    {
+        base.OnLoad(e);
+        RestorePlacement();
+    }
+
     protected override void OnShown(EventArgs e)
     {
         base.OnShown(e);
+        _pendingPlacement = null;
         UpdateActivePage();
+    }
+
+    protected override void OnDpiChanged(DpiChangedEventArgs e)
+    {
+        base.OnDpiChanged(e);
+        // Окно перенесено на монитор с другим масштабом при восстановлении — размер уже рассчитан под него.
+        if (_pendingPlacement is { } rect) Bounds = rect;
+    }
+
+    /// <summary>Положение и размер из прошлого сеанса — с поправкой на текущие мониторы (иначе остаётся «по центру»).</summary>
+    private void RestorePlacement()
+    {
+        if (SkipSavedPlacement) return;
+        try
+        {
+            var saved = ConfigStore.Current.Ui.Window;
+            var areas = Screen.AllScreens.Select(s => s.WorkingArea).ToList();
+            var rect = WindowPlacements.Restore(saved, areas, NativeMethods.DpiAt, DeviceDpi, new Size(860, 600));
+            if (rect is not { } r) return;
+            _pendingPlacement = r;
+            StartPosition = FormStartPosition.Manual;
+            Bounds = r;
+            if (saved!.Maximized) WindowState = FormWindowState.Maximized;
+        }
+        catch (Exception ex)
+        {
+            Log.Debug("ui", $"Положение окна не восстановлено: {ex.Message}");
+        }
+    }
+
+    /// <summary>Запомнить положение, размер и открытый раздел (при закрытии или сворачивании в трей).</summary>
+    private void SavePlacement()
+    {
+        if (!IsHandleCreated) return;
+        try
+        {
+            var normal = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds;
+            if (normal.Width <= 0 || normal.Height <= 0) return;
+            var placement = WindowPlacements.Capture(normal, WindowState == FormWindowState.Maximized, DeviceDpi);
+            var tab = _current?.Key;
+            var ui = ConfigStore.Current.Ui;
+            if (WindowPlacements.Same(ui.Window, placement) && ui.LastTab == tab) return;
+            ConfigStore.Update(c =>
+            {
+                c.Ui.Window = placement;
+                c.Ui.LastTab = tab;
+            });
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("ui", $"Положение окна не сохранено: {ex.Message}");
+        }
     }
 
     protected override void OnVisibleChanged(EventArgs e)
@@ -331,6 +407,7 @@ internal sealed class MainForm : Form
 
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
+        SavePlacement();
         if (!_allowClose && e.CloseReason == CloseReason.UserClosing)
         {
             if (ConfigStore.Current.Ui.MinimizeToTrayOnClose)

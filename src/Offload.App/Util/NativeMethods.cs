@@ -34,4 +34,56 @@ internal static class NativeMethods
 
     [DllImport("dwmapi.dll")]
     public static extern int DwmSetWindowAttribute(IntPtr hwnd, int attribute, ref int value, int size);
+
+    private const int MONITOR_DEFAULTTONULL = 0;
+    private const int MDT_EFFECTIVE_DPI = 0;
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct POINT
+    {
+        public int X;
+        public int Y;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromPoint(POINT pt, int flags);
+
+    [DllImport("shcore.dll")]
+    private static extern int GetDpiForMonitor(IntPtr monitor, int dpiType, out uint dpiX, out uint dpiY);
+
+    private const int SM_CXSMICON = 49;
+    private const int SM_CYSMICON = 50;
+
+    [DllImport("user32.dll")]
+    private static extern int GetSystemMetricsForDpi(int index, uint dpi);
+
+    /// <summary>Размер маленького значка (значок трея) для заданного DPI; null — API недоступен.</summary>
+    public static Size? SmallIconSizeForDpi(int dpi)
+    {
+        try
+        {
+            var w = GetSystemMetricsForDpi(SM_CXSMICON, (uint)dpi);
+            var h = GetSystemMetricsForDpi(SM_CYSMICON, (uint)dpi);
+            return w > 0 && h > 0 ? new Size(w, h) : null;
+        }
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>Эффективный DPI монитора в точке экрана (null — точка вне мониторов или API недоступен).</summary>
+    public static int? DpiAt(Point p)
+    {
+        try
+        {
+            var monitor = MonitorFromPoint(new POINT { X = p.X, Y = p.Y }, MONITOR_DEFAULTTONULL);
+            if (monitor == IntPtr.Zero) return null;
+            return GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, out var x, out _) == 0 && x > 0 ? (int)x : null;
+        }
+        catch (Exception ex) when (ex is DllNotFoundException or EntryPointNotFoundException)
+        {
+            return null;
+        }
+    }
 }

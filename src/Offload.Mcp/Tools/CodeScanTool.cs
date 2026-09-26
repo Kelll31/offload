@@ -1,6 +1,7 @@
 using System.Text;
 using System.Text.RegularExpressions;
 using Offload.Mcp.Infrastructure;
+using static Offload.Mcp.Infrastructure.TextUtil;
 
 namespace Offload.Mcp.Tools;
 
@@ -18,8 +19,10 @@ internal static partial class CodeScanTool
         if (!Checks.Contains(c)) throw new ToolException("check must be one of: " + string.Join(", ", Checks) + ".");
         maxResults = Math.Clamp(maxResults <= 0 ? 50 : maxResults, 5, 500);
         ctx.Progress.Report("Indexing files…");
-        var index = await CodeIndex.LoadAsync(ctx, paths, codeOnly: c is not ("secrets" or "todo"), ctx.Ct).ConfigureAwait(false);
+        // secrets ищет сами значения — по исходному тексту (в отчёте они маскируются CodeRules.RedactLine).
+        var index = await CodeIndex.LoadAsync(ctx, paths, codeOnly: c is not ("secrets" or "todo"), ctx.Ct, unredacted: c == "secrets").ConfigureAwait(false);
         var files = index.Files.Where(f => includeTests || !f.IsTest || c is "secrets" or "duplicates" or "generated").ToList();
+        ctx.Stats.AddScanned(files);
         var body = c switch
         {
             "todo" => Todo(files, maxResults),
@@ -193,7 +196,7 @@ internal static partial class CodeScanTool
                 for (var i = s.Line; i <= s.EndLine && i <= code.Length; i++)
                 {
                     var l = code[i - 1];
-                    complexity += CodeRules.Branch().Matches(l).Count;
+                    complexity += CodeRules.Branch().Count(l);
                     foreach (var ch in l)
                     {
                         if (ch == '{') maxDepth = Math.Max(maxDepth, ++depth);
@@ -258,5 +261,4 @@ internal static partial class CodeScanTool
         return sb.ToString();
     }
 
-    private static string Short(string s, int max) => s.Length <= max ? s : s[..max] + "…";
 }

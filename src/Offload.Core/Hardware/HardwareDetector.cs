@@ -102,7 +102,7 @@ public static class HardwareDetector
         return ProcessRunner.FindOnPath("nvidia-smi.exe");
     }
 
-    private static IEnumerable<GpuInfo> QueryRegistryAdapters()
+    private static List<GpuInfo> QueryRegistryAdapters()
     {
         var list = new List<GpuInfo>();
         try

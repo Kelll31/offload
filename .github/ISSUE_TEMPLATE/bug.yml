@@ -1,0 +1,41 @@
+name: Ошибка / Bug
+description: Что-то работает не так / Something doesn't work
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: Что случилось / What happened
+      description: Что делали, что ожидали, что получили. / Steps, expected and actual result.
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Версия Offload / Offload version
+      placeholder: 1.0.0
+    validations:
+      required: true
+  - type: input
+    id: gpu
+    attributes:
+      label: Видеокарта и драйвер / GPU and driver
+      placeholder: RTX 3090, 580.xx
+  - type: input
+    id: model
+    attributes:
+      label: Модель и сборка llama.cpp / Model and llama.cpp build
+      placeholder: Qwen3.8-27B Q4_K_M, b11102 CUDA 12
+  - type: input
+    id: ide
+    attributes:
+      label: IDE / клиент MCP / MCP client
+      placeholder: Claude Code 2.1.x
+  - type: textarea
+    id: logs
+    attributes:
+      label: Журнал / Logs
+      description: >-
+        Фрагмент из %LOCALAPPDATA%\Offload\logs\ (app.log, llama-server.log, mcp.log). УДАЛИТЕ КЛЮЧИ API.
+        / Excerpt from the logs folder. REMOVE API KEYS.
+      render: text

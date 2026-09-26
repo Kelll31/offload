@@ -101,6 +101,5 @@
   "Сервер llama.cpp перезапущен": "The llama.cpp server restarted",
   "Локальная модель снова доступна.": "The local model is available again.",
   "Сервер llama.cpp не работает": "The llama.cpp server is down",
-  "Сервер падал {0} раза за {1:0} минут и больше не перезапускается автоматически. {2}": "The server crashed {0} times in {1:0} minutes and will no longer restart automatically. {2}",
-  "модель выгружена после простоя ({0} мин), запустится при следующем обращении из IDE": "model unloaded after {0} min idle, it will start on the next request from the IDE"
+  "Сервер падал {0} раза за {1:0} минут и больше не перезапускается автоматически. {2}": "The server crashed {0} times in {1:0} minutes and will no longer restart automatically. {2}"
 }

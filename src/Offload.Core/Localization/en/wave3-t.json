@@ -1,0 +1,4 @@
+{
+  "Перезапустите Claude Code в WSL или выполните команду /mcp в открытой сессии.": "Restart Claude Code in WSL or run /mcp in an open session.",
+  "{0}: Offload.exe находится на сетевом пути ({1}) — WSL не сможет его запустить.": "{0}: Offload.exe is on a network path ({1}) — WSL cannot start it."
+}

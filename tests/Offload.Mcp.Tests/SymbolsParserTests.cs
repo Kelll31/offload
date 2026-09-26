@@ -124,7 +124,10 @@ public class SymbolsParserTests
         var area = Single(symbols, "Area");
         Assert.Equal("method", area.Kind);
         Assert.Equal(area.Line, area.EndLine);
-        Assert.DoesNotContain(symbols, s => s.Name is "_repo" or "ArgumentNullException" or "Save" or "if");
+        Assert.DoesNotContain(symbols, s => s.Name is "ArgumentNullException" or "Save" or "if" or "order");
+        // Поля — тоже объявления (разбор Roslyn).
+        AssertSymbol(Single(symbols, "_repo"), "field", LineOf(CSharpSource, "private readonly IRepo"), LineOf(CSharpSource, "private readonly IRepo"), "OrderService");
+        Assert.Equal("private readonly IRepo _repo", Single(symbols, "_repo").Signature);
     }
 
     [Fact]
@@ -294,7 +297,8 @@ public class SymbolsParserTests
         var symbols = Parse("shop/store.go", src);
 
         AssertSymbol(Single(symbols, "Store"), "struct", 3, 5, null);
-        AssertSymbol(Single(symbols, "Add"), "function", 7, 9, null);
+        // Метод с получателем: контейнер — тип получателя (находится как «Store.Add»).
+        AssertSymbol(Single(symbols, "Add"), "method", 7, 9, "Store");
         AssertSymbol(Single(symbols, "New"), "function", 11, 13, null);
         Assert.Equal(3, symbols.Count);
     }
@@ -374,8 +378,9 @@ public class SymbolsParserTests
         Assert.Equal("Submit", Symbols.Enclosing(symbols, submitLine + 2)?.Name);
         Assert.Equal("Submit", Symbols.Enclosing(symbols, submitLine)?.Name);
         Assert.Equal("Run", Symbols.Enclosing(symbols, LineOf(CSharpSource, "public void Run"))?.Name);
-        // Поле — внутри класса, но вне методов.
-        Assert.Equal("OrderService", Symbols.Enclosing(symbols, LineOf(CSharpSource, "private readonly IRepo"))?.Name);
+        // Строка поля — само поле; пустая строка между членами — класс.
+        Assert.Equal("_repo", Symbols.Enclosing(symbols, LineOf(CSharpSource, "private readonly IRepo"))?.Name);
+        Assert.Equal("OrderService", Symbols.Enclosing(symbols, LineOf(CSharpSource, "private readonly IRepo") + 1)?.Name);
         // Между типами — только пространство имён.
         Assert.Equal("Shop.Core", Symbols.Enclosing(symbols, LineOf(CSharpSource, "public interface IShape") - 1)?.Name);
     }

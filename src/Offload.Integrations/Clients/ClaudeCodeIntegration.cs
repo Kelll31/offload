@@ -87,7 +87,7 @@ internal sealed class ClaudeCodeIntegration : JsonIntegration
         },
     };
 
-    private string FilePath => ClientLocations.ClaudeGlobalConfig;
+    private static string FilePath => ClientLocations.ClaudeGlobalConfig;
 
     public override async Task<IntegrationResult> RegisterAsync(McpServerSpec spec, CancellationToken ct = default)
     {

@@ -1,0 +1,10 @@
+{
+  "Не удалось подобрать свободное имя для резервной копии {0}": "Couldn't find a free name for the backup of {0}",
+  "Не удалось снять дополнение Claude Code: {0}": "Couldn't remove a Claude Code add-on: {0}",
+  "OpenCode: провайдер Offload добавлен в глобальный конфиг ({0}).": "OpenCode: the Offload provider was added to the global config ({0}).",
+  "OpenCode: провайдер Offload удалён из {0}.": "OpenCode: the Offload provider was removed from {0}.",
+  "OpenCode: провайдер Offload уже прописан ({0}).": "OpenCode: the Offload provider is already configured ({0}).",
+  "OpenCode: провайдер Offload в глобальном конфиге не прописан.": "OpenCode: the Offload provider is not in the global config.",
+  "Файл {0} не разобран и оставлен без изменений: {1}": "Couldn't parse file {0}, it was left unchanged: {1}",
+  "«provider» не является объектом": "“provider” is not an object"
+}

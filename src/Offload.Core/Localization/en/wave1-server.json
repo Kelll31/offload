@@ -1,0 +1,9 @@
+{
+  "{0}: {1} (модель выгружена после простоя)": "{0}: {1} (model unloaded after idle)",
+  "Сервер llama.cpp перестал отвечать на запросы.": "The llama.cpp server stopped responding to requests.",
+  "Сервер llama.cpp завис": "The llama.cpp server is not responding",
+  "{0} — модель выгружена после простоя: {1}": "{0} — model unloaded after idle: {1}",
+  "{0} · {1} · модель выгружена": "{0} · {1} · model unloaded",
+  "Параметры llama-server, сборка llama.cpp и Visual C++ Runtime": "llama-server settings, llama.cpp build and Visual C++ Runtime",
+  "В дополнительных аргументах есть незакрытая кавычка — проверьте строку.": "The extra arguments contain an unclosed quote — please check the line."
+}

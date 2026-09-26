@@ -93,6 +93,37 @@ internal static class OpenCodeReleases
         throw new InvalidOperationException(L.F("Не удалось получить сведения о релизах OpenCode: {0}", Describe(apiError)), apiError);
     }
 
+    /// <summary>
+    /// Проверенная версия OpenCode (канал «stable»): с ней Offload протестирован (формат событий <c>run --format json</c>,
+    /// <c>experimental.continue_loop_on_deny</c>, переменные <c>OPENCODE_*</c>). Размеры и SHA-256 зашиты, как у ripgrep, —
+    /// установка не зависит от GitHub API и его лимита и не примет подменённый файл.
+    /// </summary>
+    /// <remarks>
+    /// Источник значений: поля <c>size</c> и <c>digest</c> ответа GitHub API releases/latest с тегом v1.18.32 (сохранённый
+    /// Offload кэш opencode-release-cache.json от 2026-09-23; эта версия установлена и проверена в работе агентных инструментов).
+    /// Обновляя версию: взять size/digest трёх файлов opencode-windows-*.zip нового релиза из
+    /// <c>https://api.github.com/repos/anomalyco/opencode/releases/tags/vX.Y.Z</c>, прогнать RunEventsContractTests
+    /// на записанном выводе новой версии и только потом менять <see cref="PinnedVersion"/>.
+    /// </remarks>
+    internal const string PinnedVersion = "1.18.32";
+
+    internal static readonly IReadOnlyDictionary<string, (long Size, string Sha256)> PinnedAssets =
+        new Dictionary<string, (long, string)>(StringComparer.OrdinalIgnoreCase)
+        {
+            [AssetX64] = (62101772, "1483c72d5adced825590a0ecf8cc18b3e87e535960a125dbf539d33bce135d0f"),
+            [AssetX64Baseline] = (62101771, "cd852831bd094c2df2eb379eb98bed7a63db7f823a7caf277c732cdac33cbdb6"),
+            [AssetArm64] = (60591906, "5c1c21e85b694ac3fedccff22f934484c29273d5b5780eff006960304108e124"),
+        };
+
+    /// <summary>Проверенный релиз: прямые ссылки на тег <see cref="PinnedVersion"/> с зашитыми размерами и SHA-256.</summary>
+    internal static OpenCodeRelease Pinned()
+    {
+        var tag = "v" + PinnedVersion;
+        var baseUrl = $"{WebBase}/{Repo}/releases/download/{Uri.EscapeDataString(tag)}/";
+        var assets = PinnedAssets.Select(a => new OpenCodeAsset(a.Key, baseUrl + a.Key, a.Value.Size, a.Value.Sha256)).ToList();
+        return new OpenCodeRelease(tag, PinnedVersion, assets, FromApi: false);
+    }
+
     /// <summary>Релиз без API: прямые ссылки на файлы (без размера и контрольной суммы).</summary>
     internal static OpenCodeRelease FallbackRelease(string? tag)
     {
@@ -150,6 +181,12 @@ internal static class OpenCodeReleases
                 if (string.IsNullOrEmpty(name) || string.IsNullOrEmpty(url)) continue;
                 // Файл ещё загружается в релиз — пропускаем.
                 if (a.TryGetProperty("state", out var st) && st.ValueKind == JsonValueKind.String && st.GetString() != "uploaded") continue;
+                if (!IsTrustedAssetUrl(url))
+                {
+                    // Адрес и digest приходят из одного ответа: файл с чужого хоста или репозитория с «подходящей» суммой не берём.
+                    Log.Warn("opencode", $"Файл релиза {name} отброшен: адрес не ведёт на github.com/{Repo}/releases/download/");
+                    continue;
+                }
                 var size = a.TryGetProperty("size", out var s) && s.TryGetInt64(out var sz) ? sz : 0;
                 var digest = a.TryGetProperty("digest", out var d) && d.ValueKind == JsonValueKind.String ? d.GetString() : null;
                 assets.Add(new OpenCodeAsset(name, url, size, ParseDigest(digest)));
@@ -157,6 +194,12 @@ internal static class OpenCodeReleases
         }
         return new OpenCodeRelease(tag, VersionFromTag(tag), assets, FromApi: true);
     }
+
+    /// <summary>
+    /// Адрес файла релиза — только https://github.com/anomalyco/opencode/releases/download/… (или тот же путь от
+    /// <see cref="WebBase"/> в тестах): зеркало API не выбирает, откуда качать; зеркало загрузок подставится позже.
+    /// </summary>
+    internal static bool IsTrustedAssetUrl(string? url) => NetworkOptions.IsReleaseAssetUrl(url, Repo, WebBase);
 
     /// <summary>"sha256:ABC…" → "abc…" (64 hex); прочие алгоритмы и мусор → null.</summary>
     internal static string? ParseDigest(string? digest)
@@ -233,6 +276,8 @@ internal sealed class ReleaseCacheFile
             if (!File.Exists(path)) return null;
             var c = JsonSerializer.Deserialize<ReleaseCacheFile>(File.ReadAllText(path), Json.Options);
             if (c?.Release?.Assets is null || string.IsNullOrEmpty(c.Release.Tag)) return null;
+            // Кэш мог быть записан до проверки адресов — такой кэш не используется.
+            if (!c.Release.Assets.All(a => OpenCodeReleases.IsTrustedAssetUrl(a.Url))) return null;
             return c;
         }
         catch (Exception ex)

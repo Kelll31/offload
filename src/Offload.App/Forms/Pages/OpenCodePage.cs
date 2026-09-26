@@ -17,6 +17,9 @@ internal sealed class OpenCodePage : PageBase
     private readonly Button _install;
     private readonly Button _uninstall;
     private readonly Button _launch;
+    private readonly Button _rollback;
+    private readonly ComboBox _channel = Kit.Combo(320);
+    private readonly Label _channelHint = Kit.Hint("");
     private readonly ProgressPanel _progress = new();
 
     private readonly CheckBox _enabled = Kit.Check(L.F("Использовать OpenCode для агентных задач ({0})", McpToolNames.EditFiles));
@@ -39,6 +42,11 @@ internal sealed class OpenCodePage : PageBase
         _install = Kit.Primary(L.T("Установить"), async (_, _) => await InstallAsync(), 130);
         _uninstall = Kit.Button(L.T("Удалить"), async (_, _) => await UninstallAsync());
         _launch = Kit.Button(L.T("Открыть OpenCode в папке…"), async (_, _) => await OpenCodeLauncher.LaunchAsync(Shell, Owner), 180);
+        _rollback = Kit.Button(L.T("Откатить"), async (_, _) => await RollbackAsync(), 150);
+        _channel.Items.AddRange([
+            L.F("Проверенная версия {0} (рекомендуется)", OpenCodeInstaller.PinnedVersion),
+            L.T("Последняя версия с GitHub"),
+        ]);
         _save = Kit.Primary(L.T("Сохранить"), (_, _) => Save());
         _progress.CancelRequested += (_, _) => _cts?.Cancel();
 
@@ -48,10 +56,12 @@ internal sealed class OpenCodePage : PageBase
             L.T("OpenCode — агент для программирования. Offload запускает его с локальной моделью, чтобы она могла выполнять многошаговые задачи: читать проект, править несколько файлов и проверять результат. Устанавливается отдельный исполняемый файл в папку Offload, Node.js не нужен.")));
         var head = Kit.Grid();
         head.AddField(L.T("Состояние:"), _state);
+        head.AddField(L.T("Версия для установки:"), _channel);
         root.AddRow(head);
+        root.AddRow(_channelHint);
         root.AddRow(_path);
         root.AddRow(_latest);
-        root.AddRow(Kit.Flow(_install, _uninstall, _launch));
+        root.AddRow(Kit.Flow(_install, _uninstall, _launch, _rollback));
         root.AddRow(_progress);
 
         root.AddRow(Kit.Section(L.T("Агентные задачи")));
@@ -86,6 +96,7 @@ internal sealed class OpenCodePage : PageBase
         };
         _timeout.ValueChanged += (_, _) => MarkDirty();
         _global.CheckedChanged += (_, _) => MarkDirty();
+        _channel.SelectedIndexChanged += (_, _) => ChannelChanged();
 
         LoadSettings();
         UpdateStatus();
@@ -105,6 +116,8 @@ internal sealed class OpenCodePage : PageBase
     {
         try
         {
+            // Канал, не выбранный явно (конфиг прежних версий), записывается: более новая установленная версия → «latest».
+            Ui.Try(OpenCodeChannels.Persist, OpenCodeChannels.Stable, "OpenCodeChannels.Persist");
             if (!_dirty) LoadSettings();
             UpdateStatus();
             if (!_latestChecked)
@@ -133,10 +146,28 @@ internal sealed class OpenCodePage : PageBase
     {
         _latestVersion = latest;
         var installed = ConfigStore.Current.OpenCode.InstalledVersion;
-        _latest.Text = installed is not null && NormalizeVersion(installed) != NormalizeVersion(latest)
-            ? L.F("Доступна новая версия: {0}", latest)
-            : L.F("Последняя версия: {0}", latest);
-        _latest.ForeColor = installed is not null && NormalizeVersion(installed) != NormalizeVersion(latest) ? Theme.WarnText : Theme.TextMuted;
+        var differs = installed is not null && NormalizeVersion(installed) != NormalizeVersion(latest);
+        if (IsStable())
+        {
+            // В канале stable новая версия — только сведения: переход — сменой канала.
+            _latest.Text = L.F("Последняя версия на GitHub: {0}", latest);
+            _latest.ForeColor = Theme.TextMuted;
+            return;
+        }
+        _latest.Text = differs ? L.F("Доступна новая версия: {0}", latest) : L.F("Последняя версия: {0}", latest);
+        _latest.ForeColor = differs ? Theme.WarnText : Theme.TextMuted;
+    }
+
+    private static bool IsStable() => OpenCodeChannels.Effective(ConfigStore.Current.OpenCode) == OpenCodeChannels.Stable;
+
+    private void ChannelChanged()
+    {
+        if (_loading) return;
+        var channel = _channel.SelectedIndex == 1 ? OpenCodeChannels.Latest : OpenCodeChannels.Stable;
+        if (!Ui.RunSafe(Owner, () => ConfigStore.Update(c => c.OpenCode.Channel = channel), L.T("Не удалось сохранить настройки OpenCode"))) return;
+        Log.Info("opencode", $"Канал версий OpenCode: {channel}");
+        Shell.ConfigChanged();
+        UpdateStatus();
     }
 
     private static string NormalizeVersion(string v) => v.Trim().TrimStart('v', 'V');
@@ -151,7 +182,9 @@ internal sealed class OpenCodePage : PageBase
             _state.Text = string.IsNullOrWhiteSpace(ver) ? L.T("✓ Установлен") : L.F("✓ Установлен, версия {0}", ver);
             _state.ForeColor = Theme.OkText;
             _path.Text = exe;
-            _install.Text = L.T("Обновить");
+            _install.Text = IsStable() && (ver is null || NormalizeVersion(ver) != NormalizeVersion(OpenCodeInstaller.PinnedVersion))
+                ? L.F("Установить {0}", OpenCodeInstaller.PinnedVersion)
+                : L.T("Обновить");
         }
         else
         {
@@ -160,6 +193,13 @@ internal sealed class OpenCodePage : PageBase
             _path.Text = L.T("Установите OpenCode, чтобы локальная модель могла выполнять агентные задачи.");
             _install.Text = L.T("Установить");
         }
+        _channelHint.Text = IsStable()
+            ? L.F("Проверенная версия {0}: Offload протестирован с ней, файл сверяется со встроенной контрольной суммой SHA-256.", OpenCodeInstaller.PinnedVersion)
+            : L.T("Последний релиз OpenCode: новые возможности, но формат вывода может измениться и сломать агентные задачи. При сбое вернитесь кнопкой «Откатить».");
+        _channelHint.ForeColor = IsStable() ? Theme.TextMuted : Theme.WarnText;
+        var previous = Ui.Try(OpenCodeInstaller.GetPrevious, null, "GetPrevious");
+        _rollback.Visible = previous is not null;
+        if (previous is not null) _rollback.Text = L.F("Откатить к {0}", previous.Version);
         if (_latestVersion is not null) ShowLatest(_latestVersion);
         UpdateUiState();
     }
@@ -170,6 +210,8 @@ internal sealed class OpenCodePage : PageBase
         _install.Enabled = !IsBusy;
         _uninstall.Enabled = !IsBusy && installed;
         _launch.Enabled = !IsBusy && installed;
+        _rollback.Enabled = !IsBusy;
+        _channel.Enabled = !IsBusy;
     }
 
     private void LoadSettings()
@@ -182,6 +224,7 @@ internal sealed class OpenCodePage : PageBase
             _allowShell.Checked = o.AllowShellCommands;
             _timeout.Value = Math.Clamp((int)Math.Round(o.TaskTimeoutSeconds / 60.0), (int)_timeout.Minimum, (int)_timeout.Maximum);
             _global.Checked = o.RegisterInGlobalConfig;
+            _channel.SelectedIndex = OpenCodeChannels.Effective(o) == OpenCodeChannels.Latest ? 1 : 0;
         }
         finally
         {
@@ -257,6 +300,14 @@ internal sealed class OpenCodePage : PageBase
 
     private async Task InstallAsync()
     {
+        // Откат на более старую проверенную версию — только после явного подтверждения.
+        var installedVersion = ConfigStore.Current.OpenCode.InstalledVersion;
+        var downgrade = IsStable() && OpenCodeChannels.IsDowngrade(installedVersion, OpenCodeInstaller.PinnedVersion);
+        if (downgrade && !Ui.Confirm(Owner,
+                L.F("Установлена более новая версия OpenCode {0}. Канал «проверенная версия» заменит её на более старую {1}. Продолжить откат?",
+                    installedVersion ?? "?", OpenCodeInstaller.PinnedVersion),
+                warning: true))
+            return;
         using var cts = new CancellationTokenSource();
         _cts = cts;
         _progress.Reset();
@@ -267,7 +318,7 @@ internal sealed class OpenCodePage : PageBase
             {
                 try
                 {
-                    var r = await OpenCodeInstaller.InstallAsync(_progress.CreateProgress(), cts.Token);
+                    var r = await OpenCodeInstaller.InstallAsync(null, allowDowngrade: downgrade, _progress.CreateProgress(), cts.Token);
                     _progress.Finish(L.F("OpenCode {0} установлен.", r.Version), true);
                     Log.Info("opencode", $"OpenCode {r.Version} установлен: {r.ExecutablePath}");
                     try
@@ -290,6 +341,38 @@ internal sealed class OpenCodePage : PageBase
                     throw;
                 }
             }, L.T("Не удалось установить OpenCode"));
+        }
+        finally
+        {
+            _cts = null;
+        }
+        Shell.ConfigChanged();
+        UpdateStatus();
+    }
+
+    private async Task RollbackAsync()
+    {
+        if (Ui.Try(OpenCodeInstaller.GetPrevious, null, "GetPrevious") is not { } previous) return;
+        if (!Ui.Confirm(Owner, L.F("Вернуть OpenCode {0}? Текущая версия сохранится — к ней можно будет вернуться тем же способом.", previous.Version))) return;
+        using var cts = new CancellationTokenSource();
+        _cts = cts;
+        _progress.Reset();
+        _progress.Start(L.T("Откат OpenCode…"));
+        try
+        {
+            await RunBusyAsync(async () =>
+            {
+                try
+                {
+                    var r = await OpenCodeInstaller.RollbackAsync(_progress.CreateProgress(), cts.Token);
+                    _progress.Finish(L.F("Восстановлен OpenCode {0}.", r.Version), true);
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    _progress.Finish(L.F("Ошибка отката: {0}", Ui.FriendlyError(ex)), false);
+                    throw;
+                }
+            }, L.T("Не удалось откатить OpenCode"));
         }
         finally
         {

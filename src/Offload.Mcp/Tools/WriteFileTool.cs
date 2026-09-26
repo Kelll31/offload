@@ -25,12 +25,15 @@ internal static class WriteFileTool
         if (TextCodec.IsBinaryExtension(target)) throw new ToolException($"'{rawPath}' has a binary file extension; only text files can be written.");
         var display = ctx.Display(target);
         var root = PathGuard.FindRoot(target, ctx.Roots) ?? ctx.Roots[0];
+        // «npx X» без локального пакета — отказ до генерации и записи.
+        if (verify is not null) VerifyCommand.ResolveNpx(verify, root);
 
         var references = new GatherResult();
         if (contextPaths is { Length: > 0 })
         {
             ctx.Progress.Report("Reading reference files…");
-            references = await FileGatherer.GatherAsync(contextPaths.Take(64), ctx.Roots, ctx.GatherOptions, ctx.Ct).ConfigureAwait(false);
+            references = await FileGatherer.GatherAsync(contextPaths.Take(64), ctx.Roots,
+                ctx.GatherOptions with { RedactSecrets = ctx.Cfg.Mcp.RedactSecrets }, ctx.Ct).ConfigureAwait(false);
         }
         var format = ChooseFormat(target, exists, references.Files);
 
@@ -61,7 +64,7 @@ internal static class WriteFileTool
         string content;
         try
         {
-            await using (var slot = await GpuQueue.AcquireAsync(ctx.Cfg.Server.Parallel, ctx.Progress, ctx.Ct).ConfigureAwait(false))
+            await using (var slot = await GpuQueue.AcquireAsync(ctx, ctx.Ct).ConfigureAwait(false))
             {
                 content = await GenerateAsync(ctx, model, system, user.ToString(), display, "writing " + Path.GetFileName(display)).ConfigureAwait(false);
             }
@@ -84,7 +87,7 @@ internal static class WriteFileTool
                 string fixedContent;
                 try
                 {
-                    await using var slot = await GpuQueue.AcquireAsync(ctx.Cfg.Server.Parallel, ctx.Progress, ctx.Ct).ConfigureAwait(false);
+                    await using var slot = await GpuQueue.AcquireAsync(ctx, ctx.Ct).ConfigureAwait(false);
                     fixedContent = await GenerateAsync(ctx, model, system, fix.ToString(), display, $"fixing {Path.GetFileName(display)}").ConfigureAwait(false);
                 }
                 catch (ToolException ex)

@@ -4,7 +4,7 @@ namespace Offload.Models.Tests;
 
 public class HfTreeTests
 {
-    private static IReadOnlyList<HfFile> Fixture() =>
+    private static List<HfFile> Fixture() =>
         HfClient.ParseTree(File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "Fixtures", "tree_qwen3_coder_next.json")));
 
     [Fact]
@@ -93,7 +93,7 @@ public class HfTreeTests
 public class HfClientTests
 {
     private static CatalogModel Model(string repo, IReadOnlyList<CatalogFile>? files = null, string quant = "Q4_K_M") =>
-        new("test-model", "Тест", "Описание", repo, [quant], files?.FirstOrDefault()?.Size ?? 1, 1, 1, false, 4096, 4096,
+        new("test-model", "Тест", "Описание", repo, [quant], files is { Count: > 0 } ? files[0].Size : 1, 1, 1, false, 4096, 4096,
             new KvSpec(1, 1, 64), false, new SamplingSettings(), "MIT", 1, Files: files ?? [], Revision: null);
 
     [Fact]

@@ -4,32 +4,66 @@ using Offload.App.Util;
 namespace Offload.App.Services;
 
 /// <summary>
-/// Значок трея: значок приложения размером SystemInformation.SmallIconSize с цветной точкой состояния.
+/// Значок трея: значок приложения размером маленького значка для DPI основного монитора (там панель задач) с цветной
+/// точкой состояния. При смене масштаба экрана значок перерисовывается в новом размере (<see cref="Apply"/> сверяет размер).
 /// HICON, созданный GetHicon, уничтожается через DestroyIcon при замене значка (иначе утечка GDI).
 /// </summary>
 internal sealed class TrayIconRenderer : IDisposable
 {
-    private readonly Bitmap _base;
-    private readonly Size _size;
+    private Bitmap _base;
+    private Size _size;
     private IntPtr _handle;
     private Icon? _icon;
     private Color? _lastColor;
 
     public TrayIconRenderer()
     {
-        _size = SystemInformation.SmallIconSize;
-        _base = new Bitmap(_size.Width, _size.Height);
-        using var ico = AppIcons.IconOfSize(_size);
-        using var bmp = ico.ToBitmap();
-        using var g = Graphics.FromImage(_base);
-        g.InterpolationMode = InterpolationMode.HighQualityBicubic;
-        g.PixelOffsetMode = PixelOffsetMode.HighQuality;
-        g.DrawImage(bmp, new Rectangle(Point.Empty, _size));
+        _size = CurrentIconSize();
+        _base = RenderBase(_size);
     }
 
-    /// <summary>Установить значок с точкой заданного цвета; предыдущий HICON уничтожается после замены.</summary>
+    /// <summary>Размер значка трея сейчас: по DPI основного монитора (SystemInformation — DPI на момент входа в Windows).</summary>
+    internal static Size CurrentIconSize()
+    {
+        try
+        {
+            var primary = Screen.PrimaryScreen?.Bounds.Location ?? Point.Empty;
+            if (NativeMethods.DpiAt(primary) is int dpi && NativeMethods.SmallIconSizeForDpi(dpi) is Size s) return s;
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            // Нет сведений о мониторе — системный размер.
+        }
+        return SystemInformation.SmallIconSize;
+    }
+
+    private static Bitmap RenderBase(Size size)
+    {
+        var bmp = new Bitmap(size.Width, size.Height);
+        using var ico = AppIcons.IconOfSize(size);
+        using var src = ico.ToBitmap();
+        using var g = Graphics.FromImage(bmp);
+        g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+        g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+        g.DrawImage(src, new Rectangle(Point.Empty, size));
+        return bmp;
+    }
+
+    /// <summary>
+    /// Установить значок с точкой заданного цвета; предыдущий HICON уничтожается после замены.
+    /// Если изменился масштаб экрана, значок перерисовывается в новом размере.
+    /// </summary>
     public void Apply(NotifyIcon tray, Color dot)
     {
+        var size = CurrentIconSize();
+        if (size != _size)
+        {
+            var old = _base;
+            _base = RenderBase(size);
+            _size = size;
+            old.Dispose();
+            _lastColor = null;
+        }
         if (_icon is not null && _lastColor == dot) return;
 
         using var bmp = new Bitmap(_base);

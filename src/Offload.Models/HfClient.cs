@@ -22,11 +22,17 @@ public sealed class ModelException(string message, Exception? inner = null) : Ex
 /// <summary>Клиент Hugging Face: список файлов репозитория и ссылки на скачивание.</summary>
 public static partial class HfClient
 {
-    public const string DefaultEndpoint = "https://huggingface.co";
+    public const string DefaultEndpoint = NetworkOptions.DefaultHfEndpoint;
 
-    /// <summary>Адрес хаба. Переменная окружения HF_ENDPOINT позволяет указать зеркало (как в huggingface_hub).</summary>
-    internal static string Endpoint { get; set; } =
-        (Environment.GetEnvironmentVariable("HF_ENDPOINT") is { Length: > 0 } e ? e.Trim() : DefaultEndpoint).TrimEnd('/');
+    /// <summary>
+    /// Адрес хаба: зеркало задаётся в настройках («Настройки» → «Сеть») или переменной окружения HF_ENDPOINT
+    /// (как в huggingface_hub). Присваивание — явное переопределение в пределах процесса (тесты).
+    /// </summary>
+    internal static string Endpoint
+    {
+        get => NetworkOptions.HfEndpoint;
+        set => NetworkOptions.HfEndpointOverride = value;
+    }
 
     private const int MaxPages = 100;
 
@@ -46,8 +52,7 @@ public static partial class HfClient
             if (page >= MaxPages) throw new ModelException(L.F("Слишком длинный список файлов в репозитории {0}.", repo));
             using var request = new HttpRequestMessage(HttpMethod.Get, url);
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-            if (Environment.GetEnvironmentVariable("HF_TOKEN") is { Length: > 0 } token)
-                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token.Trim());
+            // Токен (настройки или HF_TOKEN) добавляет общий клиент Http — только для хаба, см. NetworkOptions.AuthorizationFor.
 
             HttpResponseMessage response;
             try
@@ -248,7 +253,9 @@ public static partial class HfClient
     {
         HttpStatusCode.NotFound => new ModelException(L.F("Репозиторий {0} (ревизия {1}) не найден на Hugging Face.", repo, rev)),
         HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden =>
-            new ModelException(L.F("Доступ к репозиторию {0} ограничен: нужен вход на Hugging Face (переменная окружения HF_TOKEN).", repo)),
+            new ModelException(NetworkOptions.HfToken is null
+                ? L.F("Доступ к репозиторию {0} ограничен: укажите токен Hugging Face в разделе «Настройки» → «Сеть» (или переменную окружения HF_TOKEN).", repo)
+                : L.F("Доступ к репозиторию {0} ограничен: токен Hugging Face не подошёл или условия модели не приняты на её странице.", repo)),
         HttpStatusCode.TooManyRequests => new ModelException(L.T("Hugging Face временно ограничил число запросов (429). Повторите через несколько минут.")),
         _ => new ModelException(L.F("Hugging Face вернул ошибку {0} при получении списка файлов {1}.", (int)code, repo)),
     };

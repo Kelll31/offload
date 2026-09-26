@@ -438,14 +438,14 @@ internal sealed class TomlDocument
 
     private static string? DecodeString(string raw)
     {
-        if (raw.StartsWith("'''"))
+        if (raw.StartsWith("'''", StringComparison.Ordinal))
         {
             if (raw.Length < 6) return null;
             var body = raw[3..^3];
             return StripFirstNewline(body);
         }
         if (raw.StartsWith('\'') && raw.Length >= 2 && raw.EndsWith('\'')) return raw[1..^1];
-        if (raw.StartsWith("\"\"\""))
+        if (raw.StartsWith("\"\"\"", StringComparison.Ordinal))
         {
             if (raw.Length < 6) return null;
             var body = StripFirstNewline(raw[3..^3]);
@@ -490,7 +490,7 @@ internal sealed class TomlDocument
     }
 
     private static string StripFirstNewline(string body) =>
-        body.StartsWith("\r\n") ? body[2..] : body.StartsWith('\n') ? body[1..] : body;
+        body.StartsWith("\r\n", StringComparison.Ordinal) ? body[2..] : body.StartsWith('\n') ? body[1..] : body;
 
     // ------------------------------------------------------------------ запись значений
 
@@ -668,13 +668,13 @@ internal sealed class TomlTablePatcher
             var prefix = text[..SiblingEnd];
             if (!prefix.EndsWith('\n')) prefix += nl;
             var rest = text[SiblingEnd..];
-            var suffix = rest.Length > 0 && !rest.StartsWith(nl) ? nl : "";
+            var suffix = rest.Length > 0 && !rest.StartsWith(nl, StringComparison.Ordinal) ? nl : "";
             return prefix + nl + table + suffix + rest;
         }
 
         if (text.Trim().Length == 0) return table;
         var body = text.EndsWith('\n') ? text : text + nl;
-        if (!body.EndsWith(nl + nl) && !(body == nl)) body += nl;
+        if (!body.EndsWith(nl + nl, StringComparison.Ordinal) && !(body == nl)) body += nl;
         return body + table;
     }
 

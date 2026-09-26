@@ -63,12 +63,15 @@ internal static class ReviewDiffTool
         ctx.Stats.FilesRead = covered.Count;
         ctx.Stats.TokensRead = chunks.Sum(c => c.Tokens);
 
-        await using var slot = await GpuQueue.AcquireAsync(ctx.Cfg.Server.Parallel, ctx.Progress, ctx.Ct).ConfigureAwait(false);
+        await using var slot = await GpuQueue.AcquireAsync(ctx, ctx.Ct).ConfigureAwait(false);
         var findings = new List<string>();
         var truncated = false;
+        // Шаги с известным числом: части diff + слияние находок.
+        var steps = chunks.Count + (chunks.Count > 1 ? 1 : 0);
         for (var i = 0; i < chunks.Count; i++)
         {
             var label = chunks.Count == 1 ? "reviewing" : $"reviewing part {i + 1}/{chunks.Count}";
+            ctx.Progress.Step(i, steps, label);
             var reply = await model.ChatAsync(system, "DIFF:\n" + chunks[i].Text, maxAnswer, label, ctx.Ct).ConfigureAwait(false);
             truncated |= reply.Truncated;
             var text = reply.Text.Trim();
@@ -84,6 +87,7 @@ internal static class ReviewDiffTool
             var mergeSystem = model.SystemPrompt(
                 "Merge these code-review findings into one list: remove duplicates, sort by severity (critical, high, medium, low), " +
                 "keep the exact format '[severity] path:line - issue - suggestion'. Output only the list.");
+            ctx.Progress.Step(chunks.Count, steps, "merging findings");
             var joined = string.Join("\n", findings);
             if (Tokens.Estimate(joined) < model.MaterialBudget(maxAnswer, mergeSystem))
             {

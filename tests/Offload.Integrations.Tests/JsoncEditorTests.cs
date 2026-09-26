@@ -226,7 +226,7 @@ public class JsoncEditorTests
         Assert.False(ed.LastEditUsedFallback);
         Assert.Contains("\"Bash(echo \\\"exit $?\\\")\",", ed.Text);
         Assert.Contains("// мой", ed.Text);
-        Assert.True(ed.RemoveFromArray(path, n => JsonTree.AsString(n)?.StartsWith("mcp__offload") == true));
+        Assert.True(ed.RemoveFromArray(path, n => JsonTree.AsString(n)?.StartsWith("mcp__offload", StringComparison.Ordinal) == true));
         Assert.Equal(text, ed.Text);
     }
 

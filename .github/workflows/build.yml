@@ -6,21 +6,45 @@ on:
     tags: ["v*"]
   pull_request:
 
+# По умолчанию — только чтение; права на запись получает лишь job релиза.
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: "1"
+  DOTNET_NOLOGO: "1"
+  NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages
+  INNO_SETUP_VERSION: "6.4.3"
 
 jobs:
   build:
     runs-on: windows-latest
-    env:
-      DOTNET_CLI_TELEMETRY_OPTOUT: "1"
-      DOTNET_NOLOGO: "1"
+    # Сборки веток и PR секретов подписи не видят: секреты — только в окружении «release» (job ниже, только теги).
+    environment: ${{ startsWith(github.ref, 'refs/tags/v') && 'release' || '' }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
           global-json-file: global.json
+          cache: true
+          cache-dependency-path: |
+            Directory.Packages.props
+            **/*.csproj
+
+      - name: Версия совпадает с тегом
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: pwsh
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          $version = ([xml](Get-Content Directory.Build.props)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
+          $tag = $env:TAG.TrimStart('v')
+          if ($version -ne $tag) { throw "Тег v$tag не совпадает с <Version>$version</Version> в Directory.Build.props" }
 
       - name: Тесты
         run: dotnet test --solution Offload.slnx -c Release
@@ -29,34 +53,84 @@ jobs:
         shell: pwsh
         run: |
           $found = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 7\ISCC.exe", "${env:ProgramFiles(x86)}\Inno Setup 7\ISCC.exe") | Where-Object { Test-Path $_ }
-          if (-not $found) { choco install innosetup -y --no-progress }
+          if (-not $found) { choco install innosetup --version $env:INNO_SETUP_VERSION -y --no-progress }
 
       - name: Публикация и установщик
         shell: pwsh
-        run: .\scripts\build.ps1 -SkipTests -Installer
+        env:
+          # Пусты вне окружения «release»; подпись включается, только если сертификат задан (см. scripts/build.ps1 -Sign).
+          OFFLOAD_SIGN_PFX_BASE64: ${{ secrets.OFFLOAD_SIGN_PFX_BASE64 }}
+          OFFLOAD_SIGN_PFX_PASSWORD: ${{ secrets.OFFLOAD_SIGN_PFX_PASSWORD }}
+        run: |
+          $sign = [bool]$env:OFFLOAD_SIGN_PFX_BASE64 -and $env:GITHUB_REF.StartsWith("refs/tags/v")
+          if ($sign) { .\scripts\build.ps1 -SkipTests -Installer -Sign } else { .\scripts\build.ps1 -SkipTests -Installer }
 
-      - uses: actions/upload-artifact@v4
+      - name: Дымовая проверка MCP (опубликованный exe)
+        shell: pwsh
+        run: |
+          $env:OFFLOAD_HOME = Join-Path $env:RUNNER_TEMP "offload-home"
+          New-Item -ItemType Directory -Force $env:OFFLOAD_HOME | Out-Null
+          node scripts/mcp-smoke.mjs --strict publish/Offload.exe
+          if ($LASTEXITCODE -ne 0) { throw "MCP-сервер нарушил протокол (см. вывод выше)" }
+
+      # SBOM по восстановленным пакетам (obj/project.assets.json). Не блокирует сборку, пока шаг не проверен на практике.
+      - name: SBOM
+        continue-on-error: true
+        uses: anchore/sbom-action@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+        with:
+          path: .
+          format: spdx-json
+          output-file: publish/offload-sbom.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: Offload
           path: |
             publish/Offload.exe
+            publish/offload-sbom.spdx.json
             dist/*.exe
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: windows-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          sparse-checkout: .github
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: Offload
+          path: artifacts
 
       - name: Контрольные суммы
-        if: startsWith(github.ref, 'refs/tags/v')
         shell: pwsh
         run: |
-          Get-Item dist/*.exe, publish/Offload.exe |
-            ForEach-Object { "$((Get-FileHash $_ -Algorithm SHA256).Hash.ToLower())  $($_.Name)" } |
-            Set-Content -Encoding ascii publish/SHA256SUMS.txt
+          Get-ChildItem artifacts -Recurse -Filter *.exe |
+            ForEach-Object { "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)" } |
+            Set-Content -Encoding ascii artifacts/SHA256SUMS.txt
+          Get-Content artifacts/SHA256SUMS.txt
+
+      - name: Подтверждение происхождения сборки
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-path: |
+            artifacts/**/*.exe
 
       - name: Релиз
-        if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
         with:
           name: Offload ${{ github.ref_name }}
           body_path: .github/release-notes.md
           files: |
-            dist/*.exe
-            publish/Offload.exe
-            publish/SHA256SUMS.txt
+            artifacts/**/*.exe
+            artifacts/**/offload-sbom.spdx.json
+            artifacts/SHA256SUMS.txt

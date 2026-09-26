@@ -66,7 +66,7 @@ internal static class ModelListBinder
         foreach (var q in m.Quants)
         {
             var file = m.Files?.FirstOrDefault(f => string.Equals(f.Quant, q, StringComparison.OrdinalIgnoreCase));
-            var size = file?.Size ?? (q == m.Quants.FirstOrDefault() ? m.ApproxSizeBytes : 0);
+            var size = file?.Size ?? (m.Quants.Count > 0 && q == m.Quants[0] ? m.ApproxSizeBytes : 0);
             list.Add((q, size > 0 ? $"{q}  ({FileUtil.FormatBytes(size)})" : q, size));
         }
         return list;

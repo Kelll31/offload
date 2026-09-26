@@ -1,8 +1,11 @@
 using System.Text;
 using System.Text.RegularExpressions;
 using Offload.Core;
+using Offload.Core.Config;
+using Offload.Core.Logging;
 using Offload.Mcp.Infrastructure;
 using Offload.OpenCode;
+using static Offload.Mcp.Infrastructure.TextUtil;
 
 namespace Offload.Mcp.Tools;
 
@@ -54,17 +57,56 @@ internal static class AgentTaskTool
             Background = background,
         });
 
-    public static async Task<string> RunAsync(ToolContext ctx, AgentTaskRequest req)
+    public static Task<string> RunAsync(ToolContext ctx, AgentTaskRequest req) => RunAsync(ctx, req, null);
+
+    /// <param name="created">Вызывается с id созданной задачи (local_job retry связывает старую задачу с новой).</param>
+    internal static async Task<string> RunAsync(ToolContext ctx, AgentTaskRequest req, Action<string>? created)
+    {
+        var (r, hints, allowed) = Prepare(ctx.Cfg, req);
+        // Песочница снимает всю рабочую папку: корень диска или профиль пользователя не годятся (WriteRoots бросает понятную ошибку).
+        var root = Workspace.WriteRoots(ctx.Roots)[0];
+
+        // Сервер модели поднимаем сразу: ошибки конфигурации видны в ответе, а не в фоне.
+        await ctx.GetModelAsync().ConfigureAwait(false);
+
+        var job = JobStore.Create(r.Tool, root, r.Task, ctx.ToolUseId);
+        job.Mode = "sandbox/" + r.Merge;
+        job.VerifyCommand = r.VerifyCommand;
+        JobStore.Save(job);
+        created?.Invoke(job.Id);
+
+        // Описание задачи — для выполнения в трее и для повтора после сбоя (local_job action=retry).
+        var spec = BackgroundJobSpec.From(job, r, ctx.Roots);
+        try
+        {
+            BackgroundJobSpec.Save(spec);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Log.Warn("mcp", $"Описание задачи {job.Id} не сохранено (повтор будет недоступен): {ex.Message}");
+        }
+
+        if (!r.Background) return await ExecuteAsync(ctx, job, r, hints, allowed).ConfigureAwait(false);
+        return await BackgroundJobs.LaunchAsync(ctx, job, spec).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Проверка и нормализация запроса — одна и та же в MCP и в процессе-исполнителе фоновой задачи (трей):
+    /// текст задачи, режим слияния, команда проверки по белому списку, лимиты, allowed_paths, context_paths, наличие OpenCode и git.
+    /// </summary>
+    internal static (AgentTaskRequest Request, List<string> Hints, List<Regex>? Allowed) Prepare(AppConfig cfg, AgentTaskRequest req)
     {
         var spec = ToolHelpers.RequireText(req.Task, "task", 16000);
         var mergeMode = (req.Merge ?? "apply").Trim().ToLowerInvariant();
         if (mergeMode is not ("apply" or "commit" or "none")) throw new ToolException("merge must be apply, commit or none.");
-        var verify = string.IsNullOrWhiteSpace(req.VerifyCommand) ? null : VerifyCommand.Validate(req.VerifyCommand, ctx.Cfg.Mcp.VerifyCommandAllowlist);
-        if (!ctx.Cfg.OpenCode.Enabled || StatusTool.FindOpenCode(ctx.Cfg) is null)
+        if (!BackgroundJobSpec.HostableTools.Contains(req.Tool)) throw new ToolException($"Tool '{req.Tool}' cannot run agent tasks.");
+        var verify = string.IsNullOrWhiteSpace(req.VerifyCommand) ? null : VerifyCommand.Validate(req.VerifyCommand, cfg.Mcp.VerifyCommandAllowlist);
+        if (!cfg.OpenCode.Enabled || StatusTool.FindOpenCode(cfg) is null)
             throw new ToolException("This needs the OpenCode agent: install/enable it in the Offload tray app (OpenCode tab). " +
                                     "For small mechanical edits use local_edit_files mode=rewrite or local_apply_patch.");
         if (Git.Executable is null) throw new ToolException("The git sandbox needs git: install Git for Windows and restart the IDE.");
         var allowed = CompileAllowed(req.AllowedPaths);
+        var hints = ContextHints(req.ContextPaths);
         var r = req with
         {
             Task = spec,
@@ -73,47 +115,24 @@ internal static class AgentTaskTool
             FixAttempts = Math.Clamp(req.FixAttempts, 0, 4),
             TimeoutMinutes = Math.Clamp(req.TimeoutMinutes <= 0 ? 20 : req.TimeoutMinutes, 2, 90),
             MaxFiles = Math.Max(0, req.MaxFiles),
+            Preamble = req.Preamble is { Length: > MaxPreambleChars } p ? p[..MaxPreambleChars] : req.Preamble,
         };
-        var hints = ContextHints(req.ContextPaths);
-        // Песочница снимает всю рабочую папку: корень диска или профиль пользователя не годятся (WriteRoots бросает понятную ошибку).
-        var root = Workspace.WriteRoots(ctx.Roots)[0];
+        return (r, hints, allowed);
+    }
 
-        // Сервер модели поднимаем сразу: ошибки конфигурации видны в ответе, а не в фоне.
-        await ctx.GetModelAsync().ConfigureAwait(false);
+    private const int MaxPreambleChars = 4000;
 
-        var job = JobStore.Create(r.Tool, root, spec, ctx.ToolUseId);
-        job.Mode = "sandbox/" + mergeMode;
-        job.VerifyCommand = verify;
-        JobStore.Save(job);
-
-        if (!r.Background) return await ExecuteAsync(ctx, job, r, hints, allowed).ConfigureAwait(false);
-
-        var progress = new ProgressReporter(null, null);
-        var cts = new CancellationTokenSource();
-        var bg = ctx.ForBackground(progress, cts.Token);
-        BackgroundJobs.Start(job.Id, progress, cts, async () =>
-        {
-            var ok = false;
-            var text = "";
-            try
-            {
-                text = await ExecuteAsync(bg, job, r, hints, allowed).ConfigureAwait(false);
-                ok = true;
-                return text;
-            }
-            finally
-            {
-                if (bg.ModelIfUsed is not null && bg.Stats.ModelCalls > 0) ToolRunner.RecordUsage(bg, ok, text);
-            }
-        });
-        return $"job_id: {job.Id} · status: running in the background (sandbox branch {GitSandbox.BranchPrefix}{job.Id})\n" +
-               "The local agent works in an isolated git worktree; you can keep working meanwhile.\n" +
-               $"Check: local_job action=status job_id={job.Id} wait_seconds=120 · cancel: local_job action=cancel job_id={job.Id}";
+    /// <summary>Движок фоновой задачи по описанию (в трее или в MCP-процессе): та же проверка запроса, затем выполнение.</summary>
+    internal static async Task<string> RunSpecAsync(ToolContext ctx, JobInfo job, BackgroundJobSpec spec)
+    {
+        var (r, hints, allowed) = Prepare(ctx.Cfg, spec.ToRequest(background: true));
+        return await ExecuteAsync(ctx, job, r, hints, allowed).ConfigureAwait(false);
     }
 
     private static async Task<string> ExecuteAsync(ToolContext ctx, JobInfo job, AgentTaskRequest r, List<string> hints, List<Regex>? allowed)
     {
-        var deadline = TimeSpan.FromMinutes(r.TimeoutMinutes);
+        var dl = new TaskDeadline(TimeSpan.FromMinutes(r.TimeoutMinutes));
+        var deadline = dl.Total;
         using var deadlineCts = CancellationTokenSource.CreateLinkedTokenSource(ctx.Ct);
         deadlineCts.CancelAfter(deadline);
         var ct = deadlineCts.Token;
@@ -121,6 +140,7 @@ internal static class AgentTaskTool
         var notes = new List<string>();
         VerifyResult? lastVerify = null;
         var attempt = 0;
+        var noTimeForVerify = false;
         SandboxInfo? sb = null;
         SandboxCommit? commit = null;
         try
@@ -130,20 +150,27 @@ internal static class AgentTaskTool
             job.Sandbox = sb;
             JobStore.Save(job);
 
-            await RunAgentAsync(ctx, sb, r, hints, null, deadline, summary, notes, ct).ConfigureAwait(false);
+            await RunAgentAsync(ctx, job, sb, r, hints, null, dl, summary, notes, ct).ConfigureAwait(false);
             while (r.VerifyCommand is not null && await GitSandbox.IsDirtyAsync(sb, ct).ConfigureAwait(false))
             {
                 attempt++;
-                lastVerify = await VerifyCommand.RunAsync(r.VerifyCommand, sb.AgentDir, deadline, ctx.Progress, ct).ConfigureAwait(false);
+                // Проверке — остаток срока (не меньше минуты); она не прерывается по сроку задачи, её ограничивает свой таймаут.
+                if (dl.ForStep(TaskDeadline.MinVerifyTime) is not { } verifyTimeout)
+                {
+                    noTimeForVerify = true;
+                    throw new OperationCanceledException(ct);
+                }
+                lastVerify = await VerifyCommand.RunAsync(r.VerifyCommand, sb.AgentDir, verifyTimeout, ctx.Progress, ctx.Ct).ConfigureAwait(false);
                 if (lastVerify.Passed || attempt > r.FixAttempts) break;
                 ctx.Progress.Report($"verify failed (exit {lastVerify.ExitCode}); fix round {attempt}/{r.FixAttempts}");
                 var feedback = $"The check `{r.VerifyCommand}` FAILED (exit {lastVerify.ExitCode}) after your changes. Relevant output:\n" +
                                $"{lastVerify.ForModel(5000)}\nFix the problem while still fulfilling the task.";
-                await RunAgentAsync(ctx, sb, r, hints, feedback, deadline, summary, notes, ct).ConfigureAwait(false);
+                await RunAgentAsync(ctx, job, sb, r, hints, feedback, dl, summary, notes, ct).ConfigureAwait(false);
             }
 
+            // Фиксация — короткая локальная операция: проверка, прошедшая в «минуте запаса» после срока, не теряется.
             ctx.Progress.Report("Committing the agent's work in the sandbox…");
-            commit = await CommitAsync(ctx, job, sb, r.Task, allowed, ct).ConfigureAwait(false);
+            commit = await CommitAsync(ctx, job, sb, r.Task, allowed, ctx.Ct).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (!ctx.Ct.IsCancellationRequested)
         {
@@ -163,7 +190,8 @@ internal static class AgentTaskTool
             }
             Finish(job, sb, kept ? JobStatus.PendingMerge : JobStatus.Failed, lastVerify, attempt, summary, notes);
             if (!kept && sb is not null) await DiscardAsync(job, sb).ConfigureAwait(false);
-            throw new ToolException($"The agent hit timeout_minutes={deadline.TotalMinutes:0}." + (kept
+            throw new ToolException($"The agent hit timeout_minutes={deadline.TotalMinutes:0}" +
+                                    (noTimeForVerify ? " before the verify command could run (no time left; raise timeout_minutes)." : ".") + (kept
                 ? $" Partial work is kept on branch {sb!.Branch}: review with local_job action=diff job_id={job.Id}, then merge or discard it."
                 : " Nothing was changed in your project."));
         }
@@ -207,7 +235,7 @@ internal static class AgentTaskTool
     {
         notes.AddRange(commit.Dropped.Select(d => "not transferred: " + d));
         var changes = commit.HasChanges ? await GitSandbox.ChangesAsync(sb, ctx.Ct).ConfigureAwait(false) : [];
-        ctx.Stats.TokensWritten += changes.Sum(c => (long)c.Added) * 10;
+        ctx.Stats.TokensWritten += await WrittenTokensAsync(ctx, sb, changes).ConfigureAwait(false);
         var proof = new Proof(r, changes, lastVerify, attempt, summary, notes);
         if (changes.Count == 0)
         {
@@ -242,6 +270,28 @@ internal static class AgentTaskTool
         JobStore.Save(job);
         notes.AddRange(job.Notes.Where(n => !notes.Contains(n)));
         return proof.Render(job, merged);
+    }
+
+    /// <summary>Потолок текста diff для подсчёта написанного агентом (дальше — экстраполяция по numstat).</summary>
+    private const int MaxSavingsDiffChars = 2_000_000;
+
+    /// <summary>
+    /// Токены, написанные агентом: добавленные и изменённые строки реального diff песочницы (а не «строки × 10»).
+    /// Двоичные файлы не считаются; при ошибке git — консервативная оценка по числу строк (≈8 токенов на строку).
+    /// </summary>
+    private static async Task<long> WrittenTokensAsync(ToolContext ctx, SandboxInfo sb, List<SandboxChange> changes)
+    {
+        var added = changes.Where(c => !c.Binary).Sum(c => (long)c.Added);
+        if (added == 0) return 0;
+        try
+        {
+            var diff = await GitSandbox.DiffTextAsync(sb, MaxSavingsDiffChars, null, ctx.Ct).ConfigureAwait(false);
+            return Savings.DiffAddedTokens(diff, added);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            return added * 8;
+        }
     }
 
     /// <summary>Сводка-доказательство: что изменено, прошла ли проверка, что нашло ревью, что осталось нерешённым.</summary>
@@ -304,7 +354,7 @@ internal static class AgentTaskTool
                 "If the change is fine, output exactly: NO ISSUES");
             var budget = model.MaterialBudget(600, system, task);
             var diff = await GitSandbox.DiffTextAsync(sb, Math.Max(2000, budget * 3), null, ctx.Ct).ConfigureAwait(false);
-            await using var slot = await GpuQueue.AcquireAsync(ctx.Cfg.Server.Parallel, ctx.Progress, ctx.Ct).ConfigureAwait(false);
+            await using var slot = await GpuQueue.AcquireAsync(ctx, ctx.Ct).ConfigureAwait(false);
             var reply = await model.ChatAsync(system, "TASK:\n" + task + "\n\nDIFF:\n" + diff, 600, "reviewing the change", ctx.Ct).ConfigureAwait(false);
             if (reply.Text.Contains("NO ISSUES", StringComparison.OrdinalIgnoreCase)) return ["no issues found"];
             return reply.Text.Split('\n').Select(l => l.Trim().TrimStart('-', '*', ' ')).Where(l => l.StartsWith('[')).Take(12).ToList();
@@ -446,8 +496,8 @@ internal static class AgentTaskTool
         JobStore.Save(job);
     }
 
-    private static async Task RunAgentAsync(ToolContext ctx, SandboxInfo sb, AgentTaskRequest r, List<string> hints, string? feedback, TimeSpan deadline,
-        List<string> summary, List<string> notes, CancellationToken ct)
+    private static async Task RunAgentAsync(ToolContext ctx, JobInfo job, SandboxInfo sb, AgentTaskRequest r, List<string> hints, string? feedback,
+        TaskDeadline deadline, List<string> summary, List<string> notes, CancellationToken ct)
     {
         var prompt = new StringBuilder();
         prompt.Append("TASK:\n").Append(r.Task).Append("\n\n");
@@ -470,12 +520,17 @@ internal static class AgentTaskTool
 
         var lastProgress = DateTime.MinValue;
         OpenCodeRunResult res;
-        await using (await GpuQueue.AcquireAsync(ctx.Cfg.Server.Parallel, ctx.Progress, ct).ConfigureAwait(false))
+        await using (await GpuQueue.AcquireAsync(ctx, ct, GpuPriority.Agent).ConfigureAwait(false))
         {
+            // Раунду агента — остаток срока задачи (сам срок всё равно обрывает ct).
+            if (deadline.Exhausted) throw new OperationCanceledException(ct);
             try
             {
                 res = await OpenCodeRunner.RunAsync(ctx.Cfg, prompt.ToString(), sb.AgentDir,
-                    new OpenCodeRunOptions(ctx.Cfg.OpenCode.AllowShellCommands, deadline, "build"),
+                    new OpenCodeRunOptions(ctx.Cfg.OpenCode.AllowShellCommands, deadline.ForStep(TimeSpan.FromSeconds(1)) ?? TimeSpan.FromSeconds(1), "build")
+                    {
+                        LogPath = AgentLogPath(job),
+                    },
                     msg =>
                     {
                         if (DateTime.UtcNow - lastProgress < TimeSpan.FromSeconds(2)) return;
@@ -495,6 +550,9 @@ internal static class AgentTaskTool
         foreach (var line in (res.FinalText ?? "").Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).Take(8))
             summary.Add(Short(line.TrimStart('-', '*', '•', ' '), 200));
     }
+
+    /// <summary>Журнал OpenCode этой задачи (jobs\&lt;id&gt;\opencode.log): у фоновых задач он не затирается следующим запуском.</summary>
+    internal static string AgentLogPath(JobInfo job) => Path.Combine(JobStore.DirOf(job.Id), "opencode.log");
 
     /// <summary>context_paths — только подсказки агенту, что прочитать: относительные пути/маски внутри проекта.</summary>
     internal static List<string> ContextHints(string[]? contextPaths)
@@ -521,5 +579,4 @@ internal static class AgentTaskTool
         JobStore.Save(job);
     }
 
-    private static string Short(string? s, int max) => s is null ? "" : s.Length <= max ? s : s[..max] + "…";
 }

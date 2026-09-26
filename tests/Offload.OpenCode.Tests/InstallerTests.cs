@@ -18,9 +18,9 @@ public class InstallerTests
               "browser_download_url": "https://github.com/anomalyco/opencode/releases/download/v1.18.32/opencode-windows-x64.zip",
               "digest": "sha256:1483C72D5ADCED825590A0ECF8CC18B3E87E535960A125DBF539D33BCE135D0F" },
             { "name": "opencode-windows-x64-baseline.zip", "size": 62101771, "state": "uploaded",
-              "browser_download_url": "https://example/baseline.zip", "digest": "md5:abc" },
+              "browser_download_url": "https://github.com/anomalyco/opencode/releases/download/v1.18.32/opencode-windows-x64-baseline.zip", "digest": "md5:abc" },
             { "name": "opencode-windows-arm64.zip", "size": 1, "state": "starter",
-              "browser_download_url": "https://example/arm64.zip" }
+              "browser_download_url": "https://github.com/anomalyco/opencode/releases/download/v1.18.32/opencode-windows-arm64.zip" }
           ]
         }
         """;
@@ -47,6 +47,21 @@ public class InstallerTests
         // Нет ARM64-сборки — берём x64-baseline под эмуляцией.
         Assert.Equal("opencode-windows-x64-baseline.zip", OpenCodeReleases.SelectAsset(r, Architecture.Arm64, false)!.Name);
         Assert.Null(OpenCodeReleases.SelectAsset(r, Architecture.X86, true));
+    }
+
+    [Theory]
+    [InlineData("http://evil/x.zip")]
+    [InlineData("https://evil.example/anomalyco/opencode/releases/download/v1.18.32/opencode-windows-x64.zip")]
+    [InlineData("https://github.com/attacker/opencode/releases/download/v1.18.32/opencode-windows-x64.zip")]
+    public void ParseRelease_ForeignDownloadUrl_AssetDropped(string url)
+    {
+        // Зеркало API отдаёт и адрес, и digest: файл не из github.com/anomalyco/opencode/releases/download/ не берётся.
+        var json = ReleaseJson.Replace("https://github.com/anomalyco/opencode/releases/download/v1.18.32/opencode-windows-x64.zip", url, StringComparison.Ordinal);
+
+        var r = OpenCodeReleases.ParseRelease(json);
+
+        Assert.DoesNotContain(r.Assets, a => a.Name == "opencode-windows-x64.zip");
+        Assert.Equal("opencode-windows-x64-baseline.zip", Assert.Single(r.Assets).Name);
     }
 
     [Fact]

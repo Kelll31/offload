@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using Offload.Core.Logging;
 using Offload.Mcp.Infrastructure;
+using static Offload.Mcp.Infrastructure.TextUtil;
 
 namespace Offload.Mcp.Tools;
 
@@ -25,6 +26,25 @@ internal static partial class VerifyTool
         var run = await RunLoggedAsync(ctx, cmd, timeout).ConfigureAwait(false);
         var res = run.Result;
         var scan = Scan(run.LogPath, ctx.Ct);
+        var logUri = LinkRun(ctx, run);
+        var output = new VerifyOutput
+        {
+            Command = cmd,
+            Status = res.Passed ? "passed" : res.TimedOut ? "timed_out" : "failed",
+            ExitCode = res.ExitCode,
+            DurationSec = Math.Round(res.Duration.TotalSeconds, 1),
+            OutputLines = scan.Lines,
+            Log = run.Display,
+            LogUri = logUri,
+            Summary = scan.Summary,
+            WarningCount = scan.WarningCount,
+            Warnings = res.Passed ? [.. scan.Warnings.Take(5)] : [],
+            Errors = [],
+            ErrorCount = 0,
+            ErrorLines = [],
+            StackFrames = [],
+        };
+        ctx.Structured = output;
 
         var sb = new StringBuilder();
         sb.Append(res.TimedOut
@@ -49,6 +69,7 @@ internal static partial class VerifyTool
         if (res.Passed) return sb.ToString().TrimEnd();
 
         var diags = DiagnosticParser.Parse(File.ReadLines(run.LogPath)).Where(d => d.Severity == "error").ToList();
+        List<string> errorLines = [];
         if (diags.Count > 0)
         {
             sb.Append($"errors ({diags.Count} distinct; details: local_diagnostics log_path=\"{run.Display}\"):\n");
@@ -59,11 +80,13 @@ internal static partial class VerifyTool
         {
             sb.Append("errors (distinct, in order):\n");
             foreach (var e in scan.Errors) sb.Append("  ").Append(e).Append('\n');
+            errorLines = scan.Errors;
         }
         else
         {
             sb.Append("last output lines:\n");
             foreach (var l in res.Tail.Where(l => l.Trim().Length > 0).TakeLast(15)) sb.Append("  ").Append(Short(l, 300)).Append('\n');
+            errorLines = [.. res.Tail.Where(l => l.Trim().Length > 0).TakeLast(15).Select(l => Short(l, 300))];
         }
         var frames = DiagnosticsTool.ProjectFrames(ctx, DiagnosticParser.ParseFrames(File.ReadLines(run.LogPath)), 6);
         if (frames.Count > 0)
@@ -71,6 +94,14 @@ internal static partial class VerifyTool
             sb.Append("stack frames in project code:\n");
             foreach (var f in frames) sb.Append("  ").Append(f).Append('\n');
         }
+        output = output with
+        {
+            Errors = [.. diags.Take(15).Select(d => DiagnosticsTool.ToItem(ctx, d, file: null, messageMax: 220))],
+            ErrorCount = diags.Count,
+            ErrorLines = errorLines,
+            StackFrames = frames,
+        };
+        ctx.Structured = output;
         if (!analyze) return sb.ToString().TrimEnd();
 
         try
@@ -78,6 +109,7 @@ internal static partial class VerifyTool
             var analysis = await SummarizeLogTool.RunAsync(ctx, run.Display,
                 string.IsNullOrWhiteSpace(focus) ? "why the command failed: root error, failing tests, fix" : focus, 0, maxAnswerTokens).ConfigureAwait(false);
             sb.Append("\nlocal model analysis:\n").Append(analysis.Trim());
+            ctx.Structured = output with { Analysis = analysis.Trim() };
         }
         catch (Exception ex) when (ex is ToolException or ContextExceededException)
         {
@@ -86,14 +118,38 @@ internal static partial class VerifyTool
         return sb.ToString().TrimEnd();
     }
 
+    /// <summary>resource_link на полный лог прогона (offload://runs/&lt;id&gt;) — вместо того чтобы тащить лог в ответ.</summary>
+    internal static string LinkRun(ToolContext ctx, LoggedRun run)
+    {
+        var uri = Resources.ResourceUris.Run(run.LogPath);
+        long? size = null;
+        try { size = new FileInfo(run.LogPath).Length; }
+        catch (IOException) { }
+        ctx.AddResourceLink(uri, Path.GetFileName(run.LogPath), $"Full output of `{run.Command}`", size: size);
+        return uri;
+    }
+
     /// <summary>Явная команда (проверка белым списком) или выбранная по карте проекта для kind (build/test/lint/format).</summary>
     internal static async Task<string> ResolveCommandAsync(ToolContext ctx, string? command, string? kind)
     {
-        if (!string.IsNullOrWhiteSpace(command)) return VerifyCommand.Validate(command, ctx.Cfg.Mcp.VerifyCommandAllowlist);
+        if (!string.IsNullOrWhiteSpace(command))
+        {
+            try
+            {
+                return VerifyCommand.Validate(command, ctx.Cfg.Mcp.VerifyCommandAllowlist);
+            }
+            // По HTTP одноразового разрешения нет: на elicitation может отвечать агент-клиент, а не человек.
+            // Mcp.AllowOneTimeVerify = false — не предлагать и в stdio.
+            catch (ToolException refused) when (!ctx.State.IsHttpTransport && ctx.Cfg.Mcp.AllowOneTimeVerify
+                                                && VerifyCommand.CandidateForOneTimeAllow(command, ctx.Cfg.Mcp.VerifyCommandAllowlist) is not null)
+            {
+                return await AllowOnceAsync(ctx, VerifyCommand.CandidateForOneTimeAllow(command, ctx.Cfg.Mcp.VerifyCommandAllowlist)!, refused).ConfigureAwait(false);
+            }
+        }
         var k = string.IsNullOrWhiteSpace(kind) ? "test" : kind.Trim().ToLowerInvariant();
         if (k is not ("build" or "test" or "lint" or "format")) throw new ToolException("kind must be build, test, lint or format (or pass command).");
         ctx.Progress.Report("Detecting the project's commands…");
-        var (map, _) = await ProjectMap.BuildAsync(ctx, ctx.Ct).ConfigureAwait(false);
+        var map = await ProjectMap.GetAsync(ctx, ctx.Ct).ConfigureAwait(false);
         var pick = map.Commands.FirstOrDefault(c => c.Kind == k && c.Allowed);
         if (pick is null)
         {
@@ -103,6 +159,31 @@ internal static partial class VerifyTool
                 : $"Could not detect a {k} command for this project; pass command explicitly (e.g. \"dotnet test\", \"npm test\").");
         }
         return VerifyCommand.Validate(pick.Command, ctx.Cfg.Mcp.VerifyCommandAllowlist);
+    }
+
+    /// <summary>
+    /// Команда не из белого списка, но той же программы, что уже разрешена (<see cref="VerifyCommand.CandidateForOneTimeAllow"/>):
+    /// спросить пользователя через elicitation, можно ли выполнить её один раз. В окне — итоговая команда, как её запустит
+    /// cmd.exe (npx → node_modules\.bin, gradlew → .\gradlew.bat). Белый список не меняется. Клиент без elicitation — прежний отказ.
+    /// </summary>
+    private static async Task<string> AllowOnceAsync(ToolContext ctx, string cmd, ToolException refused)
+    {
+        var final = VerifyCommand.FinalCommand(cmd, ctx.Roots[0]);
+        var answer = await UserConfirmation.AskAsync(ctx,
+            $"The AI assistant asks Offload to run a command that is NOT in your allowlist:\n\n    {final}\n\nin {ctx.Roots[0]}\n\n" +
+            "It runs with your permissions and can execute project scripts. Allow it this one time? It will not be added to the " +
+            "allowlist (Offload tray app → Settings → MCP).",
+            "Run this command once").ConfigureAwait(false);
+        switch (answer)
+        {
+            case Confirmation.Confirmed:
+                Log.Info("mcp", $"{ctx.Tool}: пользователь разрешил один раз команду вне белого списка: {cmd}");
+                return cmd;
+            case Confirmation.Declined:
+                throw new ToolException($"The user declined running \"{cmd}\" (it is not in the Offload allowlist). Use an allowlisted command, or run it yourself if the user agrees.");
+            default:
+                throw refused;
+        }
     }
 
     /// <summary>Выполнить проверенную команду в корне проекта, сохранив полный вывод в .offload/runs/.</summary>
@@ -123,6 +204,9 @@ internal static partial class VerifyTool
             }).ConfigureAwait(false);
         }
         PruneLogs(Path.GetDirectoryName(logPath)!);
+        // Вывод команды целиком читает сервер, в IDE уходит только итог.
+        try { ctx.Stats.AddScanned(new FileInfo(logPath).Length, 1); }
+        catch (IOException) { }
         return new LoggedRun(validatedCommand, res, logPath, ctx.Display(logPath));
     }
 
@@ -223,5 +307,4 @@ internal static partial class VerifyTool
         return sb.ToString().Trim('-') is { Length: > 0 } s ? s : "run";
     }
 
-    private static string Short(string s, int max) => s.Length <= max ? s : s[..max] + "…";
 }
