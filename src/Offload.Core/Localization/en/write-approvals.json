@@ -13,5 +13,8 @@
   "{0} смогут без подтверждения поручать Offload создание и правку файлов проекта (каждую правку можно отменить через local_job). В Gemini CLI это доверие всему серверу (trust), включая инструменты будущих версий. Разрешить?": "{0} will be able to have Offload create and edit project files without confirmation (every edit can be undone via local_job). In Gemini CLI this trusts the whole server, including tools of future versions. Allow?",
   "Offload не подключён ни к одному клиенту, где можно разрешить инструменты записи: подключите его к Claude Code, Cline, Roo Code, Kiro или Gemini CLI.": "Offload is not connected to any client where write tools can be allowed: connect it to Claude Code, Cline, Roo Code, Kiro or Gemini CLI.",
   "Claude Code: инструменты записи Offload снова спрашивают подтверждение.": "Claude Code: Offload write tools ask for confirmation again.",
-  "Claude Code: инструменты Offload только для чтения разрешены без подтверждения.": "Claude Code: read-only Offload tools are allowed without confirmation."
+  "Claude Code: инструменты Offload только для чтения разрешены без подтверждения.": "Claude Code: read-only Offload tools are allowed without confirmation.",
+  "Offload обновлён до {0}": "Offload updated to {0}",
+  "Что нового — в разделе «О программе». Перезапустите IDE, чтобы их MCP-серверы Offload работали на новой версии.": "See what's new under “About”. Restart your IDEs so their Offload MCP servers run the new version.",
+  "Что нового в {0}": "What's new in {0}"
 }

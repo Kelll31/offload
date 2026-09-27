@@ -355,6 +355,43 @@ public sealed class HybridSearchTests
         Assert.Contains("public decimal Total(decimal net, decimal vat)", r);
     }
 
+    [Fact]
+    public async Task FindContext_Hybrid_RelatedTestsBySemantic()
+    {
+        using var main = new FakeLlamaServer { Responder = _ => "[]" };
+        using var embed = new FakeVectorServer("offload-embed") { Embed = Meaning };
+        using var env = Env(main);
+        WriteProject(env);
+        // Тест не называется по классу, не упоминает его и слов задачи — связь только по смыслу (Meaning: invoice ≈ money).
+        env.WriteFile("tests/Billing/RoundingRulesTests.cs", """
+            namespace Shop.Tests;
+
+            public sealed class RoundingRulesTests
+            {
+                public void Invoice_IsRoundedToCents() { }
+            }
+            """);
+
+        var r = await FindContextTool.RunAsync(env.Context(Tray(embed), Ct), "where is the money owed computed for a customer", null, 2, 3000, "pack", useModel: true);
+
+        Assert.Contains("related tests: tests/Billing/RoundingRulesTests.cs (semantic)", r);
+    }
+
+    [Fact]
+    public async Task RelatedTests_LexicalFirst_SemanticMarked()
+    {
+        using var env = new TestEnv();
+        WriteProject(env);
+        env.WriteFile("tests/InvoiceCalculatorTests.cs", "public sealed class InvoiceCalculatorTests { }\n");
+        env.WriteFile("tests/MoneyTests.cs", "public sealed class MoneyTests { }\n");
+        using var index = await CodeIndex.OpenAsync(env.Context(ct: Ct), null, codeOnly: false, Ct);
+        var invoice = index.Text(index.FileByDisplay("src/Billing/InvoiceCalculator.cs")!)!;
+
+        var tests = FindContextTool.RelatedTests(index, [invoice], ["tests/MoneyTests.cs", "tests/InvoiceCalculatorTests.cs"]);
+
+        Assert.Equal(["tests/InvoiceCalculatorTests.cs", "tests/MoneyTests.cs (semantic)"], tests);
+    }
+
     // ───────────────────────── local_memory ─────────────────────────
 
     [Fact]
@@ -379,6 +416,40 @@ public sealed class HybridSearchTests
         // Векторы записей сохраняются: повторный recall эмбеддит только запрос.
         await MemoryTool.RunAsync(env.Context(Tray(embed), Ct), "recall", null, null, null, "money handling", null, 0);
         Assert.Equal(embeddedBefore + 1, embed.EmbeddedTexts.Count);
+    }
+
+    [Fact]
+    public async Task MemoryRecall_Reranker_ReordersHybrid()
+    {
+        using var main = new FakeLlamaServer();
+        using var embed = new FakeVectorServer("offload-embed") { Embed = Meaning };
+        using var rerank = new FakeVectorServer("offload-rerank") { Rerank = (_, doc) => doc.Contains("decimal", StringComparison.Ordinal) ? 0.9 : 0.1 };
+        using var env = Env(main, rerank: true);
+        var ctx = env.Context(Tray(embed, rerank), Ct);
+        MemoryTool.Run(ctx, "store", "Invoices are rounded to cents only at the very end", "convention", null, null, null, 0);
+        MemoryTool.Run(ctx, "store", "Money amounts are stored as decimal, never double", "decision", null, null, null, 0);
+
+        var r = await MemoryTool.RunAsync(env.Context(Tray(embed, rerank), Ct), "recall", null, null, null, "money handling", null, 0);
+
+        Assert.True(r.IndexOf("stored as decimal", StringComparison.Ordinal) < r.IndexOf("rounded to cents", StringComparison.Ordinal), r);
+        Assert.EndsWith("ranking: hybrid+rerank", r);
+        Assert.Equal(2, rerank.RerankDocuments.Count);
+    }
+
+    [Fact]
+    public async Task MemoryRecall_RerankerOnly_ReordersWordMatches()
+    {
+        using var main = new FakeLlamaServer();
+        using var rerank = new FakeVectorServer("offload-rerank") { Rerank = (_, doc) => doc.Contains("replica", StringComparison.Ordinal) ? 0.9 : 0.1 };
+        using var env = Env(main, embed: false, rerank: true);
+        var ctx = env.Context(Tray(null, rerank), Ct);
+        MemoryTool.Run(ctx, "store", "PostgreSQL 16 runs the orders database", "fact", null, null, null, 0);
+        MemoryTool.Run(ctx, "store", "PostgreSQL read replica serves reports", "fact", null, null, null, 0);
+
+        var r = await MemoryTool.RunAsync(env.Context(Tray(null, rerank), Ct), "recall", null, null, null, "postgresql", null, 0);
+
+        Assert.True(r.IndexOf("read replica", StringComparison.Ordinal) < r.IndexOf("orders database", StringComparison.Ordinal), r);
+        Assert.EndsWith("ranking: words+rerank", r);
     }
 
     [Fact]

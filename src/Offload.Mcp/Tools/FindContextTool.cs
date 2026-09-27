@@ -61,6 +61,7 @@ internal static partial class FindContextTool
         var ranking = "bm25";
         string? vectorNote = null;
         var focus = new Dictionary<string, ChunkHit>(StringComparer.OrdinalIgnoreCase);
+        IReadOnlyList<string> semanticTests = [];
         if (useAux && Embedder.Configured(ctx.Cfg))
         {
             var hybrid = await HybridAsync(ctx, index, t, scored, wantsTests, maxFiles * 3).ConfigureAwait(false);
@@ -68,6 +69,7 @@ internal static partial class FindContextTool
             {
                 scored = hybrid.Scored;
                 focus = hybrid.Focus;
+                semanticTests = hybrid.Tests;
                 vectorNote = hybrid.Note;
                 ranking = "hybrid";
             }
@@ -125,7 +127,7 @@ internal static partial class FindContextTool
         sb.Append(pack);
         var notExpanded = selected.Skip(expanded).Select(s => s.File.Display).Concat(scored.Skip(maxFiles).Take(6).Select(s => s.File.Display)).Distinct().ToList();
         if (notExpanded.Count > 0) sb.Append($"\nalso relevant (not expanded; raise budget_tokens or ask local_symbols): {string.Join(", ", notExpanded)}\n");
-        var tests = RelatedTests(index, selected.Take(expanded).Select(s => s.File).ToList());
+        var tests = RelatedTests(index, selected.Take(expanded).Select(s => s.File).ToList(), semanticTests);
         if (tests.Count > 0) sb.Append("related tests: ").Append(string.Join(", ", tests)).Append('\n');
         ctx.Stats.FilesRead = index.Files.Count;
         ctx.Stats.AddScanned(index.TotalChars, index.Files.Count);
@@ -422,8 +424,11 @@ internal static partial class FindContextTool
 
     // ───────────────────────── гибрид и реранкер ─────────────────────────
 
-    /// <summary>Кандидаты после слияния BM25 и векторов, лучший фрагмент файла по векторам (display → фрагмент) и строка покрытия.</summary>
-    private sealed record HybridResult(List<Scored> Scored, Dictionary<string, ChunkHit> Focus, string Note);
+    /// <summary>
+    /// Кандидаты после слияния BM25 и векторов, лучший фрагмент файла по векторам (display → фрагмент), строка покрытия и
+    /// тестовые файлы, близкие к задаче по смыслу.
+    /// </summary>
+    private sealed record HybridResult(List<Scored> Scored, Dictionary<string, ChunkHit> Focus, string Note, IReadOnlyList<string> Tests);
 
     /// <summary>
     /// Гибридный поиск (ROADMAP §6.3): досчитать векторы недостающих файлов в пределах бюджета, найти ближайшие к задаче файлы
@@ -469,7 +474,7 @@ internal static partial class FindContextTool
                 .Where(l => text.Lines[l - 1].Trim().Length > 0).Take(3).ToList();
             list.Add(new Scored(text, score, $"semantic match: {hit.Label} ({Num(hit.Score)})", syms, lines));
         }
-        return new HybridResult(list, hits, found.Note());
+        return new HybridResult(list, hits, found.Note(), found.Tests.Select(t => t.File.Display).ToList());
     }
 
     /// <summary>
@@ -601,9 +606,20 @@ internal static partial class FindContextTool
 
     /// <summary>
     /// Связанные тесты: тестовые файлы, чьё имя начинается с имени типа/файла из пакета или в чьих идентификаторах
-    /// оно встречается (словарь обратного индекса, без чтения текста тестов).
+    /// оно встречается (словарь обратного индекса, без чтения текста тестов), слитые (RRF) с тестами, близкими к задаче
+    /// по смыслу (<paramref name="semantic"/>, гибридный режим). Найденные только по смыслу помечены «(semantic)».
     /// </summary>
-    private static List<string> RelatedTests(IndexView index, List<SourceFile> files)
+    internal static List<string> RelatedTests(IndexView index, List<SourceFile> files, IReadOnlyList<string> semantic)
+    {
+        var lexical = LexicalTests(index, files);
+        if (semantic.Count == 0) return lexical;
+        var chosen = files.Select(f => f.Display).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var extra = semantic.Where(t => !chosen.Contains(t)).ToList();
+        return VectorMath.Fuse(StringComparer.OrdinalIgnoreCase, lexical, extra).Take(8)
+            .Select(x => lexical.Contains(x.Item, StringComparer.OrdinalIgnoreCase) ? x.Item : x.Item + " (semantic)").ToList();
+    }
+
+    private static List<string> LexicalTests(IndexView index, List<SourceFile> files)
     {
         var chosen = files.Select(f => index.FileByDisplay(f.Display)).Where(f => f is not null).Select(f => f!).ToList();
         var chosenIds = chosen.Select(f => f.Id).ToHashSet();

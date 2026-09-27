@@ -40,7 +40,13 @@ internal static class UninstallCleanup
         // Секции Offload в AGENTS.md (Codex) и GEMINI.md (Gemini CLI); текст пользователя в этих файлах остаётся.
         Step("инструкции для других клиентов", () => { foreach (var r in ClientGuidance.RemoveAll()) Report(r); }); // l10n-ignore
         Step("глобальный конфиг OpenCode", OpenCodeConfigWriter.UnregisterGlobal); // l10n-ignore
-        Step("автозапуск", () => Autostart.Set(false)); // l10n-ignore
+        // Только свой автозапуск (или указывающий на удалённый exe): значение другой существующей копии не трогаем.
+        Step("автозапуск", () => // l10n-ignore
+        {
+            var value = Autostart.CurrentValue;
+            if (Autostart.OwnedBy(value, Offload.Core.AppPaths.ExecutablePath, File.Exists)) Autostart.Set(false);
+            else if (value is not null) Log.Info("uninstall", $"Автозапуск указывает на другую копию Offload ({Autostart.ExeOf(value)}) — оставлен");
+        });
 
         Log.Info("uninstall", "Очистка завершена");
         return 0;

@@ -75,14 +75,18 @@ internal static partial class MemoryTool
     /// <summary>Порог косинуса, ниже которого запись не считается найденной по смыслу (если нет и совпадения по словам).</summary>
     internal const float MinSimilarity = 0.35f;
 
+    /// <summary>Сколько лучших записей отдавать реранкеру.</summary>
+    internal const int RerankCandidates = 30;
+
     /// <summary>
     /// Точка входа инструмента: recall с запросом при назначенной модели эмбеддингов — гибрид (слова + векторы записей, слияние
-    /// рангов RRF); иначе и при любой ошибке векторов — прежний поиск по словам (<see cref="Run"/>).
+    /// рангов RRF), при назначенном реранкере — затем переранжирование лучших записей; без обеих ролей и при ошибках —
+    /// прежний поиск по словам (<see cref="Run"/>).
     /// </summary>
     public static async Task<string> RunAsync(ToolContext ctx, string? action, string? text, string? kind, string[]? tags, string? query, string? id, int maxResults)
     {
         var act = (action ?? "recall").Trim().ToLowerInvariant();
-        if (act != "recall" || string.IsNullOrWhiteSpace(query) || !Embedder.Configured(ctx.Cfg))
+        if (act != "recall" || string.IsNullOrWhiteSpace(query) || !(Embedder.Configured(ctx.Cfg) || Reranker.Configured(ctx.Cfg)))
             return Run(ctx, action, text, kind, tags, query, id, maxResults);
         maxResults = Math.Clamp(maxResults <= 0 ? 10 : maxResults, 1, 100);
         List<MemoryEntry> entries;
@@ -91,10 +95,29 @@ internal static partial class MemoryTool
         if (entries.Count == 0) return NoMemory;
         var candidates = entries.Where(e => string.IsNullOrWhiteSpace(kind) || string.Equals(e.Kind, kind.Trim(), StringComparison.OrdinalIgnoreCase)).ToList();
         var lexical = Rank(entries, query, kind);
-        var semantic = await SemanticAsync(ctx, candidates, query, maxResults * 2).ConfigureAwait(false);
-        if (semantic is null) return RecallText(lexical, query, maxResults, null);
-        var fused = VectorMath.Fuse<MemoryEntry>(null, lexical, semantic).Select(x => x.Item).ToList();
-        return RecallText(fused, query, maxResults, "ranking: hybrid");
+        var semantic = Embedder.Configured(ctx.Cfg) ? await SemanticAsync(ctx, candidates, query, maxResults * 2).ConfigureAwait(false) : null;
+        var ranked = semantic is null ? lexical : VectorMath.Fuse<MemoryEntry>(null, lexical, semantic).Select(x => x.Item).ToList();
+        var ranking = semantic is null ? "words" : "hybrid";
+        if (await RerankAsync(ctx, query, ranked).ConfigureAwait(false) is { } reranked)
+        {
+            ranked = reranked;
+            ranking += "+rerank";
+        }
+        return RecallText(ranked, query, maxResults, ranking == "words" ? null : "ranking: " + ranking);
+    }
+
+    /// <summary>
+    /// Переранжировать лучшие <see cref="RerankCandidates"/> записей реранкером (роль rerank); остальные — следом в прежнем
+    /// порядке. null — реранкер не назначен, недоступен или записей меньше двух.
+    /// </summary>
+    private static async Task<List<MemoryEntry>?> RerankAsync(ToolContext ctx, string query, List<MemoryEntry> ranked)
+    {
+        if (ranked.Count < 2 || !Reranker.Configured(ctx.Cfg)) return null;
+        var top = ranked.Take(RerankCandidates).ToList();
+        var scores = await Reranker.RerankAsync(ctx, query, top.Select(e => SecretRedactor.Redact(e.Text)).ToList()).ConfigureAwait(false);
+        if (scores is null || scores.Count == 0) return null;
+        var order = scores.Where(x => x.Index >= 0 && x.Index < top.Count).DistinctBy(x => x.Index).Select(x => top[x.Index]).ToList();
+        return [.. order, .. top.Except(order), .. ranked.Skip(RerankCandidates)];
     }
 
     /// <summary>

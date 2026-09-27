@@ -221,9 +221,14 @@ internal static class EmbeddingsChunker
         labels.Count == 0 ? $"lines {from}-{to}" : string.Join(", ", labels.Take(3)) + (labels.Count > 3 ? ", …" : "");
 }
 
-/// <summary>Итог векторного поиска по файлам: файлы по близости к запросу с лучшим фрагментом и покрытие векторами.</summary>
+/// <summary>
+/// Итог векторного поиска по файлам: файлы по близости к запросу с лучшим фрагментом, покрытие векторами и тестовые файлы,
+/// близкие к запросу по смыслу (<see cref="Tests"/>, для «related tests» — без штрафа тестам, в отличие от <see cref="Ranked"/>).
+/// </summary>
 internal sealed record VectorSearch(List<(IndexedFile File, ChunkHit Hit)> Ranked, int Eligible, int Covered, int EmbeddedNow)
 {
+    public List<(IndexedFile File, ChunkHit Hit)> Tests { get; init; } = [];
+
     /// <summary>Строка для подвала: «vectors: 62% of files (620/1000), +400 chunks this call».</summary>
     public string Note()
     {
@@ -247,6 +252,12 @@ internal static class EmbeddingsIndex
 
     /// <summary>Бюджет досчёта векторов за один вызов (фрагментов).</summary>
     internal static int MaxChunksPerCall { get; set; } = 400;
+
+    /// <summary>Порог косинуса для тестового файла в «related tests» по смыслу (как у записей памяти).</summary>
+    internal const float MinTestSimilarity = 0.35f;
+
+    /// <summary>Сколько тестовых файлов по смыслу возвращать.</summary>
+    internal const int MaxSemanticTests = 8;
 
     private static readonly HashSet<string> DocExtensions = new(StringComparer.OrdinalIgnoreCase) { ".md", ".markdown", ".rst", ".txt", ".adoc" };
 
@@ -273,7 +284,13 @@ internal static class EmbeddingsIndex
             .Take(take)
             .Select(x => (x.File, x.Hit))
             .ToList();
-        return new VectorSearch(ranked, eligible.Count, eligible.Count(f => done.Contains(f.Sha)), embeddedNow);
+        var tests = eligible
+            .Where(f => f.IsTest && hits.TryGetValue(f.Sha, out var h) && h.Score >= MinTestSimilarity)
+            .OrderByDescending(f => hits[f.Sha].Score).ThenBy(f => f.Order)
+            .Take(MaxSemanticTests)
+            .Select(f => (f, hits[f.Sha]))
+            .ToList();
+        return new VectorSearch(ranked, eligible.Count, eligible.Count(f => done.Contains(f.Sha)), embeddedNow) { Tests = tests };
     }
 
     /// <summary>Досчитать векторы недостающих файлов в пределах бюджета; возвращает число посчитанных фрагментов.</summary>

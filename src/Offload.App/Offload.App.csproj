@@ -16,6 +16,8 @@
   <ItemGroup>
     <EmbeddedResource Include="Assets\app.ico" LogicalName="Offload.App.app.ico" />
     <EmbeddedResource Include="Assets\app-64.png" LogicalName="Offload.App.app-64.png" />
+    <!-- «Что нового» после обновления (WhatsNew): тот же текст, что в теле релиза на GitHub. -->
+    <EmbeddedResource Include="..\..\.github\release-notes.md" LogicalName="Offload.App.release-notes.md" Link="Assets\release-notes.md" />
   </ItemGroup>
   <ItemGroup>
     <InternalsVisibleTo Include="Offload.App.Tests" />

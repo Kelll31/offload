@@ -1,6 +1,16 @@
 **Offload** — приложение для Windows, которое запускает бесплатную локальную модель для программирования и подключает её к Claude Code, Cursor, VS Code, Codex и другим IDE как MCP-сервер. Облачный агент отдаёт ей рутину: чтение больших файлов и логов, тесты, шаблонный код, механические правки. Облачных токенов уходит меньше.
 
-## Что нового в 1.0.1
+## Что нового в 1.0.2
+
+- **Обновление больше не спотыкается об открытые IDE.** Установщик сам закрывает MCP-серверы Offload, которые запустили
+  Claude Code, Cursor и другие IDE (раньше замена файла падала с «Отказано в доступе»); то же — при удалении программы.
+  Самообновление через установщик теперь проходит, даже если IDE открыты.
+- **«Что нового» после обновления:** уведомление и этот список в разделе «О программе».
+- **Поиск по коду находит связанные тесты по смыслу,** а не только по именам классов (нужна модель эмбеддингов).
+  Память проекта (`local_memory`) сортируется реранкером, если он назначен.
+- **Удаление программы не трогает автозапуск другой копии Offload.**
+
+## В версии 1.0.1
 
 - **Самообновление.** Offload сам проверяет новые версии на GitHub и обновляется в два щелчка («О программе» → «Обновить»):
   файл проверяется по SHA-256 и подписи. Версия 1.0.0 так не умеет — установите 1.0.1 поверх неё, дальше обновления придут сами.
@@ -59,6 +69,11 @@
 - **`Offload-Setup-<version>.exe`** — installer for most users (per-user, no admin rights; the language follows Windows). Silent install: `/VERYSILENT`.
 - **`Offload.exe`** — portable single file.
 - **`SHA256SUMS.txt`** — checksums. Verify provenance with `gh attestation verify <file> --repo Kelll31/offload`.
+
+**New in 1.0.2:** the installer now closes Offload MCP servers started by your IDEs (previously replacing the file
+failed with "Access denied" while an IDE was open), so updates and uninstall work with IDEs running; a "What's new" notice
+after updating; semantic related tests in local_find_context and reranked project memory; uninstalling no longer removes
+another copy's autostart entry.
 
 **New in 1.0.1:** self-update from GitHub Releases (SHA-256 and signature checked; install 1.0.1 over 1.0.0 once, later
 versions arrive automatically), a persistent code index with Roslyn for C# and semantic search (embeddings + reranker),

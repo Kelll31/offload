@@ -56,7 +56,9 @@ ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0.17763
 ; Приложение создаёт этот мьютекс — установщик попросит закрыть Offload
 AppMutex=Offload.Running
-CloseApplications=yes
+; force: MCP-серверы «Offload.exe --mcp», запущенные IDE, окон не имеют и на просьбу закрыться не отвечают — без force
+; exe остаётся занятым и замена файла падает («DeleteFile: код 5»). Кроме того, их завершает PrepareToInstall.
+CloseApplications=force
 
 [Languages]
 ; Первый язык — запасной для систем, чей язык интерфейса не совпал ни с одним из списка.
@@ -179,6 +181,45 @@ end;
 function StillInstalled(): Boolean;
 begin
   Result := RegKeyExists(ExistingRoot, UninstallKey);
+end;
+
+{ ---------- Процессы Offload из папки установки ---------- }
+
+{ Завершить все процессы {#AppExe} из папки Dir (MCP-серверы IDE, забытый трей). Процессы, путь которых прочитать
+  нельзя (запущены от администратора), пропускаются — их закроет Restart Manager или попросит пользователь.
+  Возвращает число завершённых процессов. }
+function StopProcessesIn(Dir: String): Integer;
+var
+  Locator, Service, Items, Item, PathValue: Variant;
+  I: Integer;
+  Prefix, Path: String;
+begin
+  Result := 0;
+  if Dir = '' then Exit;
+  Prefix := Lowercase(AddBackslash(Dir));
+  try
+    Locator := CreateOleObject('WbemScripting.SWbemLocator');
+    Service := Locator.ConnectServer('.', 'root\CIMV2');
+    Items := Service.ExecQuery('SELECT ProcessId, ExecutablePath FROM Win32_Process WHERE Name = ''{#AppExe}''');
+    for I := 0 to Items.Count - 1 do
+    begin
+      Item := Items.ItemIndex(I);
+      PathValue := Item.ExecutablePath;
+      if VarIsNull(PathValue) or VarIsEmpty(PathValue) then Continue;
+      Path := Lowercase(PathValue);
+      if Copy(Path, 1, Length(Prefix)) <> Prefix then Continue;
+      try
+        Item.Terminate(0);
+        Result := Result + 1;
+        Log('Завершён процесс ' + PathValue);
+      except
+        Log('Не удалось завершить процесс ' + PathValue + ': ' + GetExceptionMessage);
+      end;
+    end;
+  except
+    Log('Список процессов недоступен: ' + GetExceptionMessage);
+  end;
+  if Result > 0 then Sleep(700);
 end;
 
 { ---------- Версии ---------- }
@@ -339,6 +380,13 @@ begin
   end;
 end;
 
+{ Перед заменой файлов: MCP-серверы «{#AppExe} --mcp», запущенные IDE, держат exe (AppMutex видит только трей). }
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  Result := '';
+  StopProcessesIn(ExpandConstant('{app}'));
+end;
+
 { Обновление и переустановка — строго в ту же папку: иначе на диске осталась бы вторая копия. }
 function ShouldSkipPage(PageID: Integer): Boolean;
 begin
@@ -356,6 +404,9 @@ procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 var
   DataDir: String;
 begin
+  { До [UninstallRun] и удаления файлов: MCP-серверы IDE держат exe, и он остался бы на диске. }
+  if CurUninstallStep = usUninstall then
+    StopProcessesIn(ExpandConstant('{app}'));
   if CurUninstallStep = usPostUninstall then
   begin
     DeleteFile(ExpandConstant('{app}\{#AppExe}.old'));

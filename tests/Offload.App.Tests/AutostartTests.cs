@@ -36,6 +36,15 @@ public sealed class AutostartTests
     public void ProgramMoved_Repointed() =>
         Assert.Equal((true, true), Autostart.Decide(true, true, $"\"{Other}\" --background", Command, _ => false));
 
+    [Fact]
+    public void Uninstall_RemovesOnlyOwnOrDangling()
+    {
+        Assert.True(Autostart.OwnedBy(Command, Me, _ => true));
+        Assert.True(Autostart.OwnedBy($"\"{Other}\" --background", Me, _ => false)); // exe удалён — значение ничьё
+        Assert.False(Autostart.OwnedBy($"\"{Other}\" --background", Me, _ => true)); // другая существующая копия
+        Assert.False(Autostart.OwnedBy(null, Me, _ => true));
+    }
+
     [Theory]
     [InlineData(false, true)]
     [InlineData(true, false)]

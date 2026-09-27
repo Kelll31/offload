@@ -66,6 +66,28 @@ internal static class Autostart
         return setupCompleted && wanted && moved ? (true, true) : (false, false);
     }
 
+    /// <summary>
+    /// Значение автозапуска принадлежит этой копии: указывает на <paramref name="exe"/> или на уже несуществующий файл
+    /// (его можно убрать при удалении программы). Автозапуск другой существующей копии — нет.
+    /// </summary>
+    internal static bool OwnedBy(string? value, string exe, Func<string, bool> exists)
+    {
+        if (ExeOf(value) is not { } target) return false;
+        return string.Equals(Full(target), Full(exe), StringComparison.OrdinalIgnoreCase) || !exists(target);
+
+        static string Full(string p)
+        {
+            try
+            {
+                return Path.GetFullPath(p);
+            }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+            {
+                return p;
+            }
+        }
+    }
+
     public static void Set(bool enabled)
     {
         if (DevMode.Active)

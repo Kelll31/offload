@@ -320,6 +320,7 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
             }
         }
 
+        ShowWhatsNewIfUpdated(cfg, ownsSetup);
         await CheckAppUpdateAsync(cfg).ConfigureAwait(false);
 
         // Удалённый каталог моделей: подпись Ed25519, не чаще раза в сутки; без сети остаётся прежний каталог.
@@ -332,6 +333,30 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
         {
             Log.Debug("catalog", $"Проверка удалённого каталога: {ex.Message}");
         }
+    }
+
+    /// <summary>
+    /// Первый запуск после обновления — уведомление «Что нового» (раз на версию; щелчок открывает «О программе»).
+    /// Версию запоминает только «своя» копия: dev-сборка или чужая копия с той же папкой данных не сбивает показ.
+    /// </summary>
+    private void ShowWhatsNewIfUpdated(AppConfig cfg, bool ownsSetup)
+    {
+        var current = AppInfo.Version;
+        var last = cfg.Ui.LastRunVersion;
+        if (!ownsSetup || string.Equals(last, current, StringComparison.Ordinal)) return;
+        try
+        {
+            ConfigStore.Update(c => c.Ui.LastRunVersion = current);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("update", $"Версия запуска не сохранена: {ex.Message}");
+        }
+        if (WhatsNew.UpdatedFrom(last, current) is not { } from) return;
+        Log.Info("update", $"Offload обновлён: {from} → {current}");
+        Notify(L.F("Offload обновлён до {0}", current),
+            L.T("Что нового — в разделе «О программе». Перезапустите IDE, чтобы их MCP-серверы Offload работали на новой версии."),
+            tab: Tabs.About);
     }
 
     /// <summary>Проверка обновления Offload при запуске (не чаще раза в 12 ч; в режиме разработчика — никогда).</summary>

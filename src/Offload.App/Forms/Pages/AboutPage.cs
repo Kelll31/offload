@@ -52,6 +52,12 @@ internal sealed class AboutPage : PageBase
         root.AddRow(_updateProgress);
         root.AddRow(Kit.Hint(L.T("После обновления перезапустите IDE: MCP-серверы Offload, которые IDE уже запустили, работают на старой версии (или закрываются установщиком), пока IDE не перезапущена.")));
 
+        if (Ui.Try(WhatsNew.ForCurrentVersion, null, "WhatsNew") is { } news)
+        {
+            root.AddRow(Kit.Section(L.F("Что нового в {0}", AppInfo.Version)));
+            root.AddRow(Kit.Wrap(news));
+        }
+
         root.AddRow(Kit.Section(L.T("Сообщить о проблеме")));
         root.AddRow(Kit.Wrap(L.T("Пакет диагностики — архив с журналами, настройками без ключей, сведениями о компьютере и версиях. Он сохраняется на диск и никуда не отправляется: после сохранения можно открыть форму issue на GitHub и приложить архив самостоятельно.")));
         root.AddRow(Kit.Flow(Kit.Button(L.T("Собрать пакет диагностики…"), async (_, _) =>
