@@ -192,7 +192,7 @@ function StopProcessesIn(Dir: String): Integer;
 var
   Locator, Service, Items, Item, PathValue: Variant;
   I: Integer;
-  Prefix, Path: String;
+  Prefix, ExePath, Path: String;
 begin
   Result := 0;
   if Dir = '' then Exit;
@@ -206,14 +206,16 @@ begin
       Item := Items.ItemIndex(I);
       PathValue := Item.ExecutablePath;
       if VarIsNull(PathValue) or VarIsEmpty(PathValue) then Continue;
-      Path := Lowercase(PathValue);
+      { Variant → String присваиванием: Inno Setup 6 не приводит Variant в параметре функции (Lowercase, «+»). }
+      ExePath := PathValue;
+      Path := Lowercase(ExePath);
       if Copy(Path, 1, Length(Prefix)) <> Prefix then Continue;
       try
         Item.Terminate(0);
         Result := Result + 1;
-        Log('Завершён процесс ' + PathValue);
+        Log('Завершён процесс ' + ExePath);
       except
-        Log('Не удалось завершить процесс ' + PathValue + ': ' + GetExceptionMessage);
+        Log('Не удалось завершить процесс ' + ExePath + ': ' + GetExceptionMessage);
       end;
     end;
   except
