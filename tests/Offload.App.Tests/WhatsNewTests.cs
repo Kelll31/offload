@@ -53,6 +53,23 @@ public sealed class WhatsNewTests
     public void UpdatedFrom_OnlyWhenNewer(string? last, string current, string? expected) =>
         Assert.Equal(expected, WhatsNew.UpdatedFrom(last, current));
 
+    /// <summary>
+    /// Тело релиза на GitHub показывает одиночный перенос строки как разрыв: пункт списка и абзац — одной строкой
+    /// (без строк-продолжений с отступом и без двух строк обычного текста подряд).
+    /// </summary>
+    [Fact]
+    public void EmbeddedReleaseNotes_HaveNoHardWraps()
+    {
+        var lines = WhatsNew.Embedded()!.Replace("\r\n", "\n").Split('\n');
+        static bool Plain(string l) => l.Trim().Length > 0 && !l.StartsWith('-') && !l.StartsWith('#') && !l.StartsWith('|')
+                                       && !l.StartsWith('>') && !l.StartsWith("---", StringComparison.Ordinal) && !char.IsDigit(l[0]) && !l.StartsWith(' ');
+        for (var i = 0; i < lines.Length; i++)
+        {
+            Assert.False(lines[i].StartsWith("  ", StringComparison.Ordinal) && lines[i].Trim().Length > 0, $"строка {i + 1} — продолжение с отступом: {lines[i]}");
+            if (i > 0) Assert.False(Plain(lines[i]) && Plain(lines[i - 1]), $"строки {i}–{i + 1} — один абзац на двух строках");
+        }
+    }
+
     /// <summary>Страж выпуска: в заметках к релизу (они же встроены в exe) есть «что нового» текущей версии на обоих языках.</summary>
     [Fact]
     public void EmbeddedReleaseNotes_CoverCurrentVersion()
