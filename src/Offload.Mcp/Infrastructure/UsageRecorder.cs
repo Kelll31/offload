@@ -91,6 +91,12 @@ internal static class UsageRecorder
             Log.Debug("mcp", $"Ожидание записи статистики: {ex.Message}");
             return tasks.All(t => t.IsCompleted);
         }
+        finally
+        {
+            // Продолжение, удаляющее задачу из Pending, может выполниться позже продолжения WhenAll —
+            // завершённые убираем сами, чтобы после FlushAsync счётчик уже не включал их.
+            lock (Lock) Pending.RemoveWhere(t => t.IsCompleted && tasks.Contains(t));
+        }
     }
 
     private static void HookProcessExit()
