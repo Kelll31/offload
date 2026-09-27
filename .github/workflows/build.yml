@@ -18,7 +18,9 @@ env:
   DOTNET_CLI_TELEMETRY_OPTOUT: "1"
   DOTNET_NOLOGO: "1"
   NUGET_PACKAGES: ${{ github.workspace }}/.nuget/packages
-  INNO_SETUP_VERSION: "6.4.3"
+  # Та же версия, что #define InnoSetupVersion в installer/Offload.iss (скрипт откажется собираться другой).
+  INNO_SETUP_VERSION: "7.1.0"
+  INNO_SETUP_SHA256: "0362a383ed217d4c4239b5933866dd96d3eb2102737da92f80f6057a4b40df2f"
 
 jobs:
   build:
@@ -52,8 +54,19 @@ jobs:
       - name: Установка Inno Setup
         shell: pwsh
         run: |
-          $found = @("${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 7\ISCC.exe", "${env:ProgramFiles(x86)}\Inno Setup 7\ISCC.exe") | Where-Object { Test-Path $_ }
-          if (-not $found) { choco install innosetup --version $env:INNO_SETUP_VERSION -y --no-progress }
+          # Закреплённая версия с официального релиза jrsoftware/issrc и проверкой SHA-256 — не предустановленная в образе.
+          $v = $env:INNO_SETUP_VERSION
+          $url = "https://github.com/jrsoftware/issrc/releases/download/is-$($v.Replace('.', '_'))/innosetup-$v-x64.exe"
+          $setup = Join-Path $env:RUNNER_TEMP "innosetup-$v.exe"
+          Invoke-WebRequest -Uri $url -OutFile $setup
+          $sha = (Get-FileHash $setup -Algorithm SHA256).Hash
+          if ($sha -ne $env:INNO_SETUP_SHA256) { throw "SHA-256 установщика Inno Setup не совпал: $sha" }
+          $dir = Join-Path $env:RUNNER_TEMP "inno-setup-$v"
+          $p = Start-Process $setup -ArgumentList @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/SP-", "/CURRENTUSER", "/DIR=`"$dir`"") -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Установка Inno Setup: код $($p.ExitCode)" }
+          $iscc = Join-Path $dir "ISCC.exe"
+          if (-not (Test-Path $iscc)) { throw "Не найден $iscc" }
+          "ISCC=$iscc" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Публикация и установщик
         shell: pwsh

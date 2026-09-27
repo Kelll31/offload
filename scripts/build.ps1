@@ -114,16 +114,19 @@ try {
 
     if ($Installer) {
         Write-Host "== Установщик" -ForegroundColor Cyan
+        # Версия закреплена в installer\Offload.iss (#define InnoSetupVersion): другой компилятор остановит сборку с подсказкой.
+        # $env:ISCC — явный путь (CI ставит закреплённую версию); затем Inno Setup 7, и только потом — что есть в PATH.
         $iscc = @(
-            (Get-Command iscc -ErrorAction SilentlyContinue).Source,
+            $env:ISCC,
             "$env:LOCALAPPDATA\Programs\Inno Setup 7\ISCC.exe",
             "$env:ProgramFiles\Inno Setup 7\ISCC.exe",
             "${env:ProgramFiles(x86)}\Inno Setup 7\ISCC.exe",
             "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
             "$env:ProgramFiles\Inno Setup 6\ISCC.exe",
-            "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+            "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
+            (Get-Command iscc -ErrorAction SilentlyContinue).Source
         ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
-        if (-not $iscc) { throw "Не найден Inno Setup (ISCC.exe). Установите: winget install JRSoftware.InnoSetup" }
+        if (-not $iscc) { throw "Не найден Inno Setup (ISCC.exe). Установите: winget install JRSoftware.InnoSetup.7 --version 7.1.0" }
         $version = (Get-Item $exe).VersionInfo.ProductVersion.Split('+')[0]
         $isccArgs = @("/DAppVersion=$version", "/DPublishDir=$publishDir")
         if ($signArgs) {

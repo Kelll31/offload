@@ -119,8 +119,8 @@ public sealed class OffloadTools(SessionState state)
 
     internal const string ImpactDescription =
         "Change impact analysis before or after an edit. Source: target (git diff: all | staged | unstaged | ref/range) or symbol. " +
-        "Returns the changed symbols, their callers outside tests, related test files/classes (by references and naming) and the " +
-        "affected projects. run_tests=true then runs ONLY the related tests with allowlisted commands (dotnet test with a class " +
+        "Returns the changed symbols, their callers outside tests, related test files/classes (by references and naming; with an " +
+        "embedding model also tests related by meaning, marked semantic and never run) and the affected projects. run_tests=true then runs ONLY the related tests with allowlisted commands (dotnet test with a class " +
         "filter, jest/vitest/pytest on the test files, go test on the packages) and reports pass/fail - much faster than the full " +
         "suite. Heuristic (textual references): confirm important callers yourself.";
 

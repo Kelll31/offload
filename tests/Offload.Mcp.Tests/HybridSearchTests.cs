@@ -378,6 +378,37 @@ public sealed class HybridSearchTests
     }
 
     [Fact]
+    public async Task Impact_SemanticTests_ListedButNotRun()
+    {
+        using var main = new FakeLlamaServer { Responder = _ => "[]" };
+        using var embed = new FakeVectorServer("offload-embed") { Embed = Meaning };
+        using var env = Env(main);
+        WriteProject(env);
+        env.WriteFile("tests/Billing/RoundingRulesTests.cs", """
+            namespace Shop.Tests;
+
+            public sealed class RoundingRulesTests
+            {
+                public void Invoice_IsRoundedToCents() { }
+            }
+            """);
+        var ctx = env.Context(Tray(embed), Ct);
+
+        var r = await ImpactTool.RunAsync(ctx, null, "InvoiceCalculator", runTests: false, 40, 0);
+
+        Assert.Contains("related by meaning (1, not run by run_tests):", r);
+        Assert.Contains("tests/Billing/RoundingRulesTests.cs (semantic, ", r);
+        var output = Assert.IsType<ImpactOutput>(ctx.Structured);
+        var test = Assert.Single(output.RelatedTests);
+        Assert.True(test.Semantic);
+        // Без роли embed — прежнее поведение.
+        using var plainEnv = new TestEnv();
+        WriteProject(plainEnv);
+        var plain = await ImpactTool.RunAsync(plainEnv.Context(ct: Ct), null, "InvoiceCalculator", runTests: false, 40, 0);
+        Assert.DoesNotContain("related by meaning", plain);
+    }
+
+    [Fact]
     public async Task RelatedTests_LexicalFirst_SemanticMarked()
     {
         using var env = new TestEnv();

@@ -1,6 +1,11 @@
 **Offload** — приложение для Windows, которое запускает бесплатную локальную модель для программирования и подключает её к Claude Code, Cursor, VS Code, Codex и другим IDE как MCP-сервер. Облачный агент отдаёт ей рутину: чтение больших файлов и логов, тесты, шаблонный код, механические правки. Облачных токенов уходит меньше.
 
-## Что нового в 1.0.2
+## Что нового в 1.0.3
+
+- **`local_impact` подсказывает тесты по смыслу.** Кроме тестов, найденных по ссылкам и именам, показываются тесты, близкие к изменению по смыслу (нужна модель эмбеддингов). Они помечены «semantic» и не запускаются автоматически при `run_tests` — это подсказка, что ещё стоит проверить.
+- **Надёжнее выпуск.** Установщик собирается закреплённой версией Inno Setup и локально, и в GitHub Actions: ошибка, из-за которой первая сборка 1.0.2 не прошла, больше не повторится.
+
+## В версии 1.0.2
 
 - **Обновление больше не спотыкается об открытые IDE.** Установщик сам закрывает MCP-серверы Offload, которые запустили Claude Code, Cursor и другие IDE (раньше замена файла падала с «Отказано в доступе»); то же — при удалении программы. Самообновление через установщик теперь проходит, даже если IDE открыты.
 - **«Что нового» после обновления:** уведомление и этот список в разделе «О программе».
@@ -58,6 +63,8 @@
 - **`Offload-Setup-<version>.exe`** — installer for most users (per-user, no admin rights; the language follows Windows). Silent install: `/VERYSILENT`.
 - **`Offload.exe`** — portable single file.
 - **`SHA256SUMS.txt`** — checksums. Verify provenance with `gh attestation verify <file> --repo Kelll31/offload`.
+
+**New in 1.0.3:** local_impact also suggests tests related to the change by meaning (with an embedding model; marked semantic and never run by run_tests); the installer is now built with a pinned Inno Setup version locally and in CI.
 
 **New in 1.0.2:** the installer now closes Offload MCP servers started by your IDEs (previously replacing the file failed with "Access denied" while an IDE was open), so updates and uninstall work with IDEs running; a "What's new" notice after updating; semantic related tests in local_find_context and reranked project memory; uninstalling no longer removes another copy's autostart entry.
 

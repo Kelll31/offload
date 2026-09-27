@@ -1,5 +1,8 @@
 using System.Text;
 using System.Text.RegularExpressions;
+using Microsoft.Data.Sqlite;
+using Offload.Llama;
+using Offload.Mcp.Index;
 using Offload.Mcp.Infrastructure;
 
 namespace Offload.Mcp.Tools;
@@ -101,6 +104,9 @@ internal static partial class ImpactTool
         foreach (var c in changed.Where(c => c.File.IsTest))
             if (!tests.ContainsKey(c.File.Display)) tests[c.File.Display] = [.. c.File.Symbols.Where(x => x.IsType).Select(x => x.Name).Take(3)];
 
+        // Тесты по смыслу (роль embed): подсказки к найденным по ссылкам и именам; run_tests их не запускает.
+        var semantic = await SemanticTestsAsync(ctx, refIndex, symbols, changed, tests.Keys, maxResults).ConfigureAwait(false);
+
         if (callerLines.Length > 0) sb.Append("callers:\n").Append(callerLines);
         else sb.Append("callers: none found outside tests\n");
         if (tests.Count > 0)
@@ -108,9 +114,14 @@ internal static partial class ImpactTool
             sb.Append($"related tests ({tests.Count} files):\n");
             foreach (var (t, classes) in tests.Take(maxResults)) sb.Append($"  {t}{(classes.Count > 0 ? " [" + string.Join(", ", classes.Take(4)) + "]" : "")}\n");
         }
-        else
+        else if (semantic.Count == 0)
         {
             sb.Append("related tests: none found (consider adding tests)\n");
+        }
+        if (semantic.Count > 0)
+        {
+            sb.Append($"related by meaning ({semantic.Count}, not run by run_tests):\n");
+            foreach (var (t, score) in semantic) sb.Append($"  {t} (semantic, {score.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)})\n");
         }
         var projects = impactedFiles.Select(f => ProjectMap.OwnerOf(map, f)).Where(p => p is not null).Select(p => p!.Manifest).Distinct().ToList();
         if (projects.Count > 0) sb.Append($"projects affected: {string.Join(", ", projects.Take(15))}\n");
@@ -119,7 +130,8 @@ internal static partial class ImpactTool
             ChangedFiles = changedFiles,
             ChangedSymbols = [.. symbols.Select(x => new ImpactSymbol { Name = x.Symbol.QualifiedName, Kind = x.Symbol.Kind, File = x.File.Display, Line = x.Symbol.Line })],
             Callers = callerItems,
-            RelatedTests = [.. tests.Take(maxResults).Select(t => new ImpactTest { File = t.Key, Classes = [.. t.Value.Take(4)] })],
+            RelatedTests = [.. tests.Take(maxResults).Select(t => new ImpactTest { File = t.Key, Classes = [.. t.Value.Take(4)] }),
+                .. semantic.Select(t => new ImpactTest { File = t.File, Classes = [], Semantic = true })],
             Projects = [.. projects.Take(15)],
             TestRuns = [],
         };
@@ -162,6 +174,39 @@ internal static partial class ImpactTool
     }
 
     /// <summary>Изменённые строки (новой версии) по файлам: git diff -U0 для target (all/staged/unstaged/ref) + новые файлы целиком.</summary>
+    /// <summary>
+    /// Тестовые файлы, близкие по смыслу к изменению (роль embed): запрос — имена изменённых символов и файлов, поиск —
+    /// по векторам постоянного индекса (с досчётом в пределах бюджета). Без роли embed, при недоступном сервере или ошибке —
+    /// пусто. Найденные по ссылкам и именам (<paramref name="known"/>) и изменённые файлы не повторяются.
+    /// </summary>
+    private static async Task<List<(string File, float Score)>> SemanticTestsAsync(ToolContext ctx, IndexView index,
+        IReadOnlyList<(SourceFile File, CodeSymbol Symbol)> symbols, List<(SourceFile File, CodeSymbol? Symbol, string Why)> changed,
+        IEnumerable<string> known, int maxResults)
+    {
+        if (!Embedder.Configured(ctx.Cfg) || changed.Count == 0) return [];
+        var embedder = await Embedder.ConnectAsync(ctx).ConfigureAwait(false);
+        if (embedder is null) return [];
+        using var store = EmbeddingsIndex.TryOpenStore(ctx, embedder.ModelId);
+        if (store is null) return [];
+        var names = symbols.Select(s => s.Symbol.QualifiedName).Distinct().Take(20).ToList();
+        var paths = changed.Select(c => c.File.Display).Distinct().Take(10).ToList();
+        var query = "tests for changes in " + string.Join(", ", paths) + (names.Count > 0 ? "; symbols: " + string.Join(", ", names) : "");
+        var skip = new HashSet<string>(known.Concat(paths), StringComparer.OrdinalIgnoreCase);
+        try
+        {
+            var priority = paths.Select(index.FileByDisplay).OfType<IndexedFile>().ToList();
+            var found = await EmbeddingsIndex.SearchAsync(ctx, embedder, store, index, query, priority, wantsTests: true, take: 1).ConfigureAwait(false);
+            return found.Tests.Where(t => !skip.Contains(t.File.Display)).Take(Math.Min(maxResults, EmbeddingsIndex.MaxSemanticTests))
+                .Select(t => (t.File.Display, t.Hit.Score)).ToList();
+        }
+        catch (Exception ex) when (ex is LlamaApiException or ToolException or SqliteException or IOException)
+        {
+            Offload.Core.Logging.Log.Warn("vectors", "тесты по смыслу для local_impact не найдены: " + ex.Message);
+            ctx.Progress.Report("semantic test search skipped: " + ex.Message);
+            return [];
+        }
+    }
+
     internal static async Task<Dictionary<string, List<int>>> ChangedRangesAsync(ToolContext ctx, string target)
     {
         var root = ctx.Roots[0];

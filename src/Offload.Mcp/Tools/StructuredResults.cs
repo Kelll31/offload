@@ -158,6 +158,10 @@ internal sealed record ImpactTest
 
     [JsonPropertyName("classes")]
     public required IReadOnlyList<string> Classes { get; init; }
+
+    /// <summary>Найден только по смыслу (векторы роли embed): подсказка, run_tests его не запускает.</summary>
+    [JsonPropertyName("semantic"), Description("Found only by meaning (embeddings); a suggestion, not run by run_tests.")]
+    public bool Semantic { get; init; }
 }
 
 /// <summary>Запуск связанных тестов.</summary>

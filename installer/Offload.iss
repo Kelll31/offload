@@ -14,6 +14,14 @@
 #define AppExe "Offload.exe"
 ; Совпадает с AppInfo.InstallerAppId в программе (по нему она находит установленную копию). Не менять.
 ; Переопределение (/DAppGuid=...) — только для проверки диалогов установщика на тестовой записи.
+; Компилятор закреплён: CI ставит ровно эту версию (.github/workflows/build.yml, INNO_SETUP_VERSION), локальная сборка
+; обязана совпадать — разные версии уже давали ошибку, видимую только на CI (Inno Setup 6 не приводит Variant к строке).
+; Смена версии — здесь, в #error ниже и в workflow (тест InstallerTests.InnoSetupVersion_IsPinnedEverywhere).
+#define InnoSetupVersion "7.1.0"
+#if DecodeVer(Ver) != InnoSetupVersion
+  #error Нужен Inno Setup 7.1.0: winget install JRSoftware.InnoSetup.7 --version 7.1.0 (или путь к ISCC.exe этой версии в переменной ISCC)
+#endif
+
 #ifndef AppGuid
   #define AppGuid "6C1B7E2A-4F0D-4B8E-9C35-2B1F4E7A9D10"
 #endif

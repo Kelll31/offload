@@ -28,6 +28,23 @@ public class InstallerTests
         Assert.Contains(@"UninstallKey = 'Software\Microsoft\Windows\CurrentVersion\Uninstall\' + '{' + '{#AppGuid}_is1';", iss);
     }
 
+    /// <summary>
+    /// Версия Inno Setup одна для CI и локальной сборки: #define в скрипте (он же отказывается собираться другой версией),
+    /// текст #error, переменная workflow и подсказка build.ps1.
+    /// </summary>
+    [Fact]
+    public void InnoSetupVersion_IsPinnedEverywhere()
+    {
+        var iss = File.ReadAllText(RepoFile("installer", "Offload.iss"));
+        var m = System.Text.RegularExpressions.Regex.Match(iss, "#define InnoSetupVersion \"([0-9.]+)\"");
+        Assert.True(m.Success, "в Offload.iss нет #define InnoSetupVersion");
+        var v = m.Groups[1].Value;
+        Assert.Contains("#if DecodeVer(Ver) != InnoSetupVersion", iss);
+        Assert.Contains($"#error Нужен Inno Setup {v}: winget install JRSoftware.InnoSetup.7 --version {v}", iss);
+        Assert.Contains($"INNO_SETUP_VERSION: \"{v}\"", File.ReadAllText(RepoFile(".github", "workflows", "build.yml")));
+        Assert.Contains($"--version {v}", File.ReadAllText(RepoFile("scripts", "build.ps1")));
+    }
+
     [Fact]
     public void Installer_IsPerUserOnly()
     {
