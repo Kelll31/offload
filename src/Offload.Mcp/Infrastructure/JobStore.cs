@@ -89,6 +89,12 @@ internal sealed class JobInfo
     public SandboxInfo? Sandbox { get; set; }
 
     /// <summary>
+    /// Песочницы кандидатов гонки агентов (race &gt; 1) — чтобы их можно было убрать и после сбоя процесса (retry/discard).
+    /// Победитель после выбора становится <see cref="Sandbox"/>; null — задача без гонки.
+    /// </summary>
+    public List<SandboxInfo>? RaceSandboxes { get; set; }
+
+    /// <summary>
     /// Задача создана с allow_build_files=true: её отложенное слияние (local_job merge) может менять файлы сборки
     /// и при Mcp.ProtectBuildFiles. Действует только для этой задачи.
     /// </summary>

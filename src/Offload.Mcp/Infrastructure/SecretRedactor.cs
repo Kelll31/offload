@@ -37,6 +37,8 @@ internal static partial class SecretRedactor
         new("npm-token", "high", SecretPatterns.NpmToken, "npm access token"),
         new("hf-token", "high", SecretPatterns.HuggingFaceToken, "Hugging Face access token"),
         new("jwt", "medium", SecretPatterns.Jwt, "JWT token"),
+        new("offload-key", "high", SecretPatterns.OffloadLocalKey, "Offload llama-server API key"),
+        new("offload-lan-key", "high", SecretPatterns.OffloadLanKey, "Offload network access key"),
         new("conn-string-password", "high", new Regex(@"(?i)(?:password|pwd)\s*=\s*[^;""'\s{$][^;""']{3,}", O), "password in a connection string"),
         new("hardcoded-secret", "medium", new Regex(@"(?i)\b(?:password|passwd|secret|api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret)\b[""']?\s*[:=]\s*[""'][^""'\s]{6,}[""']", O), "hard-coded credential"),
         new("url-credentials", "high", new Regex(@"\b[a-z][a-z0-9+.-]*://[^/\s:@""']+:[^/\s@""']{3,}@[\w.-]+", O), "credentials inside a URL"),

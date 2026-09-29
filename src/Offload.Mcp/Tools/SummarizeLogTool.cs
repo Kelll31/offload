@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.RegularExpressions;
+using Offload.Core;
 using Offload.Mcp.Infrastructure;
 
 namespace Offload.Mcp.Tools;
@@ -9,6 +10,9 @@ internal static class SummarizeLogTool
 {
     /// <summary>Из очень больших логов читаем только конец (ошибки сборки/тестов почти всегда там).</summary>
     public const long MaxScanBytes = 256L * 1024 * 1024;
+
+    /// <summary>Версия шаблона промпта для ключа кэша результатов (менять при правке промпта ниже).</summary>
+    private const string CacheOp = "summarize_log/1";
 
     public static async Task<string> RunAsync(ToolContext ctx, string? path, string? focus, int tailLines, int maxAnswerTokens, string? pattern = null)
     {
@@ -27,6 +31,13 @@ internal static class SummarizeLogTool
         var (digest, bytesScanned, skippedHead) = ReadDigest(full, tailLines, ctx.Ct);
         ctx.Stats.FilesRead = 1;
         ctx.Stats.TokensRead = (long)(bytesScanned / 3.2);
+        var stats = $"log: {display} · {digest.TotalLines} lines · {digest.ErrorLines} error-pattern lines";
+
+        // Ключ — содержимое выжимки, а не имя файла: повтор той же ошибки (в том числе новый лог local_verify) не разбирается заново.
+        var cacheKey = new WorkCacheKey(CacheOp, McpToolNames.SummarizeLog).Arg("focus", focusText).Arg("max", maxAnswer).Arg("tail", tailLines)
+            .Arg("shape", $"{digest.TotalLines}/{digest.ErrorLines}/{digest.CollapsedRepeats}/{skippedHead}")
+            .Input("digest", LogPrefilter.Render(digest, 8_000_000));
+        if (await WorkCache.TryGetAsync(ctx, cacheKey).ConfigureAwait(false) is { } cached) return cached + "\n\n" + stats;
 
         var model = await ctx.GetModelAsync().ConfigureAwait(false);
         var words = Math.Max(60, maxAnswer * 2 / 3);
@@ -66,7 +77,7 @@ internal static class SummarizeLogTool
         if (text.Length == 0) throw new ToolException("The local model returned an empty summary; read the log tail yourself.");
         if (reply.Truncated) text += $"\n[summary cut at max_answer_tokens={maxAnswer}]";
         ctx.Progress.EndSteps();
-        var stats = $"log: {display} · {digest.TotalLines} lines · {digest.ErrorLines} error-pattern lines";
+        WorkCache.Put(ctx, cacheKey, text);
         return text + "\n\n" + stats;
     }
 

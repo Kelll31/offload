@@ -428,7 +428,10 @@ public static class ConfigStore
         cfg.Mcp ??= new();
         cfg.Ui ??= new();
         cfg.Network ??= new();
+        cfg.Remote ??= new();
         cfg.Integrations ??= [];
+        cfg.DeclinedIntegrations ??= [];
+        cfg.Autocomplete ??= new();
 
         // Старая версия схемы (в том числе файл без поля) поднимается; метку более новой версии меняет только запись (WriteLocked).
         if (cfg.SchemaVersion < ConfigMigrations.CurrentVersion)
@@ -440,6 +443,11 @@ public static class ConfigStore
         if (string.IsNullOrWhiteSpace(cfg.Server.ApiKey))
         {
             cfg.Server.ApiKey = "pc-" + Convert.ToHexString(RandomNumberGenerator.GetBytes(24)).ToLowerInvariant();
+            changed = true;
+        }
+        if (string.IsNullOrWhiteSpace(cfg.Autocomplete.ApiKey) || string.Equals(cfg.Autocomplete.ApiKey.Trim(), cfg.Server.ApiKey.Trim(), StringComparison.Ordinal))
+        {
+            cfg.Autocomplete.ApiKey = "fim-" + Convert.ToHexString(RandomNumberGenerator.GetBytes(24)).ToLowerInvariant();
             changed = true;
         }
         if (cfg.Server.Port is <= 0 or > 65535)

@@ -377,6 +377,7 @@ internal sealed class InstallStep : WizardStep
 
     private async Task<string?> RunModelAsync(InstallTask t, IProgress<StepProgress> p, CancellationToken ct)
     {
+        if (State.RemoteModel) throw new InstallSkipped(L.T("модель на удалённом сервере — не скачивается"));
         var row = State.Model ?? throw new InvalidOperationException(L.T("Модель не выбрана."));
         var cfg = ConfigStore.Current;
         if (!string.IsNullOrWhiteSpace(State.ModelsDir) &&
@@ -420,6 +421,9 @@ internal sealed class InstallStep : WizardStep
     private async Task<string?> RunServerAsync(InstallTask t, IProgress<StepProgress> p, CancellationToken ct)
     {
         var server = Ctx.Shell.Server;
+        // Удалённый сервер ещё не настроен — запускать нечего (свой основной сервер в этом режиме не нужен).
+        if (State.RemoteModel && !ConfigStore.Current.IsRemote())
+            throw new InstallSkipped(L.T("укажите удалённый сервер в «Настройках» после мастера"));
         p.Report(new StepProgress(L.T("Загрузка модели в память…"), null, L.T("первый запуск может занять пару минут")));
         if (server.State == ServerState.Running)
         {

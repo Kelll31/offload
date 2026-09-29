@@ -73,6 +73,21 @@ public class LiveTests
     }
 
     [Fact]
+    public async Task Live_HubSearchAndHeaderByRange()
+    {
+        Assert.SkipUnless(Enabled, "OFFLOAD_LIVE != 1");
+        var ct = TestContext.Current.CancellationToken;
+        var found = await HfClient.SearchAsync("Qwen2.5-Coder-1.5B-Instruct", HfSort.Downloads, 10, ct);
+        Assert.Contains(found, r => r.Repo == "bartowski/Qwen2.5-Coder-1.5B-Instruct-GGUF");
+        var details = await HubImport.LoadDetailsAsync("bartowski/Qwen2.5-Coder-1.5B-Instruct-GGUF", ct);
+        Assert.Matches("^[0-9a-f]{40}$", details.Revision);
+        Assert.Equal(("qwen2", 28), (details.Header.Architecture, details.Header.BlockCount));
+        var entry = HubImport.BuildEntry(details);
+        Assert.Null(HubCatalog.Problem(entry));
+        Report($"hub: {entry.Id}@{details.Revision}, {details.Quants.Count} квантов, заголовок из {details.HeaderQuant}, kv={entry.Kv}");
+    }
+
+    [Fact]
     public async Task Live_RangeSurvivesHfRedirect()
     {
         Assert.SkipUnless(Enabled, "OFFLOAD_LIVE != 1");

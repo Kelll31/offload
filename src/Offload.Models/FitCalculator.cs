@@ -145,8 +145,13 @@ public static class FitCalculator
     /// </param>
     /// <param name="maxContext">Верхняя граница автоподбора контекста (0 — без границы); сама граница — тоже кандидат.</param>
     /// <param name="otherVramBytes">Сколько видеопамяти уже занято другими программами (см. <see cref="VramBudget"/>).</param>
+    /// <param name="split">
+    /// Разделение между несколькими видеокартами (<see cref="MultiGpuPlanner"/>): бюджет — сумма доступной памяти карт
+    /// (занятость другими программами уже учтена в каждой, <paramref name="otherVramBytes"/> не используется), а буфер
+    /// вычислений нужен на каждой карте. null или одна карта — как раньше, по основной видеокарте.
+    /// </param>
     public static FitResult Evaluate(CatalogModel model, long weightsBytes, HardwareInfo hw, int contextSize = 0, string cacheType = "q8_0", int parallel = 1,
-        int maxContext = 0, long otherVramBytes = 0)
+        int maxContext = 0, long otherVramBytes = 0, GpuSplit? split = null)
     {
         ArgumentNullException.ThrowIfNull(model);
         ArgumentNullException.ThrowIfNull(hw);
@@ -162,8 +167,12 @@ public static class FitCalculator
         var hasKv = HasKvCache(model);
         cacheType = string.IsNullOrWhiteSpace(cacheType) ? "f16" : cacheType;
 
-        var vram = hw.PrimaryVramBytes >= MinUsableVramBytes ? hw.PrimaryVramBytes : 0;
-        var budget = VramBudget(vram, otherVramBytes);
+        var multi = split is { IsMulti: true } ? split : null;
+        var vram = multi is not null ? multi.TotalBytes : hw.PrimaryVramBytes >= MinUsableVramBytes ? hw.PrimaryVramBytes : 0;
+        var budget = multi is not null ? multi.BudgetBytes : VramBudget(vram, otherVramBytes);
+        // Каждой дополнительной карте нужен свой буфер вычислений.
+        var extraCards = multi is not null ? multi.Devices.Count - 1 : 0;
+        var cards = multi is not null ? L.F(" — видеокарт: {0}", multi.Devices.Count) : "";
         var ramTotal = Math.Max(0, hw.TotalRamBytes);
         var ramBudget = Math.Max(0, ramTotal - RamReserveBytes(hw));
 
@@ -182,7 +191,7 @@ public static class FitCalculator
             var kv = hasKv ? KvCacheBytes(model.Kv, ctx, cacheType) * parallel : 0;
             var state = hasKv ? model.Kv.RecurrentStateBytes * parallel : 0;
             var compute = ComputeBufferBytes(model, weights, ctx * parallel);
-            return new Need(ctx, kv, state, compute, weights + kv + state + compute);
+            return new Need(ctx, kv, state, compute, weights + kv + state + compute, compute * extraCards);
         }
 
         var moe = model.IsMoe ? MoeFor(model, weights) : null;
@@ -193,19 +202,19 @@ public static class FitCalculator
             foreach (var ctx in candidates.Where(c => explicitCtx || c >= MinAgentContext))
             {
                 var n = NeedFor(ctx);
-                if (n.Total <= budget)
-                    return Result(FitLevel.FullGpu, n, n.Total, 0, 0, -1,
-                        L.F("Полностью в видеопамяти: ≈{0} из {1} ГБ, контекст {2}", Gb(n.Total), Gb(vram), Ctx(ctx)));
+                if (n.Gpu <= budget)
+                    return Result(FitLevel.FullGpu, n, n.Gpu, 0, 0, -1,
+                        L.F("Полностью в видеопамяти: ≈{0} из {1} ГБ, контекст {2}", Gb(n.Gpu), Gb(vram), Ctx(ctx)) + cards);
 
                 if (moe is not null)
                 {
-                    var overflow = n.Total - budget;
+                    var overflow = n.Gpu - budget;
                     var layers = (int)Math.Ceiling((double)overflow / moe.ExpertBytesPerLayer);
                     var cpuBytes = layers * moe.ExpertBytesPerLayer;
                     if (layers <= moe.MoeLayers && cpuBytes <= ramBudget)
-                        return Result(FitLevel.MoeOffload, n, n.Total - cpuBytes, cpuBytes, layers, -1,
+                        return Result(FitLevel.MoeOffload, n, n.Gpu - cpuBytes, cpuBytes, layers, -1,
                             L.F("MoE: {0} {1} экспертов на ЦП (≈{2} ГБ ОЗУ), видеопамять ≈{3} из {4} ГБ, контекст {5} — быстро",
-                                layers, L.PluralWord(layers, "слой", "слоя", "слоёв"), Gb(cpuBytes), Gb(n.Total - cpuBytes), Gb(vram), Ctx(ctx)));
+                                layers, L.PluralWord(layers, "слой", "слоя", "слоёв"), Gb(cpuBytes), Gb(n.Gpu - cpuBytes), Gb(vram), Ctx(ctx)) + cards);
                 }
             }
         }
@@ -219,17 +228,17 @@ public static class FitCalculator
             foreach (var ctx in slow)
             {
                 var n = NeedFor(ctx);
-                var fixedGpu = n.Compute + n.State;
+                var fixedGpu = n.Compute + n.State + n.ExtraGpu;
                 var perLayer = (double)(weights + n.Kv) / blocks;
                 var gpuLayers = (int)Math.Floor((budget - fixedGpu) / perLayer);
                 if (gpuLayers < 1) break; // видеокарта ничего не даёт — только процессор
                 gpuLayers = Math.Min(gpuLayers, blocks - 1);
                 var gpuBytes = (long)(gpuLayers * perLayer) + fixedGpu;
-                var cpuBytes = n.Total - gpuBytes;
+                var cpuBytes = n.Total - (gpuBytes - n.ExtraGpu);
                 if (cpuBytes <= ramBudget)
                     return Result(FitLevel.PartialGpu, n, gpuBytes, cpuBytes, 0, gpuLayers,
                         L.F("Частично на видеокарте: {0} из {1} {2}, ≈{3} ГБ в ОЗУ, контекст {4} — медленно",
-                            gpuLayers, blocks, L.PluralWord(blocks, "слоя", "слоёв", "слоёв"), Gb(cpuBytes), Ctx(ctx)));
+                            gpuLayers, blocks, L.PluralWord(blocks, "слоя", "слоёв", "слоёв"), Gb(cpuBytes), Ctx(ctx)) + cards);
             }
         }
 
@@ -328,7 +337,12 @@ public static class FitCalculator
         : model.Moe is { MoeLayers: > 0 } moe ? moe.MoeLayers
         : Math.Max(1, model.Kv.Layers);
 
-    private sealed record Need(int Ctx, long Kv, long State, long Compute, long Total);
+    /// <param name="ExtraGpu">Буферы вычислений дополнительных видеокарт (только в видеопамяти; 0 — одна карта).</param>
+    private sealed record Need(int Ctx, long Kv, long State, long Compute, long Total, long ExtraGpu = 0)
+    {
+        /// <summary>Сколько нужно видеопамяти, если модель целиком на видеокартах.</summary>
+        public long Gpu => Total + ExtraGpu;
+    }
 
     /// <summary>Гигабайты (ГиБ) с одним знаком после запятой: «21,4», «24».</summary>
     internal static string Gb(long bytes) => (Math.Round(bytes / (double)GiB, 1)).ToString("0.#", L.Culture);

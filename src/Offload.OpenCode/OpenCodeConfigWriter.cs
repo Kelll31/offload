@@ -73,6 +73,8 @@ public static class OpenCodeConfigWriter
     /// <summary>Контекст llama-server на слот: настройка сервера → рекомендованный контекст модели → 32768.</summary>
     internal static int EffectiveContext(AppConfig cfg)
     {
+        // Клиентский режим: контекст удалённого сервера по последней проверке трея (обычно его заменяет фактический из /props).
+        if (cfg.IsRemote()) return cfg.Remote.ContextSize > 0 ? cfg.Remote.ContextSize : DefaultContext;
         if (cfg.Server.ContextSize > 0) return cfg.Server.ContextSize;
         if (cfg.ActiveModel() is { RecommendedContext: > 0 } m) return m.RecommendedContext;
         return DefaultContext;
@@ -151,17 +153,25 @@ public static class OpenCodeConfigWriter
         };
     }
 
+    /// <summary>
+    /// Модель основного сервера для сэмплинга и отключения размышлений: активная локальная модель; в клиентском режиме — null
+    /// (на удалённом сервере другая модель, её умолчания задаёт тот сервер).
+    /// </summary>
+    internal static InstalledModel? MainModel(AppConfig cfg) => cfg.IsRemote() ? null : cfg.ActiveModel();
+
     internal static JsonObject BuildProvider(AppConfig cfg, int context, string apiKeyValue)
     {
-        var model = cfg.ActiveModel();
-        var name = model is { DisplayName.Length: > 0 } ? $"{model.DisplayName} (Offload)" : "Локальная модель (Offload)"; // l10n-ignore: имя провайдера в конфиге OpenCode
+        var model = MainModel(cfg);
+        var ep = cfg.MainEndpoint();
+        var name = ep.IsRemote ? $"{ep.Model} @ {ep.Host} (Offload)"
+            : model is { DisplayName.Length: > 0 } ? $"{model.DisplayName} (Offload)" : "Локальная модель (Offload)"; // l10n-ignore: имя провайдера в конфиге OpenCode
         return new JsonObject
         {
             ["npm"] = "@ai-sdk/openai-compatible",
             ["name"] = "Offload (llama.cpp)",
             ["options"] = new JsonObject
             {
-                ["baseURL"] = LocalServer.ClientBaseUrl(cfg.Server) + "/v1",
+                ["baseURL"] = ep.OpenAiBaseUrl,
                 ["apiKey"] = apiKeyValue,
                 // Локальная обработка длинного контекста бывает медленной — таймауты щедрые.
                 ["timeout"] = 900000,
@@ -172,7 +182,7 @@ public static class OpenCodeConfigWriter
             {
                 [ModelKey] = new JsonObject
                 {
-                    ["id"] = ServerModelAlias,
+                    ["id"] = ep.IsRemote ? ep.Model : ServerModelAlias,
                     ["name"] = name,
                     ["tool_call"] = true,
                     ["reasoning"] = false,
@@ -216,7 +226,7 @@ public static class OpenCodeConfigWriter
 
     internal static JsonObject BuildEditAgent(AppConfig cfg, bool allowShell)
     {
-        var s = cfg.ActiveModel()?.Sampling ?? new SamplingSettings();
+        var s = MainModel(cfg)?.Sampling ?? new SamplingSettings();
         return new JsonObject
         {
             ["description"] = "Offload: локальная модель выполняет задачу в проекте (чтение и правка файлов).", // l10n-ignore: конфиг OpenCode
@@ -232,7 +242,7 @@ public static class OpenCodeConfigWriter
 
     internal static JsonObject BuildReadOnlyAgent(AppConfig cfg)
     {
-        var s = cfg.ActiveModel()?.Sampling ?? new SamplingSettings();
+        var s = MainModel(cfg)?.Sampling ?? new SamplingSettings();
         return new JsonObject
         {
             ["description"] = "Offload: локальная модель анализирует проект (только чтение).", // l10n-ignore: конфиг OpenCode
@@ -320,6 +330,27 @@ public static class OpenCodeConfigWriter
             },
         }.ToJsonString();
 
+    /// <summary>
+    /// Переопределение агента правки на один запуск: разрешение оболочки (null — как в настройках) и/или температура
+    /// (null — из настроек модели, ограничивается 0…1.5). null — переопределять нечего.
+    /// </summary>
+    internal static string? RunOverrideContent(AppConfig cfg, bool? allowShell, double? temperature)
+    {
+        if (allowShell is null && temperature is null) return null;
+        var agent = new JsonObject();
+        if (allowShell is { } shell)
+        {
+            agent["prompt"] = AgentPrompts.Edit(shell, cfg.Mcp.ExtraSystemPrompt);
+            agent["permission"] = new JsonObject { ["bash"] = BashRules(shell) };
+        }
+        if (temperature is { } t) agent["temperature"] = Math.Round(Math.Clamp(t, 0, 1.5), 2);
+        return new JsonObject
+        {
+            ["$schema"] = SchemaUrl,
+            ["agent"] = new JsonObject { [EditAgent] = agent },
+        }.ToJsonString();
+    }
+
     /// <summary>Переменные окружения для запуска opencode с управляемой конфигурацией.</summary>
     public static IReadOnlyDictionary<string, string?> Environment(AppConfig cfg)
     {
@@ -356,8 +387,8 @@ public static class OpenCodeConfigWriter
             ["XDG_DATA_HOME"] = Path.Combine(dir, interactive ? "data-tui" : "data"),
             ["XDG_STATE_HOME"] = Path.Combine(dir, interactive ? "state-tui" : "state"),
             [NestedEnvVar] = "1",
-            // Системный прокси не должен перехватывать запросы к 127.0.0.1.
-            ["NO_PROXY"] = NoProxy(),
+            // Системный прокси не должен перехватывать запросы к 127.0.0.1 (и к удалённому серверу в локальной сети/VPN).
+            ["NO_PROXY"] = NoProxy(cfg is not null && cfg.IsRemote() ? RemoteHostName(cfg) : null),
             // Унаследованные настройки OpenCode пользователя нарушили бы изоляцию.
             ["OPENCODE_CONFIG_DIR"] = null,
             ["OPENCODE_CONFIG_CONTENT"] = null,
@@ -367,16 +398,24 @@ public static class OpenCodeConfigWriter
             ["OPENCODE_EXPERIMENTAL"] = null,
             ["OPENCODE_CLIENT"] = null,
         };
-        if (cfg is not null) env[ApiKeyEnvVar] = cfg.Server.ApiKey;
+        // Ключ основного сервера: свой локальный или ключ удалённого сервера (клиентский режим) — только в окружении процесса.
+        if (cfg is not null) env[ApiKeyEnvVar] = cfg.MainEndpoint().ApiKey;
         return env;
     }
 
-    private static string NoProxy()
+    /// <summary>Имя хоста удалённого сервера (без порта и скобок IPv6) для NO_PROXY.</summary>
+    private static string? RemoteHostName(AppConfig cfg) =>
+        Uri.TryCreate(cfg.MainEndpoint().BaseUrl, UriKind.Absolute, out var u) ? u.IdnHost : null;
+
+    internal static string NoProxy(string? extraHost = null)
     {
-        const string local = "127.0.0.1,localhost,::1";
+        var local = "127.0.0.1,localhost,::1";
+        if (!string.IsNullOrWhiteSpace(extraHost) && !extraHost.Contains(',')) local += "," + extraHost;
         var existing = System.Environment.GetEnvironmentVariable("NO_PROXY");
         if (string.IsNullOrWhiteSpace(existing)) return local;
-        return existing.Contains("127.0.0.1", StringComparison.Ordinal) ? existing : local + "," + existing;
+        return existing.Contains("127.0.0.1", StringComparison.Ordinal) && (extraHost is null || existing.Contains(extraHost, StringComparison.OrdinalIgnoreCase))
+            ? existing
+            : local + "," + existing;
     }
 
     // ---- Глобальный конфиг пользователя (~/.config/opencode) ----
@@ -400,7 +439,10 @@ public static class OpenCodeConfigWriter
     {
         ArgumentNullException.ThrowIfNull(cfg);
         var context = contextOverride is > 0 ? contextOverride.Value : EffectiveContext(cfg);
-        var r = OpenCodeGlobalConfig.RegisterProvider(ProviderId, BuildProvider(cfg, context, cfg.Server.ApiKey), SchemaUrl);
+        // Ключ удалённого сервера (клиентский режим) открывает доступ к чужому компьютеру по сети — в открытый файл пользователя
+        // он не пишется: провайдер ссылается на переменную окружения, которую пользователь задаёт сам.
+        var key = cfg.IsRemote() ? "{env:" + ApiKeyEnvVar + "}" : cfg.Server.ApiKey;
+        var r = OpenCodeGlobalConfig.RegisterProvider(ProviderId, BuildProvider(cfg, context, key), SchemaUrl);
         if (!r.Ok) throw new InvalidOperationException(r.Message);
     }
 

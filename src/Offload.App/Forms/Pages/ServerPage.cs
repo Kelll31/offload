@@ -31,6 +31,12 @@ internal sealed class ServerPage : PageBase
         (L.T("Выключено"), "off"),
     ];
 
+    private static (string Text, string Value)[] GpuOptions =>
+    [
+        (L.T("Все подходящие"), ServerSettings.GpuSelectionAll),
+        (L.T("Только основная"), ServerSettings.GpuSelectionPrimary),
+    ];
+
     private static (string Text, string Value)[] CacheOptions =>
     [
         (L.T("f16 — без сжатия (больше памяти)"), "f16"),
@@ -46,6 +52,7 @@ internal sealed class ServerPage : PageBase
     private readonly OptionalNumberBox _cpuMoe = new([(L.T("Авто"), -1), (L.T("Выключено"), 0), (L.T("Своё число"), null)], 1, 999, 8);
     private readonly ComboBox _flash = Kit.Combo(170);
     private readonly ComboBox _cache = Kit.Combo(250);
+    private readonly ComboBox _gpuSelection = Kit.Combo(170);
     private readonly NumericUpDown _threads = Kit.Number(0, 256, 0, 70);
     private readonly NumericUpDown _idle = Kit.Number(0, 1440, 0, 70);
     private readonly TextBox _extra = Kit.TextBox();
@@ -75,6 +82,7 @@ internal sealed class ServerPage : PageBase
     private readonly CheckBox _llamaCheckUpdates = Kit.Check(L.T("Проверять обновления llama.cpp при запуске"));
 
     private readonly ServerPerformanceSection _performance;
+    private readonly AutocompleteSection _autocomplete;
 
     private bool _loading;
     private bool _dirty;
@@ -86,6 +94,7 @@ internal sealed class ServerPage : PageBase
     {
         foreach (var (text, _) in FlashOptions) _flash.Items.Add(text);
         foreach (var (text, _) in CacheOptions) _cache.Items.Add(text);
+        foreach (var (text, _) in GpuOptions) _gpuSelection.Items.Add(text);
         _extra.Width = 420;
         _extra.Anchor = AnchorStyles.Left;
         _port.ThousandsSeparator = false;
@@ -97,6 +106,7 @@ internal sealed class ServerPage : PageBase
         _vcInstall = Kit.Button(L.T("Установить"), async (_, _) => await InstallVcAsync());
         _llamaProgress.CancelRequested += (_, _) => _installCts?.Cancel();
         _performance = new ServerPerformanceSection(shell, this, ApplyRecommendedParallelAsync, (a, t, c) => RunBusyAsync(a, t, c));
+        _autocomplete = new AutocompleteSection(shell, this, (a, t, c) => RunBusyAsync(a, t, c));
 
         var root = Kit.Table();
 
@@ -108,6 +118,7 @@ internal sealed class ServerPage : PageBase
         grid.AddField(L.T("Параллельные запросы:"), _parallel, L.T("каждый запрос получает свою долю контекста"));
         grid.AddField(L.T("Слои на GPU:"), _gpuLayers);
         grid.AddField(L.T("MoE-эксперты на ЦП:"), _cpuMoe, L.T("для MoE-моделей, которые не помещаются в видеопамять"));
+        grid.AddField(L.T("Видеокарты:"), _gpuSelection, L.T("если их несколько: модель делится между ними по свободной памяти"));
         grid.AddField("Flash attention:", _flash);
         grid.AddField(L.T("Тип KV-кэша:"), _cache, L.T("q4_0 может ухудшить вызов инструментов"));
         grid.AddField(L.T("Потоки ЦП:"), _threads, L.T("0 — автоматически"));
@@ -124,6 +135,9 @@ internal sealed class ServerPage : PageBase
 
         // Слоты, размещение «Авто» и замер скорости.
         _performance.AddTo(root);
+
+        // Автодополнение в IDE (FIM): свой сервер, настройки сохраняются сразу.
+        _autocomplete.AddTo(root);
 
         // llama.cpp.
         root.AddRow(Kit.Section("llama.cpp"));
@@ -157,6 +171,7 @@ internal sealed class ServerPage : PageBase
         _cpuMoe.ValueChanged += (_, _) => MarkDirty();
         _flash.SelectedIndexChanged += (_, _) => MarkDirty();
         _cache.SelectedIndexChanged += (_, _) => MarkDirty();
+        _gpuSelection.SelectedIndexChanged += (_, _) => MarkDirty();
         _threads.ValueChanged += (_, _) => MarkDirty();
         _idle.ValueChanged += (_, _) => MarkDirty();
         _extra.TextChanged += (_, _) => MarkDirty();
@@ -195,6 +210,7 @@ internal sealed class ServerPage : PageBase
                 if (!IsDisposed) FillBackends();
             }
             _ = _performance.RefreshAsync();
+            _autocomplete.Refresh();
         }
         catch (Exception ex)
         {
@@ -208,11 +224,13 @@ internal sealed class ServerPage : PageBase
         LoadProgramSettings();
         UpdateLlamaInfo();
         if (IsActive) _ = _performance.RefreshAsync();
+        if (IsActive) _autocomplete.Refresh();
     }
 
     public override void OnServerStateChanged()
     {
         UpdateUiState();
+        if (IsActive) _autocomplete.UpdateStatus();
         if (IsActive && Shell.Server.State is ServerState.Running or ServerState.Stopped) _ = _performance.RefreshAsync();
     }
 
@@ -225,6 +243,7 @@ internal sealed class ServerPage : PageBase
         _vcInstall.Enabled = !IsBusy;
         _apply.Enabled = !installing;
         _performance.UpdateUiState(IsBusy);
+        _autocomplete.UpdateUiState(IsBusy);
         foreach (var (sw, pin, build) in _buildButtons)
         {
             sw.Enabled = !IsBusy && !build.IsCurrent;
@@ -261,6 +280,7 @@ internal sealed class ServerPage : PageBase
             _flash.SelectedIndex = Math.Max(0, Array.FindIndex(FlashOptions, o => string.Equals(o.Value, s.FlashAttention, StringComparison.OrdinalIgnoreCase)));
             var cacheIdx = Array.FindIndex(CacheOptions, o => string.Equals(o.Value, s.CacheType, StringComparison.OrdinalIgnoreCase));
             _cache.SelectedIndex = cacheIdx < 0 ? 1 : cacheIdx;
+            _gpuSelection.SelectedIndex = Math.Max(0, Array.FindIndex(GpuOptions, o => string.Equals(o.Value, s.GpuSelection, StringComparison.OrdinalIgnoreCase)));
             _threads.Value = Math.Clamp(s.Threads, 0, 256);
             _idle.Value = Math.Clamp(s.IdleUnloadMinutes, 0, 1440);
             _extra.Text = s.ExtraArgs ?? "";
@@ -324,6 +344,7 @@ internal sealed class ServerPage : PageBase
             s.CpuMoeLayers = _cpuMoe.Value;
             s.FlashAttention = FlashOptions[Math.Max(0, _flash.SelectedIndex)].Value;
             s.CacheType = CacheOptions[Math.Max(0, _cache.SelectedIndex)].Value;
+            s.GpuSelection = GpuOptions[Math.Max(0, _gpuSelection.SelectedIndex)].Value;
             s.Threads = (int)_threads.Value;
             s.IdleUnloadMinutes = (int)_idle.Value;
             s.ExtraArgs = extra;

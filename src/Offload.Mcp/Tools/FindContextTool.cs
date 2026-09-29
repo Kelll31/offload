@@ -200,9 +200,8 @@ internal static partial class FindContextTool
             "Given a programming task (any language), output a JSON array of 5-15 short search keywords likely to appear in the relevant source code: " +
             "English identifiers, class/method name fragments, API names, domain words (e.g. [\"auth\",\"login\",\"TokenService\",\"refresh\"]). " +
             "Translate non-English words to the English terms a programmer would use in code. Output ONLY the JSON array.");
-        await using var slot = await GpuQueue.AcquireAsync(ctx, ctx.Ct).ConfigureAwait(false);
-        var reply = await model.ChatAsync(system, "TASK:\n" + task, 200, "expanding the query", ctx.Ct).ConfigureAwait(false);
-        var text = OutputCleaner.StripFence(reply.Text, allowInnerBlock: true).Trim();
+        var reply = await WorkCache.ChatAsync(ctx, model, "find_context/expand/1", system, "TASK:\n" + task, 200, "expanding the query").ConfigureAwait(false);
+        var text = OutputCleaner.StripFence(reply, allowInnerBlock: true).Trim();
         using var doc = ParseJsonFragment(text, JsonValueKind.Array);
         if (doc is null) return [];
         return doc.RootElement.EnumerateArray().Where(e => e.ValueKind == JsonValueKind.String).Select(e => e.GetString()!.Trim())
@@ -404,9 +403,9 @@ internal static partial class FindContextTool
         var budget = model.MaterialBudget(400, system, task);
         var material = sb.ToString();
         if (Tokens.Estimate(material) > budget) material = material[..Math.Max(0, budget * 3)];
-        await using var slot = await GpuQueue.AcquireAsync(ctx, ctx.Ct).ConfigureAwait(false);
-        var reply = await model.ChatAsync(system, "TASK:\n" + task + "\n\nCANDIDATES:\n" + material, 400, "ranking files", ctx.Ct).ConfigureAwait(false);
-        var text = OutputCleaner.StripFence(reply.Text, allowInnerBlock: true);
+        var reply = await WorkCache.ChatAsync(ctx, model, "find_context/rank/1", system, "TASK:\n" + task + "\n\nCANDIDATES:\n" + material, 400, "ranking files")
+            .ConfigureAwait(false);
+        var text = OutputCleaner.StripFence(reply, allowInnerBlock: true);
         using var doc = ParseJsonFragment(text, JsonValueKind.Array);
         if (doc is null) return [];
         var result = new List<(SourceFile, string)>();
@@ -640,9 +639,9 @@ internal static partial class FindContextTool
             "New files, Steps (numbered, concrete), Tests (which to add/update and the command to run), Risks/open questions. Be concise; cite path:line.");
         var budget = model.MaterialBudget(900, system, task);
         var material = Tokens.Estimate(pack) > budget ? pack[..Math.Max(0, budget * 3)] : pack;
-        await using var slot = await GpuQueue.AcquireAsync(ctx, ctx.Ct).ConfigureAwait(false);
-        var reply = await model.ChatAsync(system, "CONTEXT:\n" + material + "\n\nTASK:\n" + task, 900, "planning", ctx.Ct).ConfigureAwait(false);
-        return reply.Text.Trim();
+        var reply = await WorkCache.ChatAsync(ctx, model, "find_context/plan/1", system, "CONTEXT:\n" + material + "\n\nTASK:\n" + task, 900, "planning")
+            .ConfigureAwait(false);
+        return reply.Trim();
     }
 
 }

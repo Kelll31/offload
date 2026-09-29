@@ -25,7 +25,11 @@ public sealed record GgufInfo(
     int NextNPredictLayers = 0,
     int ExpertUsedCount = 0,
     int Version = 0,
-    long TensorCount = 0)
+    long TensorCount = 0,
+    /// <summary>general.file_type (тип квантизации llama.cpp: 15 — Q4_K_M и т. п.); -1 — не указан.</summary>
+    int FileType = -1,
+    /// <summary>general.size_label: «1.5B», «30B-A3B», «8x7B»; null — не указан.</summary>
+    string? SizeLabel = null)
 {
     /// <summary>Оценка параметров KV-кэша по заголовку (для FitCalculator).</summary>
     public KvSpec ToKvSpec()
@@ -103,7 +107,8 @@ public static class GgufReader
         if (kvCount > MaxKvCount) throw new InvalidDataException(L.F("Заголовок GGUF повреждён: слишком много метаданных ({0}).", kvCount));
 
         var ints = new Dictionary<string, long>(StringComparer.Ordinal);
-        string? arch = null, name = null, template = null;
+        string? arch = null, name = null, template = null, sizeLabel = null;
+        long fileType = -1;
 
         for (long i = 0; i < kvCount; i++)
         {
@@ -119,6 +124,12 @@ public static class GgufReader
                     continue;
                 case "tokenizer.chat_template" when type == ValueType.String:
                     template = r.StringOrSkip(MaxTemplateBytes);
+                    continue;
+                case "general.size_label" when type == ValueType.String:
+                    sizeLabel = r.StringOrSkip(256);
+                    continue;
+                case "general.file_type" when IsScalarNumber(type):
+                    fileType = r.ReadScalarAsInt64(type);
                     continue;
             }
             if (IsWantedNumeric(key) && TryReadNumber(r, type, out var value))
@@ -160,7 +171,9 @@ public static class GgufReader
             NextNPredictLayers: Clamp(Get("nextn_predict_layers")),
             ExpertUsedCount: Clamp(Get("expert_used_count")),
             Version: (int)versionRaw,
-            TensorCount: tensorCount);
+            TensorCount: tensorCount,
+            FileType: fileType is >= 0 and <= int.MaxValue ? (int)fileType : -1,
+            SizeLabel: sizeLabel);
     }
 
     private static readonly string[] WantedSuffixes =

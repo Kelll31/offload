@@ -63,6 +63,7 @@ internal sealed class SettingsPage : PageBase
     private readonly CheckBox _remoteCatalog = Kit.Check(L.T("Обновлять каталог моделей из репозитория Offload (с проверкой подписи, не чаще раза в сутки)"));
     private readonly Label _catalogStatus = Kit.Hint("");
     private readonly Button _checkCatalog;
+    private readonly RemoteServerSection _remote;
     private bool _loading;
 
     private static (string Text, string Value)[] ProxyOptions =>
@@ -76,6 +77,7 @@ internal sealed class SettingsPage : PageBase
     {
         _pickColor = Kit.Button(L.T("Выбрать цвет…"), (_, _) => PickColor(), 130);
         _checkCatalog = Kit.Button(L.T("Проверить сейчас"), (_, _) => _ = CheckCatalogAsync(), 140);
+        _remote = new RemoteServerSection(shell, this, RunBusyAsync);
         var root = Kit.Table();
 
         root.AddRow(Kit.Section(L.T("Мастер настройки"), first: true));
@@ -116,6 +118,7 @@ internal sealed class SettingsPage : PageBase
         root.AddRow(_checkAppUpdates);
 
         BuildNetworkSection(root);
+        _remote.AddTo(root);
 
         root.AddRow(Kit.Section(L.T("Данные программы")));
         var data = Kit.Grid();
@@ -170,7 +173,7 @@ internal sealed class SettingsPage : PageBase
 
     public override string Key => Tabs.Settings;
     public override string Title => L.T("Настройки");
-    public override string? Subtitle => L.T("Мастер настройки, тема и цвета, язык, папка моделей, запуск программы");
+    public override string? Subtitle => L.T("Мастер настройки, тема и цвета, язык, папка моделей, запуск программы, сеть и удалённый сервер");
     public override string Glyph => Glyphs.Settings;
 
     /// <summary>Поля сети изменены, но не сохранены кнопкой «Сохранить сетевые настройки» (или введён токен).</summary>
@@ -180,6 +183,7 @@ internal sealed class SettingsPage : PageBase
         {
             var n = ConfigStore.Current.Network ?? new NetworkSettings();
             return _hfToken.TextLength > 0
+                   || _remote.HasUnsavedChanges
                    || !SameUrl(_hfMirror.Text, n.HfMirror)
                    || !SameUrl(_gitHubApiMirror.Text, n.GitHubApiMirror)
                    || !SameUrl(_gitHubMirror.Text, n.GitHubMirror)
@@ -212,12 +216,15 @@ internal sealed class SettingsPage : PageBase
             UpdateLogHint();
             UpdatePaths();
             LoadNetwork();
+            _remote.Load();
         }
         finally
         {
             _loading = false;
         }
     }
+
+    public override void OnServerStateChanged() => _remote.OnServerStateChanged();
 
     private void UpdateLogHint()
     {

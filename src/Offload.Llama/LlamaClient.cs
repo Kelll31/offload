@@ -100,6 +100,12 @@ public sealed record ServerProps(
 
     /// <summary>Модель выгружена по простою (--sleep-idle-seconds) и загрузится при следующем запросе.</summary>
     public bool? IsSleeping { get; init; }
+
+    /// <summary>
+    /// Как отключать «размышления» по шаблону чата из /props (chat_template): enable_thinking — Qwen3.5+ и подобные,
+    /// reasoning_effort — gpt-oss. Нужен удалённому серверу: у клиента нет записи о его модели. null — шаблон неизвестен.
+    /// </summary>
+    public ReasoningControl? ReasoningHint { get; init; }
 }
 
 /// <summary>
@@ -117,12 +123,29 @@ public sealed partial class LlamaClient
         ApiKey = apiKey;
     }
 
-    /// <summary>Клиент сервера из настроек. Общий KV-кэш — как его включает LlamaServerArgs.Build (-kvu при нескольких слотах).</summary>
-    public static LlamaClient FromConfig(AppConfig cfg) =>
-        new(cfg.Server.BaseUrl, cfg.Server.ApiKey) { UnifiedKv = LlamaServerArgs.UsesUnifiedKv(cfg.Server) };
+    /// <summary>
+    /// Клиент основного сервера из настроек (<see cref="RemoteServer.MainEndpoint"/>). Свой сервер: общий KV-кэш — как его
+    /// включает LlamaServerArgs.Build (-kvu при нескольких слотах). Удалённый: адрес, ключ и id модели из настроек клиентского
+    /// режима; настройки его слотов неизвестны — считаем KV общим (при нескольких слотах контекст запроса = n_ctx / слоты,
+    /// оценка с запасом: запрос не выйдет за контекст).
+    /// </summary>
+    public static LlamaClient FromConfig(AppConfig cfg)
+    {
+        ArgumentNullException.ThrowIfNull(cfg);
+        var ep = cfg.MainEndpoint();
+        if (ep.IsRemote) return new LlamaClient(ep.BaseUrl, ep.ApiKey) { Model = ep.Model, UnifiedKv = true, IsRemote = true };
+        return new LlamaClient(cfg.Server.BaseUrl, cfg.Server.ApiKey) { UnifiedKv = LlamaServerArgs.UsesUnifiedKv(cfg.Server) };
+    }
+
+    /// <summary>Тот же сервер и ключ с другим именем модели (id из /v1/models удалённого сервера).</summary>
+    public LlamaClient WithModel(string model) =>
+        new(BaseUrl, ApiKey) { Model = string.IsNullOrWhiteSpace(model) ? Model : model, UnifiedKv = UnifiedKv, IsRemote = IsRemote };
 
     public string BaseUrl { get; }
     public string ApiKey { get; }
+
+    /// <summary>Удалённый сервер клиентского режима (не свой llama-server): трей его не запускает, ошибки — про сеть, а не про процесс.</summary>
+    public bool IsRemote { get; init; }
 
     /// <summary>Имя модели в запросах (--alias сервера): offload у основного, offload-fast/-embed/-rerank у вспомогательных.</summary>
     public string Model { get; init; } = LlamaServerArgs.DefaultAlias;
@@ -169,13 +192,20 @@ public sealed partial class LlamaClient
         try
         {
             using var req = LocalHttp.Request(HttpMethod.Get, BaseUrl + "/props", ApiKey);
-            using var resp = await LocalHttp.Client.SendAsync(req, HttpCompletionOption.ResponseContentRead, cts.Token);
+            using var resp = await LocalHttp.Client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token);
             if (!resp.IsSuccessStatusCode)
             {
                 Log.Debug("llama", $"/props: HTTP {(int)resp.StatusCode}");
                 return null;
             }
-            var json = await resp.Content.ReadAsStringAsync(cts.Token);
+            // Ответ ограничен по размеру: удалённый сервер мог бы прислать бесконечный ответ.
+            await using var s = await resp.Content.ReadAsStreamAsync(cts.Token);
+            var json = await BoundedRead.ReadTextAsync(s, BoundedRead.MaxJsonChars, cts.Token);
+            if (json is null)
+            {
+                Log.Debug("llama", $"/props: ответ больше {BoundedRead.MaxJsonChars / (1024 * 1024)} МБ — отброшен");
+                return null;
+            }
             return ParseProps(json, UnifiedKv);
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -205,17 +235,30 @@ public sealed partial class LlamaClient
 
         var slots = Math.Max(1, ChatStreamParser.GetInt(root, "total_slots") ?? 1);
         var (perRequest, shared) = SplitContext(nCtx, slots, unifiedKv);
+        // Строки сервера (в клиентском режиме — недоверенного) уходят в журнал, интерфейс и ответы MCP: псевдоним — только
+        // безопасный id модели, путь и сборка — без управляющих символов и не длиннее 256.
+        var alias = GetString(root, "model_alias");
         return new ServerProps(
             perRequest,
             slots,
-            GetString(root, "model_path"),
-            GetString(root, "model_alias"),
-            GetString(root, "build_info"))
+            SafeText(GetString(root, "model_path")),
+            RemoteServer.IsSafeModelId(alias) ? alias : null,
+            SafeText(GetString(root, "build_info")))
         {
             SharedContext = shared,
             SupportsToolCalls = tools,
             IsSleeping = GetBool(root, "is_sleeping"),
+            ReasoningHint = ReasoningFromTemplate(GetString(root, "chat_template")),
         };
+    }
+
+    /// <summary>Способ отключить размышления по тексту шаблона чата (Jinja); null — шаблона нет.</summary>
+    internal static ReasoningControl? ReasoningFromTemplate(string? template)
+    {
+        if (string.IsNullOrEmpty(template)) return null;
+        if (template.Contains("enable_thinking", StringComparison.Ordinal)) return ReasoningControl.EnableThinkingKwarg;
+        if (template.Contains("reasoning_effort", StringComparison.Ordinal)) return ReasoningControl.ReasoningEffort;
+        return ReasoningControl.None;
     }
 
     /// <summary>
@@ -291,11 +334,14 @@ public sealed partial class LlamaClient
                 using var reader = new StreamReader(stream, Encoding.UTF8);
                 if (resp.Content.Headers.ContentType?.MediaType == "application/json")
                 {
-                    // Сервер ответил без потока — разбираем целиком (message вместо delta).
-                    var body = await reader.ReadToEndAsync(ct);
+                    // Сервер ответил без потока — разбираем целиком (message вместо delta), с потолком размера.
+                    var body = await BoundedRead.ReadTextAsync(stream, BoundedRead.MaxChatBodyChars, ct)
+                               ?? throw new InvalidDataException($"the response is larger than {BoundedRead.MaxChatBodyChars} characters"); // l10n-ignore: подробность для журнала
                     return ParseNonStreaming(body, onDelta, sw.Elapsed);
                 }
-                while (await reader.ReadLineAsync(ct) is { } line)
+                // Строка потока — с потолком длины: иначе сервер без переводов строк заставил бы копить ответ в памяти целиком.
+                var lines = new BoundedLineReader(reader, BoundedRead.MaxSseLineChars);
+                while (await lines.ReadLineAsync(ct) is { } line)
                 {
                     if (!parser.ProcessLine(line)) break;
                 }
@@ -304,6 +350,14 @@ public sealed partial class LlamaClient
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
                 throw;
+            }
+            catch (InvalidDataException ex)
+            {
+                throw new LlamaApiException(L.T("Ответ сервера слишком большой — он отброшен."), null, ex)
+                {
+                    Kind = LlamaErrorKind.Other,
+                    Detail = ex.Message,
+                };
             }
             catch (Exception ex) when (ex is IOException or HttpRequestException)
             {
@@ -432,13 +486,16 @@ public sealed partial class LlamaClient
             }
             using var req = LocalHttp.Request(HttpMethod.Post, BaseUrl + "/tokenize", ApiKey);
             req.Content = JsonContent(ms.ToArray());
-            using var resp = await LocalHttp.Client.SendAsync(req, HttpCompletionOption.ResponseContentRead, cts.Token);
+            using var resp = await LocalHttp.Client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token);
             if (resp.IsSuccessStatusCode)
             {
                 await using var s = await resp.Content.ReadAsStreamAsync(cts.Token);
-                using var doc = await JsonDocument.ParseAsync(s, cancellationToken: cts.Token);
-                if (doc.RootElement.TryGetProperty("tokens", out var tokens) && tokens.ValueKind == JsonValueKind.Array)
-                    return tokens.GetArrayLength();
+                if (await BoundedRead.ReadTextAsync(s, (int)Math.Min(int.MaxValue / 2, BoundedRead.MaxJsonChars + (long)text.Length * 16), cts.Token) is { } body)
+                {
+                    using var doc = JsonDocument.Parse(body);
+                    if (doc.RootElement.TryGetProperty("tokens", out var tokens) && tokens.ValueKind == JsonValueKind.Array)
+                        return tokens.GetArrayLength();
+                }
             }
             Log.Debug("llama", $"/tokenize: HTTP {(int)resp.StatusCode}, используется оценка");
         }
@@ -477,6 +534,14 @@ public sealed partial class LlamaClient
         {
             return "";
         }
+    }
+
+    /// <summary>Строка от сервера для показа: без управляющих символов, не длиннее 256; пустая — null.</summary>
+    internal static string? SafeText(string? s)
+    {
+        if (string.IsNullOrWhiteSpace(s)) return null;
+        var clean = new string(s.Where(c => !char.IsControl(c)).Take(256).ToArray()).Trim();
+        return clean.Length == 0 ? null : clean;
     }
 
     private static string? GetString(JsonElement obj, string name) =>

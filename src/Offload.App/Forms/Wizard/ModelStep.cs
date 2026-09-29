@@ -21,6 +21,7 @@ internal sealed class ModelStep : WizardStep
     private readonly Label _space = Kit.Wrap("");
     private readonly NumericUpDown _parallel = Kit.Number(1, ServerSettings.MaxParallel, 1, 70);
     private readonly Label _parallelHint = Kit.Hint("");
+    private readonly CheckBox _remote = Kit.Check(L.T("Модель работает на другом компьютере (удалённый сервер) — не скачивать"));
     private bool _settingParallel;
     private bool _parallelTouched;
     private IReadOnlyList<(string Quant, string Text, long Size)> _quantItems = [];
@@ -41,6 +42,12 @@ internal sealed class ModelStep : WizardStep
         {
             if (!_settingParallel) _parallelTouched = true;
         };
+        _remote.CheckedChanged += (_, _) =>
+        {
+            State.RemoteModel = _remote.Checked;
+            _list.Enabled = _quant.Enabled = _parallel.Enabled = !_remote.Checked;
+            RaiseNavigationChanged();
+        };
 
         var root = Kit.Table();
         root.AddRow(_summary);
@@ -50,6 +57,8 @@ internal sealed class ModelStep : WizardStep
         root.AddRow(Kit.Flow(_quantCaption, _quant));
         root.AddRow(Kit.Flow(Kit.Label(L.T("Параллельные запросы:")), _parallel));
         root.AddRow(_parallelHint);
+        root.AddRow(_remote);
+        root.AddRow(Kit.Hint(L.T("Для слабого ноутбука: модель остаётся на мощном ПК с Offload (там включите «Доступ из сети»), а адрес и ключ вводятся после мастера в «Настройках» → «Удалённый сервер».")));
 
         root.AddRow(Kit.Section(L.T("Папка для моделей")));
         var folderRow = Kit.Table(100, 0);
@@ -65,7 +74,7 @@ internal sealed class ModelStep : WizardStep
 
     public override string? Subtitle => L.T("Рекомендуемая модель подобрана под объём видеопамяти и оперативной памяти.");
 
-    public override bool CanGoNext => State.Model is not null && !Insufficient();
+    public override bool CanGoNext => State.RemoteModel || (State.Model is not null && !Insufficient());
 
     /// <summary>Число слотов сервера сохраняется при переходе дальше: шаг установки запускает сервер уже с ним.</summary>
     public override bool OnLeave(bool forward)
@@ -79,6 +88,7 @@ internal sealed class ModelStep : WizardStep
     public override void OnEnter()
     {
         var cfg = ConfigStore.Current;
+        _remote.Checked = State.RemoteModel || cfg.IsRemote();
         if (string.IsNullOrWhiteSpace(State.ModelsDir))
             State.ModelsDir = Ui.Try(() => ModelManager.ModelsDir(cfg), cfg.Models.ModelsDir ?? AppPaths.DefaultModelsDir, "ModelsDir");
         _folder.Text = State.ModelsDir;

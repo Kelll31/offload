@@ -86,6 +86,44 @@ public class ChangeTrackerTests
         }
     }
 
+    [Fact]
+    public async Task Git_RepoFsmonitorAndFilterInGitConfig_NeverExecuted()
+    {
+        var git = ProcessRunner.FindOnPath("git.exe");
+        Assert.SkipWhen(git is null, "git не установлен");
+        var dir = NewDir();
+        try
+        {
+            await Git(git!, dir, "init", "-q");
+            File.WriteAllText(Path.Combine(dir, ".gitattributes"), "a.txt filter=evil\n");
+            File.WriteAllText(Path.Combine(dir, "a.txt"), "a");
+            await Git(git!, dir, "add", "-A");
+            // Враждебная .git/config: fsmonitor (его запускает каждый git status) и clean-фильтр.
+            await Git(git!, dir, "config", "core.fsmonitor", "cmd /c echo x> pwn_fsmonitor");
+            await Git(git!, dir, "config", "filter.evil.clean", "cmd /c echo x> pwn_clean & more");
+            await Git(git!, dir, "config", "filter.evil.required", "true");
+            File.WriteAllText(Path.Combine(dir, "a.txt"), "b");
+
+            // Проверка стенда: голый git status эти команды запускает — иначе тест ничего не доказывает.
+            await ProcessRunner.RunAsync(git!, ["-C", dir, "status", "--porcelain"], dir, timeout: TimeSpan.FromSeconds(30));
+            var bench = Directory.GetFiles(dir, "pwn_*");
+            Assert.True(bench.Length > 0, "стенд не работает: голый git status не запустил команду из .git/config");
+            foreach (var f in bench) File.Delete(f);
+
+            var before = await ChangeTracker.CaptureAsync(dir, CancellationToken.None);
+            File.WriteAllText(Path.Combine(dir, "a.txt"), "changed by agent");
+            await ChangeTracker.CaptureAfterAsync(before, CancellationToken.None);
+
+            var leaked = Directory.GetFiles(dir, "pwn_*").Select(Path.GetFileName).ToArray();
+            Assert.True(leaked.Length == 0, $"ChangeTracker запустил команды из .git/config: {string.Join(", ", leaked)}");
+            Assert.NotNull(before.GitRoot);   // драйверы погашены — изменения по-прежнему видны через git status
+        }
+        finally
+        {
+            ForceDelete(dir);
+        }
+    }
+
     private static async Task Git(string git, string dir, params string[] args)
     {
         var r = await ProcessRunner.RunAsync(git, ["-C", dir, .. args], dir, timeout: TimeSpan.FromSeconds(30));

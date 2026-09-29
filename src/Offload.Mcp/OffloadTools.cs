@@ -21,6 +21,10 @@ public sealed class OffloadTools(SessionState state)
     internal const string AllowBuildFilesDescription =
         "Only if Offload refused a build file (csproj/props/targets, package.json, Makefile, conftest.py…): pass true after reviewing that the change is intended.";
 
+    internal const string RaceParamDescription =
+        "Agent race: 1 = one agent (default); 2-4 = that many agents solve the task independently (minimal / root-cause+test / clean / " +
+        "conservative) in parallel sandboxes and the best verified diff is merged. Costs more local GPU time; needs a verify command.";
+
     internal const string StatusDescription =
         "Offload health check: whether the free local model is online (or how it will auto-start), model name and quant, " +
         "context size per request, measured speed, GPU queue, whether agent mode (OpenCode) is available for local_edit_files, " +
@@ -33,7 +37,8 @@ public sealed class OffloadTools(SessionState state)
         "binaries and secrets) and returns only the answer - typically 20-50x fewer tokens than Read. Answers cite path:line. " +
         "Good for: explain or summarize a file/folder/module/symbol, find where X is done, first-pass bug review, compare files. " +
         "Not for decisions that need whole-repo reasoning. Material larger than the local context is split and merged; coverage is " +
-        "always reported. Answers come from a smaller model: spot-check what matters.";
+        "always reported. Answers come from a smaller model: spot-check what matters. The same question on unchanged files is " +
+        "answered from Offload's result cache (marked \"cached\"); fresh=true forces a new answer.";
 
     internal const string FindContextDescription =
         "START HERE for a task in an unfamiliar area instead of many Glob/Grep/Read calls. Give the task in natural language (any " +
@@ -77,7 +82,8 @@ public sealed class OffloadTools(SessionState state)
         "target: \"all\" (default: staged + unstaged vs HEAD, plus untracked file names), \"staged\", \"unstaged\", or a git " +
         "ref/range (\"main\", \"HEAD~3\", \"main...HEAD\" for a whole branch). Returns prioritized findings: [severity] path:line - " +
         "issue - suggestion. Use focus for a specific lens (\"risky changes only\", \"architecture\", \"tests\"). Large diffs are " +
-        "reviewed per file and merged; secret files are excluded. A cheap first pass: verify findings before acting.";
+        "reviewed per file and merged; secret files are excluded. A cheap first pass: verify findings before acting. An unchanged " +
+        "diff is answered from the result cache (marked \"cached\"); fresh=true re-reviews.";
 
     internal const string CommitMessageDescription =
         "Write git text with the local model from a diff read server-side, so you don't read the diff. kind=commit (default): " +
@@ -179,14 +185,35 @@ public sealed class OffloadTools(SessionState state)
         "creates files there, runs verify_command, fixes failures and commits. Autonomy budget: allowed_paths, max_files, " +
         "timeout_minutes, fix_attempts; review=true adds a local review before merge. Merges only if verify passes, the budget " +
         "holds and the patch applies: merge=apply (uncommitted changes, undo via local_job revert), commit (fast-forward), none. " +
-        "background=true returns a job_id at once. Result = proof: files, verify, diagnostics, review, open risks.";
+        "background=true returns a job_id at once. race=2-4: that many agents try different strategies in separate sandboxes; the best " +
+        "verified diff is merged (needs verify_command). Result = proof: files, verify, diagnostics, review, open risks.";
 
     internal const string SolveDescription =
         "One-call local coding loop for a whole task: finds the relevant code, briefs the local agent with a template for kind " +
         "(feature | bug: root cause + failing test + fix | refactor | tests | issue), lets it work in an isolated git sandbox, runs the " +
         "project's test/build command (auto-detected or verify_command) with fix rounds, reviews the change with the local model, " +
         "then merges (apply | commit | none) and returns a compact proof: changed files, verify result, diagnostics, review findings, " +
-        "open questions. Bounded by allowed_paths, max_files and max_minutes; background=true to keep working. Review before accepting.";
+        "open questions. Bounded by allowed_paths, max_files and max_minutes; background=true to keep working; race=2-4 lets several " +
+        "agents compete with different strategies and merges the best verified diff (race table in the result). Review before accepting.";
+
+    internal const string PrReadyDescription =
+        "Pre-PR check of the current branch in ONE call; returns the verdict first (READY / READY WITH WARNINGS / NOT READY) with a " +
+        "short blocker list, then details: commits ahead/behind base (merge-base), files and +/- lines, uncommitted-changes warning; " +
+        "merge conflicts with base without touching the working tree (git merge-tree, git >= 2.38); run_tests: tests related to " +
+        "the diff first, then the project's full test (or build) command - allowlisted only, failures are blockers with structured " +
+        "errors; rule-based security gate (secrets = blocker); hygiene of added lines (conflict markers = blocker; TODO/FIXME, " +
+        "debug leftovers, large/binary files = warnings); use_model: local review of base...HEAD (critical/high = warnings) and a " +
+        "PR title+body draft (pr_text). Does not modify project files. Example: {\"base\": \"main\"}.";
+
+    internal const string DebugDescription =
+        "Debug a failure end-to-end in ONE call: reproduce -> diagnose -> history -> fix -> verify. Give problem (error text, stack " +
+        "trace or symptom) and ideally command (an allowlisted command that fails now, e.g. \"dotnet test --filter FooTests\"; " +
+        "otherwise it is derived from a failing test name in the problem or the project's test command). If the command PASSES it " +
+        "reports 'could not reproduce' and stops. Then: compiler errors/stack frames -> implicated functions with code, recent " +
+        "commits of that code, a local-model root-cause hypothesis and suspect commit; fix=true lets the local agent fix it in an " +
+        "isolated git sandbox (merged only if the command passes; undo: local_job revert), then re-runs the command and related " +
+        "tests. fix=false = diagnosis only (writes nothing). Output: Reproduced? / Root cause / Suspect commit / Fix (job_id, " +
+        "files) / Verification / Review / Open questions.";
 
     internal const string JobDescription =
         "Manage Offload jobs (local_write_file / local_edit_files / local_agent_task / local_solve / local_apply_patch / " +
@@ -219,9 +246,10 @@ public sealed class OffloadTools(SessionState state)
         RequestContext<CallToolRequestParams> context,
         [Description("brief | detailed | bullets | json")] string answer_format = "brief",
         [Description("Answer length limit, 64-4096 tokens.")] int max_answer_tokens = 800,
+        [Description("true = ignore the result cache and ask the model again.")] bool fresh = false,
         CancellationToken cancellationToken = default) =>
         ToolRunner.RunAsync(McpToolNames.AskFiles, state, context,
-            SecretRedactor.RedactingOutput(ctx => AskFilesTool.RunAsync(ctx, paths, question, answer_format, max_answer_tokens)), cancellationToken);
+            SecretRedactor.RedactingOutput(ctx => AskFilesTool.RunAsync(ctx, paths, question, answer_format, max_answer_tokens, fresh)), cancellationToken);
 
     [McpServerTool(Name = McpToolNames.FindContext, Title = "Offload: контекст под задачу",
         ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
@@ -309,9 +337,10 @@ public sealed class OffloadTools(SessionState state)
         [Description("all | staged | unstaged | <git ref or range>")] string target = "all",
         [Description("Optional review focus, e.g. \"error handling\" or \"thread safety\".")] string? focus = null,
         [Description("Answer length limit, 64-4096 tokens.")] int max_answer_tokens = 1200,
+        [Description("true = ignore the result cache and review again.")] bool fresh = false,
         CancellationToken cancellationToken = default) =>
         ToolRunner.RunAsync(McpToolNames.ReviewDiff, state, context,
-            ctx => ReviewDiffTool.RunAsync(ctx, working_directory, target, focus, max_answer_tokens), cancellationToken);
+            ctx => ReviewDiffTool.RunAsync(ctx, working_directory, target, focus, max_answer_tokens, fresh), cancellationToken);
 
     [McpServerTool(Name = McpToolNames.CommitMessage, Title = "Offload: коммит / описание PR",
         ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
@@ -438,7 +467,44 @@ public sealed class OffloadTools(SessionState state)
         CancellationToken cancellationToken = default) =>
         ToolRunner.RunAsync(McpToolNames.Dependencies, state, context, ctx => DependencyCheckTool.RunAsync(ctx, action, from, to, max_results), cancellationToken);
 
+    [McpServerTool(Name = McpToolNames.PrReady, Title = "Offload: готовность ветки к PR",
+        ReadOnly = false, Destructive = false, Idempotent = true, OpenWorld = false,
+        UseStructuredContent = true, OutputSchemaType = typeof(PrReadyOutput))]
+    [McpMeta("anthropic/searchHint", "pull request ready check branch merge conflicts tests security review hygiene pr description verdict")]
+    [Description(PrReadyDescription)]
+    public Task<CallToolResult> LocalPrReady(
+        RequestContext<CallToolRequestParams> context,
+        [Description("Base branch/commit (default: origin/HEAD, then main, then master); compared via merge-base.")] string? @base = null,
+        [Description("Run related tests, then the full test (or build) command. false = no project code is run.")] bool run_tests = true,
+        [Description("Local-model review of the branch diff and the PR draft.")] bool use_model = true,
+        [Description("Draft a PR title and body (needs use_model).")] bool pr_text = true,
+        [Description("Overall time budget for the checks, minutes (2-120).")] int max_minutes = 20,
+        CancellationToken cancellationToken = default) =>
+        ToolRunner.RunAsync(McpToolNames.PrReady, state, context,
+            SecretRedactor.RedactingOutput(ctx => PrReadyTool.RunAsync(ctx, @base, run_tests, use_model, pr_text, max_minutes)), cancellationToken);
+
     // ───────────────────────── запись ─────────────────────────
+
+    [McpServerTool(Name = McpToolNames.Debug, Title = "Offload: отладка — от воспроизведения до исправления",
+        ReadOnly = false, Destructive = false, Idempotent = false, OpenWorld = false,
+        UseStructuredContent = true, OutputSchemaType = typeof(DebugOutput))]
+    [McpMeta("anthropic/searchHint", "debug bug failing test stack trace reproduce root cause suspect commit fix regression test")]
+    [Description(DebugDescription)]
+    public Task<CallToolResult> LocalDebug(
+        [Description("Error text, stack trace or symptom (with the failing test name if known).")] string problem,
+        RequestContext<CallToolRequestParams> context,
+        [Description("Allowlisted command that reproduces the failure, e.g. \"dotnet test --filter FooTests\".")] string? command = null,
+        [Description("Let the local agent fix it in a git sandbox (false = diagnosis only, writes nothing).")] bool fix = true,
+        [Description("apply | none (none = keep the fix on its sandbox branch for review).")] string merge = "apply",
+        [Description("Only changes under these folders/files/globs are merged.")] string[]? paths = null,
+        [Description("Overall time limit, minutes (2-90).")] int max_minutes = 30,
+        [Description("Run the fix in the background and return a job_id after the diagnosis.")] bool background = false,
+        [Description(AllowBuildFilesDescription)] bool allow_build_files = false,
+        CancellationToken cancellationToken = default) =>
+        ToolRunner.RunAsync(McpToolNames.Debug, state, context,
+            PathGuard.WithBuildFilePolicy(allow_build_files,
+                SecretRedactor.RedactingOutput(ctx => DebugTool.RunAsync(ctx, problem, command, fix, merge, paths, max_minutes, background))),
+            cancellationToken);
 
     [McpServerTool(Name = McpToolNames.WriteFile, Title = "Offload: написать файл",
         ReadOnly = false, Destructive = false, Idempotent = false, OpenWorld = false)]
@@ -540,6 +606,7 @@ public sealed class OffloadTools(SessionState state)
         [Description("Do not auto-merge if more files changed (0 = no limit).")] int max_files = 0,
         [Description("Review the change with the local model before merging; critical/high findings block the auto-merge.")] bool review = false,
         [Description(AllowBuildFilesDescription)] bool allow_build_files = false,
+        [Description(RaceParamDescription)] int race = 1,
         CancellationToken cancellationToken = default) =>
         ToolRunner.RunAsync(McpToolNames.AgentTask, state, context,
             PathGuard.WithBuildFilePolicy(allow_build_files, ctx => AgentTaskTool.RunAsync(ctx, new AgentTaskRequest
@@ -554,6 +621,7 @@ public sealed class OffloadTools(SessionState state)
                 AllowedPaths = allowed_paths,
                 MaxFiles = max_files,
                 Review = review,
+                Race = race,
             })),
             cancellationToken);
 
@@ -574,10 +642,11 @@ public sealed class OffloadTools(SessionState state)
         [Description("Run in the background and return a job_id.")] bool background = false,
         [Description("Review the change with the local model before merging.")] bool review = true,
         [Description(AllowBuildFilesDescription)] bool allow_build_files = false,
+        [Description(RaceParamDescription)] int race = 1,
         CancellationToken cancellationToken = default) =>
         ToolRunner.RunAsync(McpToolNames.Solve, state, context,
             PathGuard.WithBuildFilePolicy(allow_build_files,
-                ctx => SolveTool.RunAsync(ctx, task, kind, verify_command, allowed_paths, context_paths, merge, max_files, max_minutes, background, review)),
+                ctx => SolveTool.RunAsync(ctx, task, kind, verify_command, allowed_paths, context_paths, merge, max_files, max_minutes, background, review, race)),
             cancellationToken);
 
     [McpServerTool(Name = McpToolNames.Memory, Title = "Offload: память проекта",

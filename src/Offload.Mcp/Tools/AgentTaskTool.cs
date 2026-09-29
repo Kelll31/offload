@@ -34,6 +34,12 @@ internal sealed record AgentTaskRequest
 
     /// <summary>Дополнительный текст для итогового отчёта (например, найденный контекст local_solve).</summary>
     public string? Preamble { get; init; }
+
+    /// <summary>
+    /// Гонка агентов: сколько кандидатов (1–4) решают задачу независимо, каждый в своей песочнице и со своей стратегией;
+    /// вливается лучший проверенный diff (<see cref="AgentRace"/>). 1 — обычный запуск одного агента.
+    /// </summary>
+    public int Race { get; init; } = 1;
 }
 
 /// <summary>
@@ -70,7 +76,7 @@ internal static class AgentTaskTool
         await ctx.GetModelAsync().ConfigureAwait(false);
 
         var job = JobStore.Create(r.Tool, root, r.Task, ctx.ToolUseId);
-        job.Mode = "sandbox/" + r.Merge;
+        job.Mode = "sandbox/" + r.Merge + (r.Race > 1 ? $"/race{r.Race}" : "");
         job.VerifyCommand = r.VerifyCommand;
         JobStore.Save(job);
         created?.Invoke(job.Id);
@@ -100,7 +106,11 @@ internal static class AgentTaskTool
         var mergeMode = (req.Merge ?? "apply").Trim().ToLowerInvariant();
         if (mergeMode is not ("apply" or "commit" or "none")) throw new ToolException("merge must be apply, commit or none.");
         if (!BackgroundJobSpec.HostableTools.Contains(req.Tool)) throw new ToolException($"Tool '{req.Tool}' cannot run agent tasks.");
+        AgentRace.ValidateCount(req.Race);
         var verify = string.IsNullOrWhiteSpace(req.VerifyCommand) ? null : VerifyCommand.Validate(req.VerifyCommand, cfg.Mcp.VerifyCommandAllowlist);
+        if (req.Race > 1 && verify is null)
+            throw new ToolException("race > 1 needs a verify_command: race candidates are compared only when the check passes " +
+                                    "(e.g. verify_command=\"dotnet test\"). Use race=1 for an unverified task.");
         if (!cfg.OpenCode.Enabled || StatusTool.FindOpenCode(cfg) is null)
             throw new ToolException("This needs the OpenCode agent: install/enable it in the Offload tray app (OpenCode tab). " +
                                     "For small mechanical edits use local_edit_files mode=rewrite or local_apply_patch.");
@@ -131,6 +141,7 @@ internal static class AgentTaskTool
 
     private static async Task<string> ExecuteAsync(ToolContext ctx, JobInfo job, AgentTaskRequest r, List<string> hints, List<Regex>? allowed)
     {
+        if (r.Race > 1) return await AgentRace.ExecuteAsync(ctx, job, r, hints, allowed).ConfigureAwait(false);
         var dl = new TaskDeadline(TimeSpan.FromMinutes(r.TimeoutMinutes));
         var deadline = dl.Total;
         using var deadlineCts = CancellationTokenSource.CreateLinkedTokenSource(ctx.Ct);
@@ -139,6 +150,7 @@ internal static class AgentTaskTool
         var summary = new List<string>();
         var notes = new List<string>();
         VerifyResult? lastVerify = null;
+        VerifyResult? firstFailure = null; // для автоматической памяти: чем проверка падала до исправлений
         var attempt = 0;
         var noTimeForVerify = false;
         SandboxInfo? sb = null;
@@ -161,6 +173,7 @@ internal static class AgentTaskTool
                     throw new OperationCanceledException(ct);
                 }
                 lastVerify = await VerifyCommand.RunAsync(r.VerifyCommand, sb.AgentDir, verifyTimeout, ctx.Progress, ctx.Ct).ConfigureAwait(false);
+                if (!lastVerify.Passed) firstFailure ??= lastVerify;
                 if (lastVerify.Passed || attempt > r.FixAttempts) break;
                 ctx.Progress.Report($"verify failed (exit {lastVerify.ExitCode}); fix round {attempt}/{r.FixAttempts}");
                 var feedback = $"The check `{r.VerifyCommand}` FAILED (exit {lastVerify.ExitCode}) after your changes. Relevant output:\n" +
@@ -217,6 +230,9 @@ internal static class AgentTaskTool
         }
 
         ArgumentNullException.ThrowIfNull(sb);
+        // Проверка прошла только после исправлений — неочевидные уроки в автоматическую память (до слияния: песочница ещё жива).
+        if (firstFailure is not null && lastVerify is { Passed: true } && commit is { HasChanges: true })
+            await AutoMemory.CaptureAgentLessonsAsync(ctx, r.Task, r.VerifyCommand!, firstFailure, attempt - 1, sb, $"{r.Tool} {job.Id}").ConfigureAwait(false);
         try
         {
             return await FinalizeAsync(ctx, job, r, sb, commit!, lastVerify, attempt, summary, notes).ConfigureAwait(false);
@@ -230,8 +246,9 @@ internal static class AgentTaskTool
         }
     }
 
-    private static async Task<string> FinalizeAsync(ToolContext ctx, JobInfo job, AgentTaskRequest r, SandboxInfo sb, SandboxCommit commit, VerifyResult? lastVerify,
-        int attempt, List<string> summary, List<string> notes)
+    /// <param name="reviewed">Находки ревью, полученные раньше (гонка агентов ревьюит кандидатов при выборе); null — ревью по r.Review.</param>
+    internal static async Task<string> FinalizeAsync(ToolContext ctx, JobInfo job, AgentTaskRequest r, SandboxInfo sb, SandboxCommit commit, VerifyResult? lastVerify,
+        int attempt, List<string> summary, List<string> notes, List<string>? reviewed = null)
     {
         notes.AddRange(commit.Dropped.Select(d => "not transferred: " + d));
         var changes = commit.HasChanges ? await GitSandbox.ChangesAsync(sb, ctx.Ct).ConfigureAwait(false) : [];
@@ -245,7 +262,11 @@ internal static class AgentTaskTool
         }
 
         // Ревью песочницы локальной моделью (maker/checker) до слияния.
-        if (r.Review)
+        if (reviewed is not null)
+        {
+            proof.Review = reviewed;
+        }
+        else if (r.Review)
         {
             ctx.Progress.Report("Reviewing the agent's changes…");
             proof.Review = await ReviewSandboxAsync(ctx, sb, r.Task).ConfigureAwait(false);
@@ -343,7 +364,7 @@ internal static class AgentTaskTool
     }
 
     /// <summary>Ревью diff песочницы локальной моделью: строки «[severity] path:line - issue - suggestion».</summary>
-    private static async Task<List<string>> ReviewSandboxAsync(ToolContext ctx, SandboxInfo sb, string task)
+    internal static async Task<List<string>> ReviewSandboxAsync(ToolContext ctx, SandboxInfo sb, string task)
     {
         try
         {
@@ -375,7 +396,7 @@ internal static class AgentTaskTool
         return result;
     }
 
-    private static string? WhyNotWritable(ToolContext ctx, SandboxInfo sb, string gitPath, List<Regex>? allowed)
+    internal static string? WhyNotWritable(ToolContext ctx, SandboxInfo sb, string gitPath, List<Regex>? allowed)
     {
         try
         {
@@ -494,13 +515,21 @@ internal static class AgentTaskTool
         await GitSandbox.RemoveAsync(sb, deleteBranch: true, CancellationToken.None).ConfigureAwait(false);
         sb.State = SandboxState.Discarded;
         JobStore.Save(job);
+        // Гонка агентов, прерванная до выбора: песочницы остальных кандидатов тоже убираются.
+        await AgentRace.DiscardCandidatesAsync(job, sb).ConfigureAwait(false);
     }
 
-    private static async Task RunAgentAsync(ToolContext ctx, JobInfo job, SandboxInfo sb, AgentTaskRequest r, List<string> hints, string? feedback,
-        TaskDeadline deadline, List<string> summary, List<string> notes, CancellationToken ct)
+    /// <summary>Запуск агента OpenCode (подменяется в тестах): конфигурация, задача, рабочая папка, параметры, прогресс, отмена.</summary>
+    internal static Func<AppConfig, string, string, OpenCodeRunOptions, Action<string>?, CancellationToken, Task<OpenCodeRunResult>> Runner { get; set; } =
+        OpenCodeRunner.RunAsync;
+
+    /// <param name="race">Кандидат гонки агентов: стратегия (в бриф), температура и свой журнал; null — обычный запуск.</param>
+    internal static async Task RunAgentAsync(ToolContext ctx, JobInfo job, SandboxInfo sb, AgentTaskRequest r, List<string> hints, string? feedback,
+        TaskDeadline deadline, List<string> summary, List<string> notes, CancellationToken ct, RaceRunOptions? race = null)
     {
         var prompt = new StringBuilder();
         prompt.Append("TASK:\n").Append(r.Task).Append("\n\n");
+        if (race is not null) prompt.Append(race.Brief).Append("\n\n");
         prompt.Append("You work in an isolated copy (git worktree) of the project; the working directory is the project root. ");
         prompt.Append("Your changes are reviewed and merged back automatically, so implement the task completely: create, modify or delete whatever files it needs.\n");
         if (r.AllowedPaths is { Length: > 0 })
@@ -516,6 +545,7 @@ internal static class AgentTaskTool
             prompt.Append("Start by reading these files/folders:\n");
             foreach (var h in hints) prompt.Append("- ").Append(h).Append('\n');
         }
+        prompt.Append(AutoMemory.BriefNotes(ctx, r.Task));
         if (feedback is not null) prompt.Append('\n').Append(feedback).Append('\n');
 
         var lastProgress = DateTime.MinValue;
@@ -526,16 +556,17 @@ internal static class AgentTaskTool
             if (deadline.Exhausted) throw new OperationCanceledException(ct);
             try
             {
-                res = await OpenCodeRunner.RunAsync(ctx.Cfg, prompt.ToString(), sb.AgentDir,
+                res = await Runner(ctx.Cfg, prompt.ToString(), sb.AgentDir,
                     new OpenCodeRunOptions(ctx.Cfg.OpenCode.AllowShellCommands, deadline.ForStep(TimeSpan.FromSeconds(1)) ?? TimeSpan.FromSeconds(1), "build")
                     {
-                        LogPath = AgentLogPath(job),
+                        LogPath = race?.LogPath ?? AgentLogPath(job),
+                        Temperature = race?.Temperature,
                     },
                     msg =>
                     {
                         if (DateTime.UtcNow - lastProgress < TimeSpan.FromSeconds(2)) return;
                         lastProgress = DateTime.UtcNow;
-                        ctx.Progress.Report("agent: " + (msg.Length > 120 ? msg[..120] + "…" : msg));
+                        ctx.Progress.Report((race is null ? "agent: " : $"agent {race.Letter}: ") + (msg.Length > 120 ? msg[..120] + "…" : msg));
                     }, ct).ConfigureAwait(false);
             }
             catch (NotImplementedException)
@@ -544,7 +575,8 @@ internal static class AgentTaskTool
             }
         }
         ct.ThrowIfCancellationRequested();
-        ctx.Stats.AddExternal(res.PromptTokens, res.CompletionTokens, res.Duration);
+        // Кандидаты гонки агентов работают параллельно, а статистика вызова общая.
+        lock (ctx.Stats) ctx.Stats.AddExternal(res.PromptTokens, res.CompletionTokens, res.Duration);
         if (!res.Success) notes.Add("agent reported a problem: " + Short(res.Error ?? $"exit code {res.ExitCode}", 300));
         summary.Clear();
         foreach (var line in (res.FinalText ?? "").Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0).Take(8))
@@ -568,7 +600,7 @@ internal static class AgentTaskTool
         return list;
     }
 
-    private static void Finish(JobInfo job, SandboxInfo? sb, string status, VerifyResult? verify, int attempt, List<string> summary, List<string> notes)
+    internal static void Finish(JobInfo job, SandboxInfo? sb, string status, VerifyResult? verify, int attempt, List<string> summary, List<string> notes)
     {
         job.Status = status;
         job.FinishedUtc = DateTime.UtcNow;

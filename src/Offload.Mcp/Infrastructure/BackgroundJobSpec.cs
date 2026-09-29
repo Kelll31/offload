@@ -8,7 +8,7 @@ using Offload.Mcp.Tools;
 namespace Offload.Mcp.Infrastructure;
 
 /// <summary>
-/// Описание задачи агента (local_agent_task / local_solve / local_refactor), достаточное, чтобы выполнить её в другом процессе
+/// Описание задачи агента (local_agent_task / local_solve / local_refactor / local_debug), достаточное, чтобы выполнить её в другом процессе
 /// (в трее) или повторить после сбоя (local_job action=retry). Хранится в jobs\&lt;id&gt;\spec.json и передаётся трею по IPC.
 /// Любой процесс-исполнитель проверяет описание заново (<see cref="ValidateForHost"/>): это данные, а не команда.
 /// </summary>
@@ -18,8 +18,13 @@ internal sealed record BackgroundJobSpec
     /// Версия формата. Трей отклоняет незнакомую (MCP тогда выполняет задачу сам). 2 — появился снимок окружения IDE
     /// (<see cref="Environment"/>): старый трей не знает о нём и запустил бы задачу со своим окружением, поэтому версия поднята —
     /// такой трей отклонит описание, и задача выполнится в MCP-процессе с окружением IDE.
+    /// 3 — гонка агентов (<see cref="Race"/> &gt; 1): старый трей выполнил бы её как одного агента. Описания без гонки пишутся
+    /// версией 2, чтобы их по-прежнему принимал и трей прошлой версии.
     /// </summary>
-    public const int CurrentVersion = 2;
+    public const int CurrentVersion = 3;
+
+    /// <summary>Версия описания без гонки агентов (её понимает и трей прошлой версии).</summary>
+    internal const int SingleAgentVersion = 2;
 
     /// <summary>Потолок размера JSON описания (задача ≤ 16 000 символов + списки путей).</summary>
     public const int MaxJsonChars = 256 * 1024;
@@ -28,7 +33,7 @@ internal sealed record BackgroundJobSpec
 
     /// <summary>Инструменты, задачи которых можно выполнять по описанию: только движок задач агента.</summary>
     internal static readonly IReadOnlySet<string> HostableTools =
-        new HashSet<string>(StringComparer.Ordinal) { McpToolNames.AgentTask, McpToolNames.Solve, McpToolNames.Refactor };
+        new HashSet<string>(StringComparer.Ordinal) { McpToolNames.AgentTask, McpToolNames.Solve, McpToolNames.Refactor, McpToolNames.Debug };
 
     public int Version { get; init; } = CurrentVersion;
     public string JobId { get; init; } = "";
@@ -49,6 +54,9 @@ internal sealed record BackgroundJobSpec
     public string? Preamble { get; init; }
     public string? ToolUseId { get; init; }
 
+    /// <summary>Гонка агентов: число кандидатов (1 — один агент; в описаниях до версии 3 поля нет — тоже 1).</summary>
+    public int Race { get; init; } = 1;
+
     /// <summary>
     /// Снимок окружения сессии IDE (белый список <see cref="CallerEnvironment"/>, без секретов): PATH, venv/conda, nvm, JAVA_HOME,
     /// переменные VsDevCmd и т.п. Исполнитель-трей запускает с ним проверочную команду и OpenCode. null — описание от старого MCP:
@@ -60,6 +68,7 @@ internal sealed record BackgroundJobSpec
 
     public static BackgroundJobSpec From(JobInfo job, AgentTaskRequest r, IReadOnlyList<string> roots) => new()
     {
+        Version = r.Race > 1 ? CurrentVersion : SingleAgentVersion,
         JobId = job.Id,
         Tool = r.Tool,
         Roots = [.. roots],
@@ -74,6 +83,7 @@ internal sealed record BackgroundJobSpec
         Review = r.Review,
         Preamble = r.Preamble,
         ToolUseId = job.ToolUseId,
+        Race = r.Race,
         Environment = CallerEnvironment.Capture(),
     };
 
@@ -91,6 +101,7 @@ internal sealed record BackgroundJobSpec
         Review = Review,
         Tool = Tool,
         Preamble = Preamble,
+        Race = Race,
     };
 
     public string ToJson() => JsonSerializer.Serialize(this, Json.Compact);

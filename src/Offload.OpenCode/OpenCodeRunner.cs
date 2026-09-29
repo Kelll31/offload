@@ -95,7 +95,7 @@ public static class OpenCodeRunner
             var before = await ChangeTracker.CaptureAsync(wd, ct);
 
             // 5. Запуск.
-            var run = await ExecuteAsync(cfg, exe, task, wd, readOnly, allowShell, timeout, options.LogPath, report, ct);
+            var run = await ExecuteAsync(cfg, exe, task, wd, readOnly, allowShell, readOnly ? null : options.Temperature, timeout, options.LogPath, report, ct);
 
             // 6. Изменённые файлы (и при таймауте/отмене — агент мог успеть что-то изменить).
             List<string> changed;
@@ -142,7 +142,7 @@ public static class OpenCodeRunner
     ];
 
     private static async Task<ExecOutcome> ExecuteAsync(AppConfig cfg, string exe, string task, string wd,
-        bool readOnly, bool allowShell, TimeSpan timeout, string? logPath, Action<string> report, CancellationToken ct)
+        bool readOnly, bool allowShell, double? temperature, TimeSpan timeout, string? logPath, Action<string> report, CancellationToken ct)
     {
         var events = new RunEvents(wd);
         var stderr = new TailBuffer(60);
@@ -173,8 +173,9 @@ public static class OpenCodeRunner
         // OpenCode берёт корень из PWD, если он задан (Git Bash наследует чужой PWD).
         psi.Environment["PWD"] = wd;
         psi.Environment["NO_COLOR"] = "1";
-        if (!readOnly && allowShell != cfg.OpenCode.AllowShellCommands)
-            psi.Environment["OPENCODE_CONFIG_CONTENT"] = OpenCodeConfigWriter.ShellOverrideContent(cfg, allowShell);
+        // Переопределения агента правки на этот запуск: оболочка из параметров задачи, температура кандидата гонки.
+        if (!readOnly && OpenCodeConfigWriter.RunOverrideContent(cfg, allowShell != cfg.OpenCode.AllowShellCommands ? allowShell : null, temperature) is { } overrides)
+            psi.Environment["OPENCODE_CONFIG_CONTENT"] = overrides;
 
         using var runLog = RunLog.Open(exe, psi, task, logPath);
         // Свой Job Object: при его закрытии завершаются и «внуки» (процессы, запущенные агентом через bash).

@@ -46,6 +46,15 @@ public sealed class SessionState
     /// <summary>Сессия MCP по HTTP: ответы elicitation может давать агент, а не человек (одноразовое разрешение команд отключено).</summary>
     internal bool IsHttpTransport { get; init; }
 
+    /// <summary>Счётчики кэша результатов модели за сессию (для local_status).</summary>
+    internal WorkCacheCounters WorkCache { get; } = new();
+
+    /// <summary>
+    /// Последняя неудачная проверка local_verify по «корень + команда» с понятной первопричиной — чтобы при переходе
+    /// FAILED → PASSED автоматическая память могла записать «грабли» (<see cref="AutoMemory"/>).
+    /// </summary>
+    internal System.Collections.Concurrent.ConcurrentDictionary<string, string> FailedVerifies { get; } = new(StringComparer.OrdinalIgnoreCase);
+
     public long SavedTokens => Interlocked.Read(ref _savedTokens);
     public int ModelCalls => Volatile.Read(ref _modelCalls);
 

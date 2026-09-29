@@ -81,6 +81,12 @@ public sealed record OpenCodeRunOptions(
     /// (раунды исправлений одной задачи). null — только общий logs\opencode-last-run.log, который пишется всегда.
     /// </summary>
     public string? LogPath { get; init; }
+
+    /// <summary>
+    /// Температура агента правки на этот запуск (гонка агентов: разные кандидаты — разная выборка). null — из настроек модели.
+    /// Передаётся через OPENCODE_CONFIG_CONTENT, управляемый конфиг не меняется.
+    /// </summary>
+    public double? Temperature { get; init; }
 }
 
 public sealed record OpenCodeRunResult(

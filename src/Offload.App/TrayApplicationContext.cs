@@ -67,6 +67,12 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
         Server = new ServerController(_ui);
         Server.StateChanged += (_, _) => OnServerStateChanged();
         Server.Notification += (title, text, icon) => Notify(title, text, icon, tab: ServerNotificationTab(icon));
+        // Автодополнение в IDE: свой сервер. Запуск откладывается, пока основной сервер запускается (или вот-вот запустится
+        // автоматически после старта Offload): размещение «Авто» основной модели считается по свободной видеопамяти.
+        var startedUtc = DateTime.UtcNow;
+        Autocomplete = new AutocompleteService(() => Server.IsBusy
+            || (ConfigStore.Current.Server.AutoStart && Server.State == ServerState.Stopped && DateTime.UtcNow - startedUtc < TimeSpan.FromMinutes(1)));
+        Autocomplete.Changed += () => PostToUi(() => _main?.NotifyServerStateChanged());
 
         _renderer = new TrayIconRenderer();
         _menu = new ContextMenuStrip { Renderer = MenuColors.Renderer(), ShowImageMargin = true };
@@ -161,6 +167,8 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
     }
 
     public ServerController Server { get; }
+
+    public AutocompleteService Autocomplete { get; }
 
     public HardwareCache Hardware { get; } = new();
 
@@ -288,7 +296,8 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
             try
             {
                 if (!await Server.StartAsync(manual: false).ConfigureAwait(false) && Server.State == ServerState.Failed)
-                    Notify(L.T("Сервер llama.cpp не запустился"), Server.LastError ?? L.T("Подробности — в журнале."), ToolTipIcon.Error, tab: Tabs.Log);
+                    Notify(cfg.IsRemote() ? L.T("Удалённый сервер недоступен") : L.T("Сервер llama.cpp не запустился"),
+                        Server.LastError ?? L.T("Подробности — в журнале."), ToolTipIcon.Error, tab: Tabs.Log);
             }
             catch (Exception ex)
             {
@@ -623,6 +632,7 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
         if (_disposed) return;
         Log.ApplyLevel(ConfigStore.Current.Ui.VerboseLog);
         Server.RefreshConfigured();
+        _ = Autocomplete.SyncAsync();
         UpdateTray();
         _main?.NotifyConfigChanged();
     }
@@ -701,6 +711,8 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
 
     private void OnServerStateChanged()
     {
+        // Отложенный запуск автодополнения — сразу, как только основной сервер запустился.
+        if (Autocomplete.Snapshot().Deferred) _ = Autocomplete.SyncAsync();
         UpdateTray();
         _main?.NotifyServerStateChanged();
     }
@@ -850,9 +862,10 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
                     return;
                 }
             }
-            var cfg = ConfigStore.Current;
-            var copied = Ui.TrySetClipboard(cfg.Server.ApiKey);
-            Ui.OpenShell(cfg.Server.BaseUrl);
+            // Клиентский режим — веб-чат удалённого сервера и его ключ (пользователь сам попросил открыть чат).
+            var ep = ConfigStore.Current.MainEndpoint();
+            var copied = Ui.TrySetClipboard(ep.ApiKey);
+            Ui.OpenShell(ep.BaseUrl);
             Notify(L.T("Веб-чат llama.cpp"),
                 copied
                     ? L.T("Ключ API скопирован в буфер обмена — вставьте его в настройках веб-чата, если страница попросит ключ.")
@@ -901,6 +914,7 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
             _renderer.Dispose();
             _header.Image?.Dispose();
             _menu.Dispose();
+            Autocomplete.Dispose();
             Server.Dispose();
             _marshal.Dispose();
         }

@@ -85,7 +85,7 @@ internal sealed class StatusPage : PageBase
             ActiveLinkColor = Theme.Accent,
             BackColor = Color.Transparent,
         };
-        _endpoint.LinkClicked += (_, _) => Ui.OpenShell(ConfigStore.Current.Server.BaseUrl);
+        _endpoint.LinkClicked += (_, _) => Ui.OpenShell(ConfigStore.Current.MainEndpoint().BaseUrl);
 
         _start = Kit.Primary(L.T("Запустить"), async (_, _) => await StartAsync());
         _stop = Kit.Button(L.T("Остановить"), async (_, _) => await RunBusyAsync(() => Shell.Server.StopAsync(), L.T("Не удалось остановить сервер")));
@@ -317,14 +317,17 @@ internal sealed class StatusPage : PageBase
         _dot.DotColor = Theme.StateColor(s);
         _state.Text = Texts.State(s);
         _dot.AccessibleName = L.F("Состояние сервера: {0}", _state.Text);
-        _model.Text = Texts.ModelName(cfg.ActiveModel()) + ModelSuffix(cfg.ActiveModel());
+        var ep = cfg.MainEndpoint();
+        _model.Text = ep.IsRemote
+            ? L.F("{0} на удалённом сервере {1}", ep.Model, ep.Host) + (server.RemoteLatency is { } lat ? L.F(" · задержка {0} мс", (int)Math.Round(lat.TotalMilliseconds)) : "")
+            : Texts.ModelName(cfg.ActiveModel()) + ModelSuffix(cfg.ActiveModel());
 
         var tag = cfg.Llama.InstalledTag;
         _backend.Text = string.IsNullOrWhiteSpace(tag)
             ? L.T("не установлена")
             : $"{Texts.Backend(cfg.Llama.InstalledBackend)} · {tag}";
 
-        _endpoint.Text = cfg.Server.OpenAiBaseUrl;
+        _endpoint.Text = ep.OpenAiBaseUrl;
         _context.Text = ContextText(cfg);
         _uptime.Text = server.Uptime is TimeSpan up ? FileUtil.FormatDuration(up) : "—";
         _tools.Text = _props?.SupportsToolCalls switch

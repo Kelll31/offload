@@ -38,11 +38,23 @@ Planning, architecture, hard debugging and the final review stay with Claude —
 - **Main model — Qwen3.8-27B** (best code quality among local models): Q6 for 32+ GB VRAM, Q4 for 24 GB, IQ3 for 16 GB. For weaker cards, the wizard suggests fast MoE models (Qwen3.6-35B-A3B, Ornith) and 9B models.
 - **Catalog of current models** (Qwen3.8/3.6/3.5, Ornith, gpt-oss, Qwen3-Coder-Next, Devstral, and others) with exact files, SHA-256 checksums and a "will it fit in VRAM" estimate. MoE models automatically offload part of the experts to RAM — a 35B model runs even on 8-12 GB of VRAM.
 - **Resumable download** with checksum verification; you can also add your own GGUF file.
+- **Any model from Hugging Face** — "Models" → "Find on Hugging Face…": search GGUF repos, see quants with size and a "will it
+  fit" estimate (the GGUF header is read partially, without downloading the model) and a recommended quant; the revision is
+  pinned and files are verified by SHA-256. Such models are marked "not verified by the maintainer".
 - **llama-server managed by the tray app**: autostart, restart on failure, model unload when idle, log, VRAM status.
+- **Auto-tuning** ("Server" → "Auto-tune parameters"): Offload restarts llama-server with different `-ub/-b`, flash attention,
+  KV cache type, MoE expert offload and MTP, measures speed and saves the fastest set per model × hardware. Context is never
+  reduced; on cancel or failure the previous parameters are restored.
+- **Multiple GPUs**: the model is split across all suitable cards of one backend (`--tensor-split` by free VRAM, `--main-gpu` —
+  the largest card); integrated graphics and cards under 2 GB are skipped. You can keep only the primary card.
+- **Autocomplete in the IDE** ("local Copilot"): a separate FIM server with a small coder model (Qwen2.5-Coder 1.5B/3B) on
+  `127.0.0.1:8012` for the llama.vscode extension and Continue (the Continue autocomplete block is written automatically).
+- **Remote server**: a laptop can use the model running on a powerful PC with Offload ("Settings" → "Network access" on the PC,
+  "Remote server" on the laptop). Traffic is plain HTTP — use a trusted network or a VPN (Tailscale, WireGuard) or `ssh -L`.
 - **OpenCode** is installed and configured automatically to use the local model — for multi-step agent edits.
 - **One-click IDE connection**: Claude Code, Claude Desktop, Cursor, VS Code (Copilot), Copilot CLI, Windsurf/Devin, Cline, Roo Code, Kilo Code, Zed, Gemini CLI, OpenAI Codex, JetBrains Junie, Continue, Visual Studio, Kiro, Trae, Qoder. Configs are edited carefully (with a backup and comments preserved).
 - **For Claude Code** additionally: a skill with delegation rules, an optional "strict" rule, a subagent, and permissions for read tools without confirmation.
-- **Security**: the server listens only on `127.0.0.1` with an API key; MCP tools don't read secrets (`.env`, keys, certificates), only write inside the working folder, check commands come only from an allowlist; any edit can be rolled back.
+- **Security**: the server listens only on `127.0.0.1` with an API key (network access only when explicitly enabled, with a separate key); MCP tools don't read secrets (`.env`, keys, certificates), only write inside the working folder, check commands come only from an allowlist; any edit can be rolled back.
 - The tray interface and all windows are **in Russian or English** (switches on the fly), light/dark theme, ready-made color schemes and a custom accent color.
 
 ### App settings
@@ -58,7 +70,7 @@ The **"Settings"** section of the main window (or "Settings…" in the tray icon
 
 ## MCP tools
 
-24 tools in five groups. Anything that can be done deterministically (search, symbols, diagnostics, scanners, patches) the server
+26 tools in five groups. Anything that can be done deterministically (search, symbols, diagnostics, scanners, patches) the server
 does itself, without the model and in seconds; the local model kicks in where "judgment" is needed: answering questions about files, expanding a query,
 review, plans, log analysis, writing code.
 
@@ -86,12 +98,14 @@ review, plans, log analysis, writing code.
 | `local_review_diff` | First-pass review of a `git diff` / branch | no |
 | `local_security_review` | Security check of only the changed code: rules + model review | no |
 | `local_dependency_check` | Packages: list, graph and "why A depends on B", licenses (offline), unused, outdated and vulnerable (via registries) | no |
+| `local_pr_ready` | Branch readiness for a PR in one call: verdict **READY / READY WITH WARNINGS / NOT READY** and blockers first, then details — ahead/behind the base, conflicts (`git merge-tree`, the working tree is untouched), related and full tests, secrets, hygiene of added lines, model review, PR draft | no (except build artifacts) |
 
 **Writing code** — all with a snapshot for rollback (`local_job action=revert`):
 
 | Tool | What it does | Modifies files |
 |---|---|---|
 | `local_solve` | The whole cycle in one call: context → brief to the agent by task type (feature / bug / refactor / tests / issue) → edits in a git sandbox → check with fixes → review → merge → **proof of the result** (files, check, diagnostics, review findings, open questions) | yes (after checking) |
+| `local_debug` | Debugging in one call: reproduce with a command → errors and stack frames → code and change history → root-cause hypothesis and suspect commit → fix by the agent in a git sandbox (merged only if the command passes) → re-run and related tests; `fix=false` — diagnosis only | yes (after checking; `fix=false` — no) |
 | `local_agent_task` | A task for the local OpenCode agent in a **git sandbox** with an "autonomy budget" (`allowed_paths`, `max_files`, time, fix rounds, review before merge); can run in the background | yes (after checking) |
 | `local_apply_patch` | Unified diff applied atomically: all hunks are verified upfront (resilient to line shifts and CRLF), encoding is preserved, check and auto-rollback | yes |
 | `local_refactor` | `rename` a symbol across all references (including renaming the file, conflict checking and auto-rollback); `extract_method` / `extract_class` / `move_symbol` / `inline` / `change_signature` — via the agent in a sandbox | yes |
@@ -125,6 +139,13 @@ outside the working folder (and outside `allowed_paths`) are not carried over fr
 `max_files` files were changed, or the local model's review found critical/high issues — then the work waits for a decision on the branch
 (`local_job action=diff` → `merge` / `discard`).
 
+**Agent race** (`race=2…4` on `local_agent_task` and `local_solve`, a check command is required): several agents solve the same task
+independently, each in its own sandbox from one snapshot and with its own strategy (minimal change; root cause + regression test;
+clean solution; fewest files). Candidates that pass the check within the budget are ranked (review findings, fix rounds, diff size),
+a local judge model compares the two closest; the winner is merged, the other sandboxes are removed and their diffs stay available as
+`offload://jobs/<id>/race/<letter>`. No more candidates run at once than the model server has agent slots (`Parallel − 1`; one at a
+time with a single slot); OpenCode runs themselves go one by one.
+
 ### How search and navigation work
 
 The code index is built on the fly (respecting `.gitignore`, excluding secrets and binary files) and cached in the MCP server process by
@@ -132,6 +153,18 @@ file size and modification time, so repeated calls within a session are fast. Sy
 expressions + bracket counting, indentation for Python) for C#, TypeScript/JavaScript, Python, Go, Java, Kotlin, Rust, C/C++, Pascal/Delphi,
 PHP, Ruby and Swift — without a compiler or language server. References and the call graph are text-based: same-named members of different types aren't distinguished,
 so results are worth double-checking before important decisions (the tools say so directly).
+
+### Result cache and project memory
+
+- **Model work cache.** Answers of `local_ask_files`, `local_review_diff`, `local_summarize_log`, `local_commit_message` and the
+  model steps of `local_find_context` are stored under a key made of hashes of all inputs (file contents, diff, log), the model and
+  its parameters. Asking again about unchanged code returns instantly, marked "cached · inputs unchanged since …"; any file edit is a
+  miss. With an embedding model, rephrased questions also hit (similarity ≥ 0.93; numbers, identifiers and negations must match).
+  SQLite in the data folder, per project; 50 MB and 14 days by default; bypass with `fresh=true`, turn off with the checkbox in the "Prompt" section.
+- **Automatic memory.** After an agent task that passed its check only after fixes, the local model saves 0–2 non-obvious lessons to
+  `local_memory`; a `local_verify` command going from FAILED to PASSED because of the environment (NuGet, SDK, a locked file or busy
+  port) is remembered too. Entries are tagged `auto` (at most 200, duplicates dropped, never secrets), and relevant notes are added
+  to the local agent's task automatically.
 
 ### Slash commands (MCP prompts)
 

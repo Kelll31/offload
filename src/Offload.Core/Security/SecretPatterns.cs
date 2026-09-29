@@ -38,11 +38,18 @@ public static class SecretPatterns
     /// <summary>Hugging Face user access token (hf_ + 34 символа).</summary>
     public static readonly Regex HuggingFaceToken = new(@"\bhf_[A-Za-z0-9]{30,}\b", O);
 
+    /// <summary>Локальный ключ API llama-server Offload (ConfigStore: «pc-» + 24 случайных байта в hex).</summary>
+    public static readonly Regex OffloadLocalKey = new(@"\bpc-[0-9a-f]{48}\b", O);
+
+    /// <summary>Сетевой ключ режима «Доступ из сети» (LanServer.NewLanApiKey: «olan-» + 32 случайных байта в hex).</summary>
+    public static readonly Regex OffloadLanKey = new(@"\bolan-[0-9a-f]{64}\b", O);
+
     /// <summary>Токены, которые заменяются целиком (вид → выражение).</summary>
     public static IReadOnlyList<(string Kind, Regex Regex)> WholeTokens { get; } =
     [
         ("aws-key", AwsKey), ("github-token", GitHubToken), ("slack-token", SlackToken), ("google-key", GoogleKey),
         ("openai-key", OpenAiKey), ("stripe-key", StripeKey), ("npm-token", NpmToken), ("hf-token", HuggingFaceToken), ("jwt", Jwt),
+        ("offload-key", OffloadLocalKey), ("offload-lan-key", OffloadLanKey),
     ];
 
     /// <summary>
@@ -51,7 +58,7 @@ public static class SecretPatterns
     /// </summary>
     public static readonly Regex LooseTokenPrefixes = new(
         @"\b(?:sk-[A-Za-z0-9_\-]{8,}|(?:sk|rk)_live_[A-Za-z0-9]{8,}|hf_[A-Za-z0-9]{8,}|gh[pousr]_[A-Za-z0-9]{8,}|github_pat_[A-Za-z0-9_]{8,}" +
-        @"|xox[abposr]-[A-Za-z0-9\-]{8,}|(?:AKIA|ASIA)[A-Z0-9]{12,}|AIza[0-9A-Za-z_\-]{20,}|npm_[A-Za-z0-9]{20,}" +
+        @"|xox[abposr]-[A-Za-z0-9\-]{8,}|(?:AKIA|ASIA)[A-Z0-9]{12,}|AIza[0-9A-Za-z_\-]{20,}|npm_[A-Za-z0-9]{20,}|pc-[0-9a-f]{24,}|olan-[0-9a-f]{24,}" +
         @"|eyJ[A-Za-z0-9_-]{10,}\.eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{4,})", O);
 
     /// <summary>Значение похоже на токен (строгие форматы или нестрогие префиксы).</summary>

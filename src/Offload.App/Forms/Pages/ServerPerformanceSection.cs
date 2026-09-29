@@ -1,6 +1,7 @@
 using Offload.App.Services;
 using Offload.App.Util;
 using Offload.Core.Config;
+using Offload.Core.Hardware;
 using Offload.Core.Logging;
 using Offload.Llama;
 using Offload.Models;
@@ -28,11 +29,20 @@ internal sealed class ServerPerformanceSection
     private readonly Label _bench = Kit.Wrap("");
     private readonly Label _benchDetails = Kit.Hint("");
     private readonly Button _measure;
+    private readonly Label _gpus = Kit.Wrap("");
+    private readonly Button _tune;
+    private readonly Button _tuneCancel;
+    private readonly Button _tuneReset;
+    private readonly Label _tuneStatus = Kit.Wrap("");
+    private readonly Label _tuneDetails = Kit.Hint("");
 
     private PerformanceSnapshot? _snapshot;
     private int _version;
     private bool _measuring;
     private bool _pageBusy;
+    private CancellationTokenSource? _tuneCts;
+    /// <summary>Итог последнего автоподбора в этом окне (null — показывать сохранённый профиль).</summary>
+    private (string Text, Color Color)? _tuneOutcome;
 
     /// <param name="host">Страница: владелец диалогов и признак IsDisposed.</param>
     /// <param name="applyParallel">Подставить число слотов в настройки страницы (и сохранить, если других правок нет).</param>
@@ -49,6 +59,12 @@ internal sealed class ServerPerformanceSection
         _applySlots = Kit.Button(L.T("Применить"), async (_, _) => await ApplySlotsAsync());
         _applySlots.Visible = false;
         _measure = Kit.Button(L.T("Измерить скорость"), async (_, _) => await MeasureAsync(), 150);
+        _gpus.Visible = false;
+        _tune = Kit.Button(L.T("Автоподбор параметров"), async (_, _) => await TuneAsync(), 170);
+        _tuneCancel = Kit.Button(L.T("Отменить"), (_, _) => _tuneCts?.Cancel());
+        _tuneCancel.Visible = false;
+        _tuneReset = Kit.Button(L.T("Сбросить подбор"), async (_, _) => await ResetTuneAsync(), 130);
+        _tuneReset.Visible = false;
     }
 
     /// <summary>Добавить блок строками в таблицу страницы.</summary>
@@ -57,6 +73,7 @@ internal sealed class ServerPerformanceSection
         root.AddRow(Kit.Section(L.T("Слоты и производительность")));
         root.AddRow(_fit);
         root.AddRow(_mode);
+        root.AddRow(_gpus);
         root.AddRow(_vramWarning);
         var slotsRow = Kit.Table(100, 0);
         slotsRow.AddRow(_slots, _applySlots);
@@ -65,15 +82,28 @@ internal sealed class ServerPerformanceSection
         root.AddRow(Kit.Flow(_measure));
         root.AddRow(_bench);
         root.AddRow(_benchDetails);
+        var tuneRow = Kit.Flow(_tune, _tuneCancel, _tuneReset);
+        tuneRow.Margin = new Padding(0, 8, 0, 0);
+        root.AddRow(tuneRow);
+        root.AddRow(Kit.Hint(L.T("Автоподбор перебирает --n-cpu-moe, -ub/-b, flash attention, тип KV-кэша, а при нескольких видеокартах и MTP — ещё их режимы. Для каждой пробы сервер перезапускается, всё займёт до 20 минут; контекст не уменьшается. Лучший набор сохраняется для этой модели и этого компьютера и применяется при запуске; флаги из «Доп. аргументов» важнее.")));
+        root.AddRow(_tuneStatus);
+        root.AddRow(_tuneDetails);
         ShowBenchmark(ConfigStore.Current);
     }
 
     public void UpdateUiState(bool pageBusy)
     {
         _pageBusy = pageBusy;
-        var running = _shell.Server.State == ServerState.Running;
-        _measure.Enabled = running && !pageBusy && !_measuring;
+        var state = _shell.Server.State;
+        var tuning = _tuneCts is not null;
+        // Удалённый сервер: замер попал бы под id локальной модели, а автоподбор перезапускает свой процесс — оба недоступны.
+        var local = !ConfigStore.Current.IsRemote();
+        _measure.Enabled = local && state == ServerState.Running && !pageBusy && !_measuring && !tuning;
         _applySlots.Enabled = !pageBusy;
+        _tune.Enabled = local && state is ServerState.Running or ServerState.Stopped or ServerState.Failed && !pageBusy && !_measuring && !tuning;
+        _tuneCancel.Visible = tuning;
+        _tuneCancel.Enabled = tuning;
+        _tuneReset.Enabled = !pageBusy && !tuning;
     }
 
     /// <summary>Пересчитать оценку (в фоне; устаревшие результаты отбрасываются).</summary>
@@ -86,8 +116,9 @@ internal sealed class ServerPerformanceSection
         try
         {
             var hw = await _shell.Hardware.GetAsync();
-            var pid = _shell.Server.State is ServerState.Running or ServerState.Starting ? _shell.Server.ProcessId : null;
-            var snapshot = await ServerAutoPlacement.SnapshotAsync(hw, cfg, pid);
+            var running = _shell.Server.State is ServerState.Running or ServerState.Starting;
+            var pid = running ? _shell.Server.ProcessId : null;
+            var snapshot = await ServerAutoPlacement.SnapshotAsync(hw, cfg, pid, running ? _shell.Server.Plan?.Split : null);
             if (version != _version || _host.IsDisposed) return;
             Show(snapshot, cfg.Server);
         }
@@ -108,12 +139,21 @@ internal sealed class ServerPerformanceSection
             _vramWarning.Visible = false;
             _slots.Text = "";
             _applySlots.Visible = false;
+            _gpus.Visible = false;
+            ShowTune(null);
             return;
         }
 
         _fit.Text = $"{Texts.FitGlyph(s.Fit.Level)} {s.Fit.Explanation}";
         _fit.ForeColor = Texts.FitColor(s.Fit.Level);
         _mode.Text = ModeText(s, settings);
+        _gpus.Visible = s.Split is not null;
+        if (s.Split is { } split)
+            _gpus.Text = split.IsMulti
+                ? L.F("Видеокарты: {0} — модель делится между ними (--tensor-split), основная — {1}.", split.Describe(),
+                    GpuSplit.ShortName(split.Devices[Math.Clamp(split.MainIndex, 0, split.Devices.Count - 1)].Description))
+                : L.F("Видеокарта: используется только {0} (--device {1}).", split.Describe(), split.DeviceArg);
+        ShowTune(s);
 
         _vramWarning.Visible = s.Usage is { OthersSignificant: true };
         if (_vramWarning.Visible)
@@ -154,6 +194,130 @@ internal sealed class ServerPerformanceSection
         if (_snapshot is not { } s) return;
         await _applyParallel(s.Slots.Recommended);
     }
+
+    // ---------- Автоподбор параметров ----------
+
+    private async Task TuneAsync()
+    {
+        if (_tuneCts is not null || ConfigStore.Current.ActiveModel() is null) return;
+        if (!Ui.Confirm(_host.FindForm(), L.T("Автоподбор несколько раз перезапустит сервер с разными параметрами и замерит скорость — это займёт до 20 минут. Запросы из IDE в это время могут ждать или искажать замер. Начать?")))
+            return;
+
+        using var cts = new CancellationTokenSource();
+        _tuneCts = cts;
+        _tuneOutcome = null;
+        _tuneStatus.ForeColor = Theme.TextMuted;
+        _tuneStatus.Text = L.T("Подготовка автоподбора…");
+        _tuneDetails.Text = "";
+        UpdateUiState(_pageBusy);
+        AutoTuneOutcome? outcome = null;
+        var progress = new Progress<AutoTuneProgress>(p =>
+        {
+            if (_host.IsDisposed || _tuneCts is null) return;
+            _tuneStatus.Text = p.Confirming
+                ? L.F("Проба {0} из {1} — повторный замер лучшего набора: {2}", p.Trial, p.MaxTrials, p.Candidate.Describe())
+                : L.F("Проба {0} из {1}: {2}", p.Trial, p.MaxTrials, p.Candidate.Describe());
+        });
+        try
+        {
+            await _runBusy(async () => outcome = await _shell.Server.AutoTuneAsync(progress, cts.Token),
+                L.T("Автоподбор не выполнен"), [_tune, _measure]);
+        }
+        finally
+        {
+            _tuneCts = null;
+            if (!_host.IsDisposed)
+            {
+                _tuneOutcome = outcome is null ? null : DescribeOutcome(outcome);
+                ShowTune(_snapshot);
+                UpdateUiState(_pageBusy);
+                _ = RefreshAsync();
+            }
+        }
+    }
+
+    private (string Text, Color Color) DescribeOutcome(AutoTuneOutcome o)
+    {
+        var r = o.Result;
+        (string Text, Color Color) result;
+        if (o.Cancelled)
+            result = (L.T("Автоподбор отменён — сервер запущен с прежними параметрами."), Theme.TextMuted);
+        else if (o.Error is { } error)
+            result = (L.F("Автоподбор прерван ошибкой: {0}. Сервер запущен с прежними параметрами.", Ui.FriendlyError(error)), Theme.WarnText);
+        else if (r?.BaselineError is { } baseError)
+            result = (L.F("Сервер не запустился с текущими параметрами, подбирать не от чего: {0}", baseError), Theme.WarnText);
+        else if (o.Applied && r is { Winner: { } winner })
+            result = (L.F("Готово: типичный запрос ≈{0} с → ≈{1} с, быстрее на {2} %. Параметры: {3}",
+                Sec(r.BaselineSeconds ?? 0), Sec(r.WinnerSeconds ?? 0), Pct(r.Gain), winner.Describe()), Theme.OkText);
+        else if (r is { Winner: not null })
+            result = (L.T("Лучший набор не запустился повторно — оставлены прежние параметры."), Theme.WarnText);
+        else
+            result = (L.F("Текущие параметры уже близки к лучшим: ни один вариант не оказался быстрее хотя бы на 3 % ({0}).",
+                Ui.Plural(r?.Trials.Count ?? 0, "проба", "пробы", "проб")), Theme.TextPrimary);
+        if (!o.Restored)
+            result = (result.Text + " " + L.F("Сервер не запустился: {0}", _shell.Server.LastError ?? L.T("подробности в журнале llama-server.")), Theme.ErrorText);
+        return result;
+    }
+
+    /// <summary>Итог последнего подбора и сохранённый профиль для активной модели на этом компьютере.</summary>
+    private void ShowTune(PerformanceSnapshot? s)
+    {
+        if (_tuneCts is not null) return;
+        _tuneReset.Visible = s?.Tuned is not null;
+        if (_tuneOutcome is { } outcome)
+        {
+            _tuneStatus.ForeColor = outcome.Color;
+            _tuneStatus.Text = outcome.Text;
+        }
+        else
+        {
+            _tuneStatus.Text = "";
+        }
+
+        if (s?.Tuned is not { } p)
+        {
+            _tuneDetails.Text = s is null ? "" : L.T("Для этой модели на этом компьютере автоподбор ещё не выполнялся.");
+            return;
+        }
+        var gain = p.BaselineSeconds > 0 ? 1 - p.TunedSeconds / p.BaselineSeconds : 0;
+        _tuneDetails.Text = s.TunedCurrent
+            ? L.F("Подобрано {0}: {1} — типичный запрос ≈{2} → ≈{3} с (быстрее на {4} %), применяется при запуске.",
+                p.TunedAtUtc.ToLocalTime().ToString("g", L.Culture), LlamaAutoTune.Describe(p), Sec(p.BaselineSeconds), Sec(p.TunedSeconds), Pct(gain))
+            : L.T("Подобранные параметры не применяются: настройки сервера изменились после подбора. Повторите автоподбор.");
+    }
+
+    private async Task ResetTuneAsync()
+    {
+        if (_tuneCts is not null || ConfigStore.Current.ActiveModel() is not { } model) return;
+        var owner = _host.FindForm();
+        string key;
+        try
+        {
+            key = await ServerAutoPlacement.HardwareKeyAsync();
+        }
+        catch (Exception ex)
+        {
+            Ui.ShowError(owner, L.T("Не удалось сбросить подобранные параметры"), ex);
+            return;
+        }
+        if (!Ui.RunSafe(owner, () => LlamaAutoTune.RemoveProfile(model.Id, key), L.T("Не удалось сбросить подобранные параметры"))) return;
+        _tuneOutcome = null;
+        _shell.ConfigChanged();
+        if (_shell.Server.State == ServerState.Running
+            && Ui.Confirm(owner, L.T("Подобранные параметры сброшены. Перезапустить сервер, чтобы вернуться к обычным параметрам?")))
+        {
+            await _runBusy(async () =>
+            {
+                if (!await _shell.Server.RestartAsync())
+                    Ui.ShowError(owner, L.T("Сервер не запустился"), _shell.Server.LastError ?? "");
+            }, L.T("Не удалось перезапустить сервер"), [_tuneReset]);
+        }
+        if (!_host.IsDisposed) _ = RefreshAsync();
+    }
+
+    private static string Sec(double seconds) => seconds.ToString(seconds >= 10 ? "0" : "0.0", L.Culture);
+
+    private static string Pct(double gain) => Math.Round(Math.Max(0, gain) * 100).ToString("0", L.Culture);
 
     // ---------- Замер скорости ----------
 

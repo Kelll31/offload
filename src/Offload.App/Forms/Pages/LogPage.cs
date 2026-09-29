@@ -21,11 +21,11 @@ internal sealed class LogPage : PageBase
     private const int TailBytes = 1024 * 1024;
     private const byte NewLine = (byte)'\n';
 
-    private enum Source { App, LlamaServer, Mcp, Fast, Embed, Rerank }
+    private enum Source { App, LlamaServer, Mcp, Fast, Embed, Rerank, Fim }
 
     /// <summary>Источники вспомогательных серверов ролей (показываются, только если их журнал существует).</summary>
     private static readonly (Source Source, ModelRole Role)[] AuxSources =
-        [(Source.Fast, ModelRole.Fast), (Source.Embed, ModelRole.Embed), (Source.Rerank, ModelRole.Rerank)];
+        [(Source.Fast, ModelRole.Fast), (Source.Embed, ModelRole.Embed), (Source.Rerank, ModelRole.Rerank), (Source.Fim, ModelRole.Fim)];
 
     private enum Level { Debug, Info, Warn, Error }
 
@@ -151,10 +151,11 @@ internal sealed class LogPage : PageBase
         Source.Fast => AuxServerArgs.LogFilePath(ModelRole.Fast),
         Source.Embed => AuxServerArgs.LogFilePath(ModelRole.Embed),
         Source.Rerank => AuxServerArgs.LogFilePath(ModelRole.Rerank),
+        Source.Fim => AuxServerArgs.LogFilePath(ModelRole.Fim),
         _ => Path.Combine(AppPaths.LogsDir, "mcp.log"),
     };
 
-    private static bool IsLlama(Source s) => s is Source.LlamaServer or Source.Fast or Source.Embed or Source.Rerank;
+    private static bool IsLlama(Source s) => s is Source.LlamaServer or Source.Fast or Source.Embed or Source.Rerank or Source.Fim;
 
     protected override void OnActivated()
     {
@@ -201,6 +202,7 @@ internal sealed class LogPage : PageBase
         Source.Fast => "llama-server · fast",
         Source.Embed => "llama-server · embed",
         Source.Rerank => "llama-server · rerank",
+        Source.Fim => "llama-server · fim",
         _ => "MCP",
     };
 

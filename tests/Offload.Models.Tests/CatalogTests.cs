@@ -11,7 +11,7 @@ public class CatalogTests
     public void All_LoadsSortedAndUnique()
     {
         var all = ModelCatalog.All;
-        Assert.InRange(all.Count, 12, 16);
+        Assert.InRange(all.Count, 12, 18);
         Assert.Equal(all.Count, all.Select(m => m.Id).Distinct(StringComparer.OrdinalIgnoreCase).Count());
         Assert.Equal(all.OrderBy(m => m.Priority).Select(m => m.Id), all.Select(m => m.Id));
         Assert.Same(all, ModelCatalog.All); // ленивый кэш

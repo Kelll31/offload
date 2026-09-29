@@ -6,6 +6,9 @@ namespace Offload.Mcp.Tools;
 /// <summary>local_commit_message: сообщение коммита по diff, прочитанному сервером.</summary>
 internal static class CommitMessageTool
 {
+    /// <summary>Версия шаблона промпта для ключа кэша результатов (менять при правке промптов ниже).</summary>
+    private const string CacheOp = "commit_message/1";
+
     public static async Task<string> RunAsync(ToolContext ctx, string? source, string? style, string? language, string? workingDirectory, string? kind = "commit")
     {
         var k = (kind ?? "commit").Trim().ToLowerInvariant();
@@ -26,8 +29,17 @@ internal static class CommitMessageTool
                 : "No changes found for source=" + src + ".";
         }
 
+        // Тот же diff (по содержимому) с теми же параметрами — готовый текст без запуска модели.
+        var cacheKey = new WorkCacheKey(CacheOp).Arg("kind", k).Arg("conventional", conventional).Arg("lang", lang).Diff(set);
+        if (await WorkCache.TryGetAsync(ctx, cacheKey).ConfigureAwait(false) is { } cached) return cached;
+
         var model = await ctx.GetModelAsync().ConfigureAwait(false);
-        if (k != "commit") return await DescribeAsync(ctx, model, set, k, lang).ConfigureAwait(false);
+        if (k != "commit")
+        {
+            var described = await DescribeAsync(ctx, model, set, k, lang).ConfigureAwait(false);
+            WorkCache.Put(ctx, cacheKey, described);
+            return described;
+        }
         var rules = "Write a git commit message for the diff. Output ONLY the message, nothing else (no quotes, no code fences, no explanations).\n" +
                     "Line 1: the subject, at most 72 characters, imperative mood" +
                     (conventional ? ", format 'type(scope): subject' with type one of feat, fix, refactor, perf, docs, test, build, ci, chore, style" : "") + ".\n" +
@@ -60,11 +72,12 @@ internal static class CommitMessageTool
         var reply = await model.ChatAsync(system, summary + diff.ToString(), 400, "writing commit message", ctx.Ct).ConfigureAwait(false);
         var msg = Clean(reply.Text);
         if (msg.Length == 0) throw new ToolException("The local model returned an empty commit message; write it yourself.");
+        WorkCache.Put(ctx, cacheKey, msg);
         return msg;
     }
 
     /// <summary>kind=pr — заголовок и описание PR; kind=split — как разбить изменения на отдельные коммиты.</summary>
-    private static async Task<string> DescribeAsync(ToolContext ctx, LocalModel model, DiffSet set, string kind, string lang)
+    internal static async Task<string> DescribeAsync(ToolContext ctx, LocalModel model, DiffSet set, string kind, string lang)
     {
         var rules = kind == "pr"
             ? "Write a pull request title and description for the diff. Format:\nTitle: <max 72 chars>\n\n## Summary\n<2-4 sentences: what and why>\n\n" +

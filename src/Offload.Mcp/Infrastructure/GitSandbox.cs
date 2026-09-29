@@ -105,18 +105,22 @@ internal static class GitSandbox
 
     // ───────────────────────── создание ─────────────────────────
 
-    /// <summary>Снимок рабочего дерева проекта и worktree на новой ветке. jobDir — папка задачи (для временного индекса).</summary>
+    /// <summary>
+    /// Снимок рабочего дерева проекта и worktree на новой ветке. jobDir — папка задачи (для временного индекса).
+    /// candidate — буква кандидата гонки агентов (a…d): ветка offload/&lt;job&gt;-a и папка &lt;job&gt;-a; null — обычная задача.
+    /// </summary>
     public static async Task<SandboxInfo> CreateAsync(string projectRoot, string jobId, string jobDir, IEnumerable<string>? secretPatterns,
-        CancellationToken ct)
+        CancellationToken ct, char? candidate = null)
     {
         if (Git.Executable is null) throw new ToolException("The git sandbox needs git: install Git for Windows and restart the IDE.");
         if (!JobStore.IsValidId(jobId)) throw new ArgumentException("Некорректный id задачи", nameof(jobId));
         projectRoot = PathGuard.TrimTrailingSeparator(System.IO.Path.GetFullPath(projectRoot));
 
+        var name = SandboxName(jobId, candidate);
         var s = new SandboxInfo
         {
-            Branch = BranchPrefix + jobId,
-            WorktreeDir = System.IO.Path.Combine(SandboxesDir, jobId),
+            Branch = BranchPrefix + name,
+            WorktreeDir = System.IO.Path.Combine(SandboxesDir, name),
         };
 
         var repoRoot = Git.FindWorkTreeRoot(projectRoot);
@@ -141,7 +145,49 @@ internal static class GitSandbox
         s.SubDir = sub == "." || sub.StartsWith("..", StringComparison.Ordinal) || System.IO.Path.IsPathRooted(sub) ? "" : sub;
 
         await SnapshotAsync(s, jobDir, secretPatterns, ct).ConfigureAwait(false);
+        await AddWorktreeAsync(s, projectRoot, ct).ConfigureAwait(false);
+        return s;
+    }
 
+    /// <summary>
+    /// Ещё одна песочница от того же снимка (гонка агентов): тот же базовый коммит, репозиторий и подпапка, что у
+    /// <paramref name="source"/>, своя ветка offload/&lt;job&gt;-&lt;candidate&gt; и своя папка. Снимок заново не делается —
+    /// все кандидаты начинают с одинакового состояния, даже если пользователь тем временем правит файлы.
+    /// </summary>
+    public static async Task<SandboxInfo> CreateFromAsync(SandboxInfo source, string jobId, char candidate, CancellationToken ct)
+    {
+        if (!JobStore.IsValidId(jobId)) throw new ArgumentException("Некорректный id задачи", nameof(jobId));
+        var name = SandboxName(jobId, candidate);
+        var s = new SandboxInfo
+        {
+            RepoRoot = source.RepoRoot,
+            ShadowGitDir = source.ShadowGitDir,
+            SubDir = source.SubDir,
+            BaseCommit = source.BaseCommit,
+            BaseIsHead = source.BaseIsHead,
+            OriginalHead = source.OriginalHead,
+            Branch = BranchPrefix + name,
+            WorktreeDir = System.IO.Path.Combine(SandboxesDir, name),
+        };
+        var projectRoot = s.SubDir.Length == 0 ? s.RepoRoot : System.IO.Path.Combine(s.RepoRoot, s.SubDir);
+        await AddWorktreeAsync(s, projectRoot, ct).ConfigureAwait(false);
+        return s;
+    }
+
+    /// <summary>Имя ветки/папки песочницы: id задачи или «id-буква» у кандидата гонки агентов.</summary>
+    internal static string SandboxName(string jobId, char? candidate)
+    {
+        if (candidate is null) return jobId;
+        if (candidate is not (>= 'a' and <= 'z')) throw new ArgumentOutOfRangeException(nameof(candidate));
+        return $"{jobId}-{candidate}";
+    }
+
+    /// <summary>Id задачи по имени папки песочницы: «id» или «id-буква» (кандидат гонки агентов).</summary>
+    internal static string OwnerJobId(string name) =>
+        name.Length > 2 && name[^2] == '-' && name[^1] is >= 'a' and <= 'z' && JobStore.IsValidId(name[..^2]) ? name[..^2] : name;
+
+    private static async Task AddWorktreeAsync(SandboxInfo s, string projectRoot, CancellationToken ct)
+    {
         Directory.CreateDirectory(SandboxesDir);
         if (Directory.Exists(s.WorktreeDir)) FileUtil.TryDeleteDirectory(s.WorktreeDir);
         Ensure(await RepoGitAsync(s, ["worktree", "add", "-q", "-b", s.Branch, s.WorktreeDir, s.BaseCommit], ct,
@@ -152,7 +198,6 @@ internal static class GitSandbox
         LinkDependencies(s, projectRoot);
         Log.Info("mcp", $"Песочница {s.Branch}: {s.WorktreeDir} (снимок {Short(s.BaseCommit)}{(s.ShadowGitDir is null ? "" : ", теневой репозиторий")}" +
                         $"{(s.LinkedDirs.Count > 0 ? ", зависимости: " + string.Join(", ", s.LinkedDirs) : "")})");
-        return s;
     }
 
     /// <summary>Папки зависимостей, без которых не проходят проверки (git их игнорирует и в worktree не копирует).</summary>
@@ -422,6 +467,13 @@ internal static class GitSandbox
     /// <summary>Удалить worktree и (по желанию) ветку. Ошибки только журналируются.</summary>
     public static async Task RemoveAsync(SandboxInfo s, bool deleteBranch, CancellationToken ct)
     {
+        // Сведения о песочнице читаются из job.json (его можно подменить): удаляется только своя папка в SandboxesDir и своя ветка.
+        if (!IsOwnWorktreeDir(s.WorktreeDir))
+        {
+            Log.Warn("mcp", $"Песочница {s.Branch} не удалена: папка {s.WorktreeDir} вне {SandboxesDir}");
+            return;
+        }
+        deleteBranch &= s.Branch.StartsWith(BranchPrefix, StringComparison.Ordinal) && Git.IsSafeRevision(s.Branch);
         try
         {
             // Сначала снимаем junction: удаление worktree не должно зайти внутрь node_modules проекта.
@@ -439,6 +491,27 @@ internal static class GitSandbox
         }
     }
 
+    /// <summary>
+    /// Папка worktree песочницы — непосредственно внутри <see cref="SandboxesDir"/> (не сама она и не папка теневых
+    /// репозиториев). Путь из job.json не доверенный: без проверки «удаление песочницы» стёрло бы любую папку.
+    /// </summary>
+    internal static bool IsOwnWorktreeDir(string? dir)
+    {
+        if (string.IsNullOrWhiteSpace(dir)) return false;
+        try
+        {
+            var full = PathGuard.TrimTrailingSeparator(System.IO.Path.GetFullPath(dir));
+            var parent = System.IO.Path.GetDirectoryName(full);
+            var name = System.IO.Path.GetFileName(full);
+            return parent is not null && name.Length > 0 && !name.Equals("shadow", StringComparison.OrdinalIgnoreCase)
+                   && parent.Equals(PathGuard.TrimTrailingSeparator(System.IO.Path.GetFullPath(SandboxesDir)), StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
+    }
+
     /// <summary>Удалить папки песочниц без задачи (задача удалена по сроку хранения). Вызывается при старте, в фоне.</summary>
     public static int CleanupOrphans()
     {
@@ -448,7 +521,7 @@ internal static class GitSandbox
             if (!Directory.Exists(SandboxesDir)) return 0;
             foreach (var dir in Directory.EnumerateDirectories(SandboxesDir).Take(500))
             {
-                var name = System.IO.Path.GetFileName(dir);
+                var name = OwnerJobId(System.IO.Path.GetFileName(dir));
                 if (!JobStore.IsValidId(name) || Directory.Exists(System.IO.Path.Combine(JobStore.JobsDir, name))) continue;
                 FileUtil.TryDeleteDirectory(dir);
                 removed++;

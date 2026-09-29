@@ -69,6 +69,8 @@ internal static class ClaudeTexts
         | TODOs, leaked secrets, risky APIs, dead code, duplicates, complexity, hotspots | {{McpToolNames.CodeScan}}(check) |
         | Review of a diff/branch; security gate for changes | {{McpToolNames.ReviewDiff}}(target, focus) / {{McpToolNames.SecurityReview}}(target) |
         | Packages: list, why A depends on B, outdated, vulnerable, licenses, unused | {{McpToolNames.Dependencies}}(action) |
+        | Is my branch ready for a PR? (conflicts, tests, secrets, hygiene, review, PR draft) | {{McpToolNames.PrReady}}(base) -> verdict + blockers first |
+        | Failing test / stack trace: reproduce, root cause, suspect commit, fix | {{McpToolNames.Debug}}(problem, command; fix=false = diagnosis only) |
         | Whole task end-to-end (feature, bug, refactor, tests, issue) | {{McpToolNames.Solve}}(task, kind) -> proof: files, check, review, open questions |
         | Coding task with your own brief and autonomy budget | {{McpToolNames.AgentTask}}(task, verify_command, allowed_paths, max_files, background) |
         | Apply your own small diff safely | {{McpToolNames.ApplyPatch}}(patch, verify_command) |

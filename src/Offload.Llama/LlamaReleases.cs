@@ -165,7 +165,7 @@ public static class VcRuntime
 }
 
 /// <summary>Проверка, что сборка видит видеокарту (llama-server --list-devices).</summary>
-public static class LlamaDevices
+public static partial class LlamaDevices
 {
     /// <summary>Список устройств в текстовом виде, например «CUDA0: NVIDIA GeForce RTX 3090 (24575 MiB, 23000 MiB free)».</summary>
     /// <remarks>Пустой список — сборка не видит видеокарту (будет работать только процессор).</remarks>

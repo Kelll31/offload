@@ -16,6 +16,13 @@ internal sealed class MemoryEntry
     public string Kind { get; set; } = "fact";
     public string Text { get; set; } = "";
     public List<string> Tags { get; set; } = [];
+
+    /// <summary>Откуда запись автоматической памяти (например, «local_solve j1a2b3», «local_verify»); у ручных — null.</summary>
+    public string? Source { get; set; }
+
+    /// <summary>Запись создана автоматически (<see cref="AutoMemory"/>), а не вызовом store.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public bool IsAuto => Tags.Contains(AutoMemory.Tag, StringComparer.OrdinalIgnoreCase);
 }
 
 /// <summary>
@@ -127,6 +134,17 @@ internal static partial class MemoryTool
     /// </summary>
     private static async Task<List<MemoryEntry>?> SemanticAsync(ToolContext ctx, List<MemoryEntry> entries, string query, int take)
     {
+        var scores = await SimilarityAsync(ctx, entries, query).ConfigureAwait(false);
+        return scores?.Where(kv => kv.Value >= MinSimilarity)
+            .OrderByDescending(kv => kv.Value).ThenByDescending(kv => kv.Key.CreatedUtc).Take(take).Select(kv => kv.Key).ToList();
+    }
+
+    /// <summary>
+    /// Косинус вектора запроса с векторами записей (досчитываются и сохраняются, как при recall). null — векторы недоступны.
+    /// Используется и автоматической памятью для отсева дубликатов.
+    /// </summary>
+    internal static async Task<Dictionary<MemoryEntry, float>?> SimilarityAsync(ToolContext ctx, List<MemoryEntry> entries, string query)
+    {
         var embedder = await Embedder.ConnectAsync(ctx).ConfigureAwait(false);
         if (embedder is null) return null;
         using var store = EmbeddingsIndex.TryOpenStore(ctx, embedder.ModelId);
@@ -146,8 +164,7 @@ internal static partial class MemoryTool
             }
             var q = await embedder.EmbedQueryAsync(query).ConfigureAwait(false);
             var hits = store.BestPerKey(q, done);
-            return entries.Where(e => hits.TryGetValue(keys[e], out var h) && h.Score >= MinSimilarity)
-                .OrderByDescending(e => hits[keys[e]].Score).ThenByDescending(e => e.CreatedUtc).Take(take).ToList();
+            return entries.Where(e => hits.ContainsKey(keys[e])).ToDictionary(e => e, e => hits[keys[e]].Score);
         }
         catch (Exception ex) when (ex is Offload.Llama.LlamaApiException or ToolException or Microsoft.Data.Sqlite.SqliteException or IOException)
         {
@@ -260,11 +277,17 @@ internal static partial class MemoryTool
     {
         var sb = new StringBuilder();
         foreach (var e in list)
-            sb.Append($"- [{e.Kind}] {e.Text}{(e.Tags.Count > 0 ? "  #" + string.Join(" #", e.Tags) : "")}  ({e.Id}, {e.CreatedUtc:yyyy-MM-dd})\n");
+        {
+            // Автоматические записи помечены: [note, auto] и источник в скобках; тег auto в списке тегов не повторяется.
+            var tags = e.Tags.Where(t => !(e.IsAuto && t.Equals(AutoMemory.Tag, StringComparison.OrdinalIgnoreCase))).ToList();
+            var kind = e.IsAuto ? e.Kind + ", auto" : e.Kind;
+            var source = e.IsAuto && !string.IsNullOrWhiteSpace(e.Source) ? ", from " + e.Source : "";
+            sb.Append($"- [{kind}] {e.Text}{(tags.Count > 0 ? "  #" + string.Join(" #", tags) : "")}  ({e.Id}, {e.CreatedUtc:yyyy-MM-dd}{source})\n");
+        }
         return sb.ToString().TrimEnd();
     }
 
-    private static List<MemoryEntry> Load(string file)
+    internal static List<MemoryEntry> Load(string file)
     {
         var list = new List<MemoryEntry>();
         if (!File.Exists(file)) return list;
@@ -283,7 +306,7 @@ internal static partial class MemoryTool
         return list;
     }
 
-    private static void Save(string file, List<MemoryEntry> entries)
+    internal static void Save(string file, List<MemoryEntry> entries)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(file)!);
         var sb = new StringBuilder();

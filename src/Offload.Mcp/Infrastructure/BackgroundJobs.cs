@@ -64,7 +64,7 @@ internal static class BackgroundJobs
         // Ответ трея мог потеряться (таймаут), а задачу он уже взял: тогда файл-заявка существует и здесь не запускаем.
         if (inTray || !TryClaim(job.Id, JobHost.Mcp))
         {
-            return $"job_id: {job.Id} · status: running in the background in the Offload tray app (sandbox branch {GitSandbox.BranchPrefix}{job.Id})\n" +
+            return $"job_id: {job.Id} · status: running in the background in the Offload tray app (sandbox {AgentRace.BranchLabel(job.Id, spec.Race)})\n" +
                    "The local agent works in an isolated git worktree; the job keeps running even if this IDE session ends.\n" +
                    $"Check: local_job action=status job_id={job.Id} wait_seconds=120 · cancel: local_job action=cancel job_id={job.Id}";
         }
@@ -74,7 +74,7 @@ internal static class BackgroundJobs
         var cts = new CancellationTokenSource();
         // Здесь окружение процесса — уже окружение IDE: снимок не нужен.
         Start(job, spec, ctx.ForBackground(progress, cts.Token), cts, JobHost.Mcp, null, null);
-        return $"job_id: {job.Id} · status: running in the background (sandbox branch {GitSandbox.BranchPrefix}{job.Id})\n" +
+        return $"job_id: {job.Id} · status: running in the background (sandbox {AgentRace.BranchLabel(job.Id, spec.Race)})\n" +
                "The local agent works in an isolated git worktree; you can keep working meanwhile. " +
                "It runs inside this IDE session (the Offload tray app is not running or did not accept it), so it stops if the session ends " +
                "(then: local_job action=retry).\n" +

@@ -30,7 +30,17 @@ public sealed record CatalogFile(
     /// <summary>Раскладка MoE именно этого файла (эксперты разных квантизаций весят по-разному); null — как у модели.</summary>
     MoeSpec? Moe = null,
     /// <summary>В файле есть тензоры типов IQ* (сборки CUDA 13.2 выдают на них бессмыслицу).</summary>
-    bool IqTensors = false);
+    bool IqTensors = false,
+    /// <summary>
+    /// Остальные части разбитой модели с точными размерами и SHA-256 (модели, найденные на Hugging Face): загрузка
+    /// обходится без повторного запроса списка файлов. Size — размер первой части.
+    /// </summary>
+    IReadOnlyList<HfFile>? Parts = null)
+{
+    /// <summary>Размер всех частей файла кванта (для неразбитой модели — Size).</summary>
+    [JsonIgnore]
+    public long TotalSize => Size + (Parts?.Sum(p => p.Size) ?? 0);
+}
 
 /// <summary>Раскладка MoE для оценки выгрузки экспертов на ЦП.</summary>
 public sealed record MoeSpec(int MoeLayers, long ExpertBytesPerLayer, long NonExpertBytes);
@@ -89,12 +99,17 @@ public sealed record CatalogModel(
     /// <summary>Минимальная сборка llama.cpp (тег bNNNNN), в которой поддержана архитектура модели; null — любая.</summary>
     string? MinLlamaBuild = null,
     /// <summary>
-    /// Назначение (поле «role»): chat (по умолчанию) — основная/быстрая модель; embed — эмбеддинги; rerank — реранкер.
-    /// Модели embed/rerank не предлагаются как активная модель и запускаются только на вспомогательных серверах ролей.
+    /// Назначение (поле «role»): chat (по умолчанию) — основная/быстрая модель; embed — эмбеддинги; rerank — реранкер;
+    /// fim — coder-модель с FIM-токенами для автодополнения в IDE. Модели embed/rerank/fim не предлагаются как активная
+    /// модель и запускаются только на вспомогательных серверах ролей.
     /// </summary>
     ModelKind Role = ModelKind.Chat,
     /// <summary>Пулинг эмбеддингов для --pooling (mean, cls, last) — только для role = embed; null — из заголовка GGUF.</summary>
-    string? Pooling = null)
+    string? Pooling = null,
+    /// <summary>Модель найдена пользователем на Hugging Face (<see cref="HubCatalog"/>) и не проверена мейнтейнером.</summary>
+    bool FromHub = false,
+    /// <summary>Репозиторий закрытый (gated): для загрузки нужен токен Hugging Face и принятые условия модели.</summary>
+    bool Gated = false)
 {
     /// <summary>Чат-модель: может быть активной (основной) или быстрой.</summary>
     [JsonIgnore]
@@ -113,6 +128,7 @@ public sealed record CatalogModel(
     public string LocalizedDisplayName => L.IsEnglish && !string.IsNullOrWhiteSpace(DisplayNameEn) ? DisplayNameEn : DisplayName;
 
     /// <summary>Квантизация по умолчанию.</summary>
+    [JsonIgnore]
     public string DefaultQuant => Quants.Count > 0 ? Quants[0] : Files is { Count: > 0 } f ? f[0].Quant : "";
 
     /// <summary>Файл квантизации из каталога (без учёта регистра); null — нет в каталоге.</summary>
@@ -124,6 +140,7 @@ public sealed record CatalogModel(
     }
 
     /// <summary>Файл квантизации по умолчанию.</summary>
+    [JsonIgnore]
     public CatalogFile? DefaultFile => FindFile(DefaultQuant);
 
     /// <summary>Есть ли тег (без учёта регистра).</summary>
@@ -211,8 +228,26 @@ public static partial class ModelCatalog
     /// <summary>Чат-модели каталога (role = chat): кандидаты в активную модель и рекомендации мастера.</summary>
     public static IReadOnlyList<CatalogModel> ChatModels => [.. All.Where(m => m.IsChat)];
 
+    /// <summary>
+    /// Модели каталога и найденные пользователем на Hugging Face (<see cref="HubCatalog"/>, после каталожных) — для списков
+    /// моделей, загрузки и оценки установленных. Рекомендации строятся только по проверенному каталогу (<see cref="ChatModels"/>).
+    /// </summary>
+    public static IReadOnlyList<CatalogModel> Available
+    {
+        get
+        {
+            var all = All;
+            var hub = HubCatalog.Models;
+            if (hub.Count == 0) return all;
+            var ids = all.Select(m => m.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            return [.. all, .. hub.Where(m => !ids.Contains(m.Id))];
+        }
+    }
+
+    /// <summary>Модель каталога или найденная на Hugging Face (<see cref="Available"/>) по идентификатору.</summary>
     public static CatalogModel? Find(string id) =>
-        All.FirstOrDefault(m => string.Equals(m.Id, id, StringComparison.OrdinalIgnoreCase));
+        All.FirstOrDefault(m => string.Equals(m.Id, id, StringComparison.OrdinalIgnoreCase))
+        ?? HubCatalog.Find(id);
 
     /// <summary>
     /// Есть ли IQ-тензоры в файле установленной модели (по каталогу и квантизации); null — неизвестно
@@ -220,7 +255,7 @@ public static partial class ModelCatalog
     /// </summary>
     public static bool? HasIqTensors(InstalledModel? model)
     {
-        if (model is null || model.IsCustom || Find(model.Id) is not { } c) return null;
+        if (model is null || model.IsCustom || Find(model.Id) is not { FromHub: false } c) return null;
         return c.FindFile(model.Quant) is { } f ? f.IqTensors : null;
     }
 
@@ -310,8 +345,8 @@ public static partial class ModelCatalog
             if (m.Quants.FirstOrDefault(q => m.FindFile(q) is null) is { } noFile)
                 throw new InvalidDataException(Err(L.F("нет файла для квантизации {0}", noFile)));
             if (m.FindFile(m.DefaultQuant) is not { } def) throw new InvalidDataException(Err(L.T("нет файла квантизации по умолчанию")));
-            if (m.ApproxSizeBytes != def.Size) throw new InvalidDataException(Err(L.T("размер не совпадает с файлом по умолчанию")));
-            if (!Enum.IsDefined(m.Role)) throw new InvalidDataException(Err(L.T("неверное назначение (role: chat, embed или rerank)")));
+            if (m.ApproxSizeBytes != def.TotalSize) throw new InvalidDataException(Err(L.T("размер не совпадает с файлом по умолчанию")));
+            if (!Enum.IsDefined(m.Role)) throw new InvalidDataException(Err(L.T("неверное назначение (role: chat, embed, rerank или fim)")));
             if (m.Pooling is not null && (m.Role != ModelKind.Embed || m.Pooling is not ("mean" or "cls" or "last")))
                 throw new InvalidDataException(Err(L.F("неверный пулинг «{0}» (mean, cls или last — только для role = embed)", m.Pooling)));
             if (m.MinLlamaBuild is not null && !BuildTagRegex().IsMatch(m.MinLlamaBuild))

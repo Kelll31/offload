@@ -244,6 +244,23 @@ public class ConfigWriterTests
     }
 
     [Fact]
+    public void RunOverride_TemperatureAndShell_OnlyWhatIsSet()
+    {
+        var cfg = TestConfig.Make(allowShell: false);
+        Assert.Null(OpenCodeConfigWriter.RunOverrideContent(cfg, null, null));
+
+        var temp = JsonNode.Parse(OpenCodeConfigWriter.RunOverrideContent(cfg, null, 0.95)!)!;
+        Assert.Equal("https://opencode.ai/config.json", (string?)temp["$schema"]);
+        Assert.Equal(0.95, (double?)temp["agent"]!["offload"]!["temperature"]);
+        Assert.Null(temp["agent"]!["offload"]!["permission"]);
+        Assert.Null(temp["agent"]!["offload"]!["prompt"]);
+
+        var both = JsonNode.Parse(OpenCodeConfigWriter.RunOverrideContent(cfg, true, 7)!)!;
+        Assert.Equal(1.5, (double?)both["agent"]!["offload"]!["temperature"]);
+        Assert.Equal("allow", (string?)both["agent"]!["offload"]!["permission"]!["bash"]!["*"]);
+    }
+
+    [Fact]
     public void Environment_IsIsolated()
     {
         using var home = new TempHome();

@@ -2,6 +2,14 @@
 
 ## Что нового в 1.0.3
 
+- **Автоподбор параметров под вашу видеокарту.** Одна кнопка на странице «Сервер»: Offload перебирает настройки llama-server, замеряет скорость и запоминает самый быстрый набор для этой модели и этого компьютера. Контекст не уменьшается; при отмене всё возвращается как было.
+- **Несколько видеокарт.** Модель сама раскладывается по всем подходящим картам пропорционально свободной видеопамяти — большие модели влезают целиком.
+- **Удалённый сервер.** Слабый ноутбук может пользоваться моделью, запущенной на мощном домашнем ПК: на ПК включите «Доступ из сети», на ноутбуке — «Удалённый сервер». Используйте доверенную сеть или VPN: трафик не шифруется.
+- **Автодополнение в IDE (локальный Copilot).** Маленькая coder-модель на отдельном сервере для расширений llama.vscode и Continue; Continue настраивается сам.
+- **Любая модель с Hugging Face.** Поиск GGUF прямо в программе с оценкой «поместится ли» и рекомендуемым квантом — новые модели доступны, не дожидаясь обновления Offload.
+- **Новые инструменты:** `local_pr_ready` проверяет ветку перед PR одним вызовом (конфликты, тесты, секреты, ревью, черновик PR), `local_debug` проходит путь от воспроизведения ошибки до проверенного исправления.
+- **Гонка агентов:** `race=2…4` у `local_agent_task` и `local_solve` — несколько локальных агентов решают задачу разными способами, вливается лучший результат.
+- **Не думает дважды.** Ответы локальной модели по неизменённому коду берутся из кэша мгновенно, а неочевидные уроки из работы агента сами попадают в память проекта.
 - **`local_impact` подсказывает тесты по смыслу.** Кроме тестов, найденных по ссылкам и именам, показываются тесты, близкие к изменению по смыслу (нужна модель эмбеддингов). Они помечены «semantic» и не запускаются автоматически при `run_tests` — это подсказка, что ещё стоит проверить.
 - **Надёжнее выпуск.** Установщик собирается закреплённой версией Inno Setup и локально, и в GitHub Actions: ошибка, из-за которой первая сборка 1.0.2 не прошла, больше не повторится.
 
@@ -64,7 +72,7 @@
 - **`Offload.exe`** — portable single file.
 - **`SHA256SUMS.txt`** — checksums. Verify provenance with `gh attestation verify <file> --repo Kelll31/offload`.
 
-**New in 1.0.3:** local_impact also suggests tests related to the change by meaning (with an embedding model; marked semantic and never run by run_tests); the installer is now built with a pinned Inno Setup version locally and in CI.
+**New in 1.0.3:** one-click auto-tuning of llama-server for your GPU (the fastest set is saved per model and PC); automatic model split across several GPUs; remote server mode — a laptop can use the model running on a powerful PC with Offload (trusted network or VPN, plain HTTP); IDE autocomplete via a small FIM coder model for llama.vscode and Continue; search and install any GGUF model from Hugging Face with a fit estimate; new tools local_pr_ready (pre-PR check in one call) and local_debug (from reproduction to a verified fix); agent race (race=2…4 on local_agent_task and local_solve); a result cache for unchanged code and automatic project memory; local_impact also suggests tests related to the change by meaning (with an embedding model; marked semantic and never run by run_tests); the installer is now built with a pinned Inno Setup version locally and in CI.
 
 **New in 1.0.2:** the installer now closes Offload MCP servers started by your IDEs (previously replacing the file failed with "Access denied" while an IDE was open), so updates and uninstall work with IDEs running; a "What's new" notice after updating; semantic related tests in local_find_context and reranked project memory; uninstalling no longer removes another copy's autostart entry.
 

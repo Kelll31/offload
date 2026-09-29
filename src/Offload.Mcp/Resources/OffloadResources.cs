@@ -24,6 +24,11 @@ internal static partial class ResourceUris
 
     public static string JobDiff(string jobId) => $"offload://jobs/{jobId}/diff";
 
+    /// <summary>Diff кандидата гонки агентов (race &gt; 1): сохраняется в папке задачи до удаления его песочницы.</summary>
+    public const string RaceDiffTemplate = "offload://jobs/{id}/race/{candidate}";
+
+    public static string RaceDiff(string jobId, char candidate) => $"offload://jobs/{jobId}/race/{candidate}";
+
     /// <summary>Идентификатор прогона — как его создаёт VerifyTool.RunLoggedAsync: «20260924-101500-123-dotnet-test».</summary>
     public static bool IsValidRunId(string? id) => id is not null && RunId().IsMatch(id);
 
@@ -92,6 +97,26 @@ public sealed class OffloadResources(SessionState state)
             throw new McpProtocolException(ex.Message, McpErrorCode.InternalError);
         }
         var text = $"job {job.Id} · {job.Tool} · status {job.Status}\n" + diff;
+        return Text(context, ctx.Cfg.Mcp.RedactSecrets ? SecretRedactor.Redact(text) : text, "text/x-diff");
+    }
+
+    [McpServerResource(UriTemplate = ResourceUris.RaceDiffTemplate, Name = "race_candidate_diff", Title = "Offload: agent race candidate diff", MimeType = "text/x-diff")]
+    [Description("Diff of one candidate (a-d) of an agent race (local_agent_task / local_solve with race>1), kept after its sandbox was removed. " +
+                 "The race table in the tool result links every candidate's diff.")]
+    public async Task<TextResourceContents> RaceDiff(string id, string candidate, RequestContext<ReadResourceRequestParams> context, CancellationToken cancellationToken)
+    {
+        var ctx = await ContextAsync(context, cancellationToken).ConfigureAwait(false);
+        var c = (candidate ?? "").Trim().ToLowerInvariant();
+        if (c.Length != 1 || c[0] is < 'a' or > (char)('a' + AgentRace.MaxCandidates - 1))
+            throw NotFound($"Invalid race candidate '{TextUtil.Short(candidate, 20)}': use a letter a-{(char)('a' + AgentRace.MaxCandidates - 1)}.");
+        JobInfo job;
+        try { job = JobStore.Load(id); }
+        catch (ToolException ex) { throw NotFound(ex.Message); }
+        if (!PathGuard.JobVisible(job.Root, ctx.Roots))
+            throw NotFound($"Job {job.Id} belongs to another workspace; read it from a session opened in that project.");
+        var file = AgentRace.DiffFile(job.Id, c[0]);
+        if (!File.Exists(file)) throw NotFound($"Job {job.Id} has no saved diff for race candidate {c} (it made no changes or the job is not a race).");
+        var text = $"job {job.Id} · {job.Tool} · status {job.Status} · race " + ReadTail(file, MaxResourceChars);
         return Text(context, ctx.Cfg.Mcp.RedactSecrets ? SecretRedactor.Redact(text) : text, "text/x-diff");
     }
 

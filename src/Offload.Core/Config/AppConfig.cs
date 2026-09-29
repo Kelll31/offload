@@ -22,8 +22,45 @@ public sealed class AppConfig
     /// <summary>Сеть: токен Hugging Face, зеркала, прокси, удалённый каталог моделей.</summary>
     public NetworkSettings Network { get; set; } = new();
 
+    /// <summary>Удалённый сервер основной модели (клиентский режим, ROADMAP §9.2): см. <see cref="RemoteServer"/>.</summary>
+    public RemoteServerSettings Remote { get; set; } = new();
+
     /// <summary>Идентификаторы IDE, в которые Offload зарегистрирован как MCP-сервер.</summary>
     public List<string> Integrations { get; set; } = [];
+
+    /// <summary>
+    /// IDE, от подключения которых пользователь отказался (снял галочку в мастере или отключил на странице «Интеграции»):
+    /// автоподключение Claude их не трогает, пока пользователь не подключит IDE сам.
+    /// </summary>
+    public List<string> DeclinedIntegrations { get; set; } = [];
+
+    /// <summary>Автодополнение кода в IDE (FIM) на отдельном llama-server роли fim.</summary>
+    public AutocompleteSettings Autocomplete { get; set; } = new();
+}
+
+/// <summary>
+/// Автодополнение в IDE («локальный Copilot»): маленькая coder-модель с FIM на своём llama-server (роль fim).
+/// В отличие от других вспомогательных ролей сервер работает всё время, пока автодополнение включено: IDE обращается к нему
+/// напрямую (llama.vscode — /infill, Continue — /completion), без MCP. Модель — <see cref="ModelRoles.Fim"/>,
+/// порт — <see cref="ServerSettings.AuxPorts"/>["fim"] (по умолчанию 8012, как у llama.vscode).
+/// </summary>
+public sealed class AutocompleteSettings
+{
+    /// <summary>Держать сервер автодополнения запущенным (вместе с треем).</summary>
+    public bool Enabled { get; set; }
+
+    /// <summary>Запускать модель автодополнения только на процессоре (-ngl 0), не занимая видеопамять основной модели.</summary>
+    public bool CpuOnly { get; set; }
+
+    /// <summary>Прописывать модель автодополнения в Continue (отдельный файл-блок в папке models Continue).</summary>
+    public bool ConfigureContinue { get; set; } = true;
+
+    /// <summary>
+    /// Ключ API сервера автодополнения — свой, не ключ основного сервера: он лежит открытым текстом в файле Continue
+    /// и в settings.json VS Code, а основной ключ открывает основную модель (в режиме «Доступ из сети» — и из сети).
+    /// Создаётся ConfigStore при загрузке.
+    /// </summary>
+    public string? ApiKey { get; set; }
 }
 
 /// <summary>Сборки llama.cpp для Windows.</summary>
@@ -123,13 +160,43 @@ public sealed class ServerSettings
     /// <summary>Последний замер скорости («Измерить скорость» на странице «Сервер») по идентификатору модели.</summary>
     public Dictionary<string, BenchmarkRecord> LastBenchmark { get; set; } = [];
 
+    /// <summary>Все подходящие видеокарты (--tensor-split по свободной видеопамяти).</summary>
+    public const string GpuSelectionAll = "all";
+
+    /// <summary>Только основная (самая большая) видеокарта (--device).</summary>
+    public const string GpuSelectionPrimary = "primary";
+
+    /// <summary>
+    /// Какие видеокарты использовать, если их несколько: <see cref="GpuSelectionAll"/> или <see cref="GpuSelectionPrimary"/>.
+    /// С одной видеокартой не действует.
+    /// </summary>
+    public string GpuSelection { get; set; } = GpuSelectionAll;
+
+    /// <summary>
+    /// Параметры, подобранные автоподбором, по ключу «модель|отпечаток оборудования» (см. LlamaAutoTune.ProfileKey).
+    /// </summary>
+    public Dictionary<string, TunedProfile> TunedProfiles { get; set; } = [];
+
     /// <summary>
     /// Порты вспомогательных серверов ролей (ключ — "fast", "embed", "rerank"). Нет записи — порт основного сервера + 1/2/3
     /// (<see cref="ModelRoleConfig.AuxPort"/>); запись появляется, если порт по умолчанию был занят и сервер выбрал другой.
     /// </summary>
     public Dictionary<string, int> AuxPorts { get; set; } = [];
 
-    public string BaseUrl => $"http://{Host}:{Port}";
+    /// <summary>
+    /// «Доступ из сети»: основной llama-server слушает <see cref="LanBindAddress"/> вместо <see cref="Host"/> и принимает
+    /// дополнительно сетевой ключ. Действует только вместе с ключом (<see cref="LanServer.IsActive"/>). По умолчанию выключен.
+    /// </summary>
+    public bool LanAccess { get; set; }
+
+    /// <summary>Адрес прослушивания в режиме «Доступ из сети»: 0.0.0.0 (все интерфейсы) или IPv4-адрес одного интерфейса.</summary>
+    public string LanBindAddress { get; set; } = LanServer.AnyAddress;
+
+    /// <summary>Сетевой ключ API (для других компьютеров), зашифрованный DPAPI для текущего пользователя Windows (base64).</summary>
+    public string? LanApiKeyProtected { get; set; }
+
+    /// <summary>Адрес основного сервера для клиентов на этом компьютере (с учётом режима «Доступ из сети»).</summary>
+    public string BaseUrl => LanServer.ClientBaseUrl(this.ListenHost(), Port);
     public string OpenAiBaseUrl => $"{BaseUrl}/v1";
 }
 
@@ -185,6 +252,8 @@ public enum ModelKind
     Chat,
     Embed,
     Rerank,
+    /// <summary>Coder-модель с FIM (fill-in-the-middle) для автодополнения в IDE; активной быть не может.</summary>
+    Fim,
 }
 
 /// <summary>Роль модели в Offload: какой сервер обслуживает запрос.</summary>
@@ -198,6 +267,8 @@ public enum ModelRole
     Embed,
     /// <summary>Реранкер (llama-server --reranking).</summary>
     Rerank,
+    /// <summary>Автодополнение в IDE (FIM): сервер работает постоянно, пока автодополнение включено.</summary>
+    Fim,
 }
 
 /// <summary>Назначение моделей вспомогательным ролям (идентификаторы установленных моделей; null — роль не используется).</summary>
@@ -211,6 +282,9 @@ public sealed class ModelRoles
 
     /// <summary>Реранкер; null — не используется.</summary>
     public string? Rerank { get; set; }
+
+    /// <summary>Модель автодополнения (FIM); null — не назначена.</summary>
+    public string? Fim { get; set; }
 }
 
 public sealed class InstalledModel
@@ -397,6 +471,25 @@ public sealed class McpSettings
     /// что уже разрешена). false — не предлагать никогда. По HTTP одноразовое разрешение выключено всегда.
     /// </summary>
     public bool AllowOneTimeVerify { get; set; } = true;
+
+    /// <summary>
+    /// Кэш результатов модели для инструментов только для чтения (ask_files, review_diff, summarize_log, commit_message,
+    /// шаги модели find_context): тот же вопрос по неизменённым входам — ответ без повторной генерации. Хранится в папке данных
+    /// Offload (cache/work), по базе на рабочую папку; секреты маскируются. Работает только при <see cref="RedactSecrets"/>.
+    /// </summary>
+    public bool WorkCache { get; set; } = true;
+
+    /// <summary>Предел размера кэша результатов на одну рабочую папку, МБ (старые по последнему использованию удаляются).</summary>
+    public int WorkCacheMaxMb { get; set; } = 50;
+
+    /// <summary>Сколько дней хранить результат в кэше (после — считается устаревшим, даже если входы не менялись).</summary>
+    public int WorkCacheTtlDays { get; set; } = 14;
+
+    /// <summary>
+    /// Автоматическая память проекта: уроки локального агента (проверка прошла после исправлений), «грабли» проверок
+    /// (FAILED → PASSED с понятной причиной); подсказки из памяти добавляются в задания агенту. Записи помечаются тегом auto.
+    /// </summary>
+    public bool AutoMemory { get; set; } = true;
 
     /// <summary>Прежний фиксированный порт HTTP-режима: новым конфигам не назначается.</summary>
     public const int LegacyHttpPort = 39217;

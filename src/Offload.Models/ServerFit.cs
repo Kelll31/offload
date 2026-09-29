@@ -76,16 +76,17 @@ public static class ServerFit
     /// Оценка при настройках сервера: явный контекст — как задан; «Авто» — наибольший подходящий, не выше рекомендованного.
     /// </summary>
     /// <param name="parallel">Число слотов (по умолчанию — из настроек).</param>
-    public static FitResult Evaluate(FitModel fm, HardwareInfo hw, ServerSettings s, long otherVramBytes = 0, int? parallel = null)
+    /// <param name="split">Разделение между несколькими видеокартами (<see cref="MultiGpuPlanner"/>) или null — одна карта.</param>
+    public static FitResult Evaluate(FitModel fm, HardwareInfo hw, ServerSettings s, long otherVramBytes = 0, int? parallel = null, GpuSplit? split = null)
     {
         ArgumentNullException.ThrowIfNull(fm);
         ArgumentNullException.ThrowIfNull(s);
         var p = Math.Clamp(parallel ?? s.Parallel, 1, ServerSettings.MaxParallel);
         var cache = string.IsNullOrWhiteSpace(s.CacheType) ? "f16" : s.CacheType;
         return s.ContextSize > 0
-            ? FitCalculator.Evaluate(fm.Model, fm.WeightsBytes, hw, s.ContextSize, cache, p, otherVramBytes: otherVramBytes)
+            ? FitCalculator.Evaluate(fm.Model, fm.WeightsBytes, hw, s.ContextSize, cache, p, otherVramBytes: otherVramBytes, split: split)
             : FitCalculator.Evaluate(fm.Model, fm.WeightsBytes, hw, 0, cache, p,
-                maxContext: RecommendedContext(fm.RecommendedContext, fm.Model.NativeContext), otherVramBytes: otherVramBytes);
+                maxContext: RecommendedContext(fm.RecommendedContext, fm.Model.NativeContext), otherVramBytes: otherVramBytes, split: split);
     }
 
     /// <summary>
@@ -106,18 +107,18 @@ public static class ServerFit
     /// KV-кэш на слот мал — им обычно помещается больше слотов.
     /// </summary>
     public static SlotAdvice RecommendSlots(FitModel fm, HardwareInfo hw, ServerSettings s, long otherVramBytes = 0,
-        int maxParallel = ServerSettings.MaxParallel)
+        int maxParallel = ServerSettings.MaxParallel, GpuSplit? split = null)
     {
         ArgumentNullException.ThrowIfNull(fm);
         ArgumentNullException.ThrowIfNull(s);
         maxParallel = Math.Clamp(maxParallel, 1, ServerSettings.MaxParallel);
-        var single = Evaluate(fm, hw, s, otherVramBytes, parallel: 1);
+        var single = Evaluate(fm, hw, s, otherVramBytes, parallel: 1, split: split);
         var ctx = single.ContextSize;
         var cache = string.IsNullOrWhiteSpace(s.CacheType) ? "f16" : s.CacheType;
 
         var options = new List<SlotOption> { new(1, ctx, single) };
         for (var p = 2; p <= maxParallel; p++)
-            options.Add(new SlotOption(p, ctx, FitCalculator.Evaluate(fm.Model, fm.WeightsBytes, hw, ctx, cache, p, otherVramBytes: otherVramBytes)));
+            options.Add(new SlotOption(p, ctx, FitCalculator.Evaluate(fm.Model, fm.WeightsBytes, hw, ctx, cache, p, otherVramBytes: otherVramBytes, split: split)));
 
         var recommended = 1;
         if (single.Level is FitLevel.FullGpu or FitLevel.MoeOffload)

@@ -45,6 +45,9 @@ internal sealed class ToolContext
     /// <summary>Модель, если к ней уже обращались в этом вызове (для подвала).</summary>
     public LocalModel? ModelIfUsed => _model;
 
+    /// <summary>Пометка для подвала ответа (например, «cached · inputs unchanged since …» при попадании в кэш результатов).</summary>
+    public string? FooterNote { get; set; }
+
     public GatherOptions GatherOptions => new(
         Math.Max(4096, Cfg.Mcp.MaxFileBytes),
         Math.Max(16 * 1024, Cfg.Mcp.MaxTotalBytes),
@@ -243,6 +246,7 @@ internal static class ToolRunner
         var s = ctx.Stats;
         var model = s.ModelCalls > 0 ? ctx.ModelIfUsed : null;
         var parts = new List<string> { "offload" };
+        if (!string.IsNullOrWhiteSpace(ctx.FooterNote)) parts.Add(ctx.FooterNote);
         if (model is not null)
         {
             var name = model.DisplayName;

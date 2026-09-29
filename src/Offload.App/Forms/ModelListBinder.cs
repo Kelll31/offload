@@ -10,6 +10,9 @@ internal static class ModelListBinder
 {
     public static string RecommendedMark => L.T("★ рекомендуется");
 
+    /// <summary>Пометка модели, найденной на Hugging Face (не из проверенного каталога).</summary>
+    public static string HubMark => L.T("· из Hugging Face");
+
     /// <summary>Столбцы списка (полный вариант — для вкладки «Модели»).</summary>
     public static ListView Create(bool full)
     {
@@ -30,6 +33,7 @@ internal static class ModelListBinder
             foreach (var r in rows)
             {
                 var name = r.IsRecommended ? $"{r.Name}   {RecommendedMark}" : r.Name;
+                if (r.Catalog is { FromHub: true }) name = $"{name}   {HubMark}";
                 var size = r.SizeBytes > 0 ? FileUtil.FormatBytes(r.SizeBytes) : "—";
                 var tools = r.GoodToolCalling ? "✓" : "—";
                 string[] cells = full
@@ -66,7 +70,7 @@ internal static class ModelListBinder
         foreach (var q in m.Quants)
         {
             var file = m.Files?.FirstOrDefault(f => string.Equals(f.Quant, q, StringComparison.OrdinalIgnoreCase));
-            var size = file?.Size ?? (m.Quants.Count > 0 && q == m.Quants[0] ? m.ApproxSizeBytes : 0);
+            var size = file?.TotalSize ?? (m.Quants.Count > 0 && q == m.Quants[0] ? m.ApproxSizeBytes : 0);
             list.Add((q, size > 0 ? $"{q}  ({FileUtil.FormatBytes(size)})" : q, size));
         }
         return list;
@@ -76,7 +80,7 @@ internal static class ModelListBinder
     public static long RequiredBytes(CatalogModel m, string? quant)
     {
         var file = m.Files?.FirstOrDefault(f => string.Equals(f.Quant, quant, StringComparison.OrdinalIgnoreCase));
-        return file?.Size > 0 ? file.Size : m.ApproxSizeBytes;
+        return file?.TotalSize > 0 ? file.TotalSize : m.ApproxSizeBytes;
     }
 
     /// <summary>Запас на диске сверх размера модели (временные файлы, журнал).</summary>

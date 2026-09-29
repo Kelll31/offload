@@ -33,13 +33,23 @@ internal static class ServerExitDiagnostics
         return port;
     }
 
+    /// <summary>Строки журнала llama-server говорят о нехватке памяти (видеопамяти или ОЗУ).</summary>
+    internal static bool IsOutOfMemory(IReadOnlyList<string> tail)
+    {
+        var text = string.Join('\n', tail).ToLowerInvariant();
+        return OutOfMemoryMarkers.Any(text.Contains);
+    }
+
+    private static readonly string[] OutOfMemoryMarkers =
+        ["out of memory", "cudamalloc failed", "failed to allocate", "outofdevicememory", "unable to allocate", "not enough memory",
+         "failed to create context", "error_out_of"];
+
     /// <summary>Подсказка по последним строкам журнала и коду завершения; null — причина не распознана.</summary>
     internal static string? Hint(IReadOnlyList<string> tail, int code, int port)
     {
         var text = string.Join("\n", tail).ToLowerInvariant();
         bool Has(params string[] keys) => keys.Any(text.Contains);
-        if (Has("out of memory", "cudamalloc failed", "failed to allocate", "outofdevicememory", "unable to allocate", "not enough memory",
-                "failed to create context", "error_out_of"))
+        if (Has(OutOfMemoryMarkers))
             return L.T("Не хватило памяти (видеопамяти или ОЗУ): уменьшите размер контекста или число параллельных слотов либо выберите модель меньше.");
         if (Has("failed to load model", "error loading model", "invalid magic", "gguf_init_from_file", "failed to read magic", "unknown model architecture"))
             return L.T("Не удалось загрузить модель: файл повреждён или не докачан, либо его формат не поддерживается этой версией llama.cpp (обновите llama.cpp).");
@@ -64,8 +74,7 @@ internal static class ServerExitDiagnostics
         if (NtStatus.StartupFailure(code) is LlamaVcRuntimeMissingException) return false;
         var text = string.Join('\n', tail).ToLowerInvariant();
         bool Has(params string[] keys) => keys.Any(text.Contains);
-        if (Has("out of memory", "cudamalloc failed", "failed to allocate", "outofdevicememory", "unable to allocate", "not enough memory",
-                "failed to create context", "error_out_of")) return false;
+        if (Has(OutOfMemoryMarkers)) return false;
         if (Has("invalid magic", "gguf_init_from_file", "failed to read magic")) return false;
         if (Has("couldn't bind", "could not bind", "failed to bind", "address already in use", "only one usage of each socket address")) return false;
         return true;

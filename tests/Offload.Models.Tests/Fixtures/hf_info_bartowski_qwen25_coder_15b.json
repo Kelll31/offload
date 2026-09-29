@@ -1,0 +1,27 @@
+{
+ "_id": "66eb2003e604909be7d0e530",
+ "id": "bartowski/Qwen2.5-Coder-1.5B-Instruct-GGUF",
+ "sha": "1af47f78b1f9b0c242fabe43f7a365d5a67f3207",
+ "cardData": {
+  "base_model": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
+  "language": [
+   "en"
+  ],
+  "library_name": "transformers",
+  "license": "apache-2.0",
+  "license_link": "https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct/blob/main/LICENSE",
+  "pipeline_tag": "text-generation",
+  "tags": [
+   "code",
+   "codeqwen",
+   "chat",
+   "qwen",
+   "qwen-coder"
+  ],
+  "quantized_by": "bartowski"
+ },
+ "gated": false,
+ "downloads": 47093,
+ "likes": 15,
+ "lastModified": "2024-09-19T15:10:38.000Z"
+}

@@ -1,0 +1,6 @@
+{
+  "Кэшировать ответы локальной модели: тот же вопрос по неизменённым файлам — без повторной генерации": "Cache local model answers: the same question on unchanged files is answered without generating again",
+  "Размер кэша ответов:": "Answer cache size:",
+  "МБ на рабочую папку; ответ хранится {0}": "MB per workspace; an answer is kept for {0}",
+  "Автоматическая память проекта: запоминать уроки агента и «грабли» проверок (записи с пометкой auto)": "Automatic project memory: remember agent lessons and check pitfalls (entries marked auto)"
+}

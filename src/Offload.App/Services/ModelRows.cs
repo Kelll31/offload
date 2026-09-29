@@ -58,12 +58,12 @@ internal static class ModelRows
 {
     private static readonly Dictionary<string, KvSpec?> GgufKvCache = new(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>Каталог (может быть недоступен — тогда пустой список и текст ошибки).</summary>
+    /// <summary>Каталог и модели, найденные на Hugging Face (может быть недоступен — тогда пустой список и текст ошибки).</summary>
     public static (IReadOnlyList<CatalogModel> Models, string? Error) Catalog()
     {
         try
         {
-            return (ModelCatalog.All, null);
+            return (ModelCatalog.Available, null);
         }
         catch (Exception ex)
         {

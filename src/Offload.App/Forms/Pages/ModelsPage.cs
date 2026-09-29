@@ -28,6 +28,7 @@ internal sealed class ModelsPage : PageBase
     private readonly Label _folder = Kit.Wrap("");
     private readonly Label _disk = Kit.Wrap("");
     private readonly Button _addCustom;
+    private readonly Button _findHub;
     private readonly Button _changeFolder;
     private readonly TextBox _search = new()
     {
@@ -72,6 +73,7 @@ internal sealed class ModelsPage : PageBase
         _activate = Kit.Button(L.T("Сделать активной"), async (_, _) => await ActivateAsync());
         _remove = Kit.Button(L.T("Удалить"), async (_, _) => await RemoveAsync());
         _addCustom = Kit.Button(L.T("Добавить свой GGUF…"), async (_, _) => await AddCustomAsync(), 150);
+        _findHub = Kit.Button(L.T("Найти на Hugging Face…"), async (_, _) => await FindOnHubAsync(), 170);
         _changeFolder = Kit.Button(L.T("Изменить папку…"), (_, _) => ChangeFolder(), 120);
 
         _list.SelectedIndexChanged += (_, _) => ShowDetails();
@@ -89,7 +91,7 @@ internal sealed class ModelsPage : PageBase
         var root = Kit.FillTable();
         root.Padding = new Padding(16, 4, 28, 12);
         root.AddRow(_hardware);
-        var filters = Kit.Flow(_search, _filter, _shown);
+        var filters = Kit.Flow(_search, _filter, _findHub, _shown);
         _shown.Margin = new Padding(4, 7, 0, 0);
         root.AddRow(filters);
         root.AddFillRow(_list);
@@ -306,7 +308,8 @@ internal sealed class ModelsPage : PageBase
         try
         {
             var (catalog, _) = ModelRows.Catalog();
-            budget = await Task.Run(() => RoleBudget.Evaluate(cfg, hw, catalog, ReadHeader));
+            var split = await ServerAutoPlacement.RoleBudgetSplitAsync(cfg, hw);
+            budget = await Task.Run(() => RoleBudget.Evaluate(cfg, hw, catalog, ReadHeader, split: split));
         }
         catch (Exception ex)
         {
@@ -393,6 +396,7 @@ internal sealed class ModelsPage : PageBase
             if (c.GoodToolCalling) facts.Add(L.T("надёжно вызывает инструменты"));
             if (c.Role == ModelKind.Embed) facts.Add(L.T("модель эмбеддингов — назначается роли «Эмбеддинги», активной быть не может"));
             if (c.Role == ModelKind.Rerank) facts.Add(L.T("реранкер — назначается роли «Реранк», активной быть не может"));
+            if (c.Role == ModelKind.Fim) facts.Add(L.T("модель автодополнения — выбирается на вкладке «Сервер» (блок «Автодополнение в IDE»), активной быть не может"));
             if (facts.Count > 0) desc = $"{desc}{Environment.NewLine}{string.Join(" · ", facts)}";
         }
         if (row.Installed is { } inst) desc = L.F("{0}{1}Файл: {2}", desc, Environment.NewLine, inst.FilePath);
@@ -441,7 +445,9 @@ internal sealed class ModelsPage : PageBase
         _activate.Enabled = !IsBusy && row is { IsInstalled: true, IsActive: false } && CanBeActive(row);
         foreach (var (role, combo) in _roleCombos)
             combo.Enabled = !IsBusy && _roleItems.TryGetValue(role, out var ids) && ids.Count > 1;
-        _remove.Enabled = !IsBusy && row is { IsInstalled: true };
+        _remove.Enabled = !IsBusy && (row is { IsInstalled: true } || row?.Catalog is { FromHub: true });
+        _remove.Text = row is { IsInstalled: false, Catalog.FromHub: true } ? L.T("Убрать из списка") : L.T("Удалить");
+        _findHub.Enabled = !downloading;
         _quant.Enabled = !downloading && _quant.Items.Count > 1;
         _addCustom.Enabled = !IsBusy;
         _changeFolder.Enabled = !downloading;
@@ -658,6 +664,14 @@ internal sealed class ModelsPage : PageBase
     private async Task RemoveAsync()
     {
         var row = ModelListBinder.Selected(_list);
+        if (row is { Installed: null, Catalog: { FromHub: true } hub })
+        {
+            // Найденная на Hugging Face и не скачанная модель: только убрать запись (её можно найти снова).
+            if (!Ui.Confirm(Owner, L.F("Убрать «{0}» из списка моделей? Её можно снова найти на Hugging Face.", hub.LocalizedDisplayName))) return;
+            await RunBusyAsync(() => Task.Run(() => HubCatalog.Remove(hub.Id)), L.T("Не удалось убрать модель из списка"));
+            Reload();
+            return;
+        }
         if (row?.Installed is not { } inst) return;
 
         var verification = new TaskDialogVerificationCheckBox(L.T("Удалить файлы модели с диска"), !inst.IsCustom);
@@ -690,6 +704,8 @@ internal sealed class ModelsPage : PageBase
             // Сервер роли держит файл модели открытым — остановить до удаления.
             foreach (var role in ModelRoleConfig.Auxiliary.Where(r => string.Equals(cfg.RoleModel(r)?.Id, inst.Id, StringComparison.OrdinalIgnoreCase)))
                 await Shell.Server.Aux.StopAsync(role);
+            if (string.Equals(cfg.RoleModel(ModelRole.Fim)?.Id, inst.Id, StringComparison.OrdinalIgnoreCase))
+                await Shell.Autocomplete.PauseAsync(TimeSpan.FromMinutes(1));
             await Task.Run(() => ModelManager.Remove(inst.Id, deleteFiles));
             Log.Info("models", $"Модель удалена: {inst.DisplayName} (файлы {(deleteFiles ? "удалены" : "оставлены")})");
         }, L.T("Не удалось удалить модель"));
@@ -724,6 +740,38 @@ internal sealed class ModelsPage : PageBase
             await Shell.SwitchModelAsync(added.Id, Owner);
             Reload();
         }
+    }
+
+    /// <summary>
+    /// Поиск модели на Hugging Face: выбранный репозиторий и квант сохраняются в списке моделей (с закреплённой ревизией,
+    /// размерами и SHA-256) и скачиваются обычной загрузкой — с докачкой, проверкой и ролями, как модели каталога.
+    /// </summary>
+    private async Task FindOnHubAsync()
+    {
+        if (_downloadCts is not null) return;
+        CatalogModel entry;
+        string? quant;
+        using (var dlg = new HfSearchForm(_hw, ConfigStore.Current.Server))
+        {
+            if (dlg.ShowDialog(Owner) != DialogResult.OK || dlg.Chosen is null) return;
+            entry = dlg.Chosen;
+            quant = dlg.ChosenQuant;
+        }
+        if (!await RunBusyAsync(() => Task.Run(() => HubCatalog.Save(entry)), L.T("Не удалось добавить модель"))) return;
+
+        // Новая строка должна быть видна: сбрасываем поиск и фильтр списка.
+        _search.Text = "";
+        _filter.SelectedIndex = 0;
+        Reload();
+        var item = _list.Items.Cast<ListViewItem>().FirstOrDefault(i => string.Equals(((ModelRow)i.Tag!).Id, entry.Id, StringComparison.OrdinalIgnoreCase));
+        if (item is null) return;
+        _list.SelectedItems.Clear();
+        item.Selected = true;
+        item.Focused = true;
+        item.EnsureVisible();
+        var index = _quantItems.ToList().FindIndex(q => string.Equals(q.Quant, quant, StringComparison.OrdinalIgnoreCase));
+        if (index >= 0) _quant.SelectedIndex = index;
+        await DownloadAsync();
     }
 
     private static void OpenModelsFolder() => Ui.OpenFolder(ModelsDir());

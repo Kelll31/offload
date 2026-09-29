@@ -77,16 +77,22 @@ public static class McpToolNames
     /// <summary>Полный цикл задачи локально: контекст → правки в песочнице → проверка → ревью → доказательства результата.</summary>
     public const string Solve = "local_solve";
 
+    /// <summary>Готовность ветки к PR: конфликты с базой, сборка/тесты, безопасность, гигиена, ревью, черновик PR — вердикт одним вызовом.</summary>
+    public const string PrReady = "local_pr_ready";
+
+    /// <summary>Отладка: воспроизведение → диагностика → история → исправление в песочнице → проверка и ревью.</summary>
+    public const string Debug = "local_debug";
+
     /// <summary>Инструменты только для чтения (безопасно разрешать без подтверждения).</summary>
     public static readonly IReadOnlyList<string> ReadOnly =
     [
         Status, AskFiles, SummarizeLog, ReviewDiff, CommitMessage, FindContext, SearchCode, Symbols, ProjectMap, CodeScan, SecurityReview, GitHistory,
     ];
 
-    /// <summary>Инструменты, изменяющие файлы.</summary>
+    /// <summary>Инструменты, изменяющие файлы (или запускающие команды проекта, как local_verify).</summary>
     public static readonly IReadOnlyList<string> Writing =
     [
-        WriteFile, EditFiles, AgentTask, Solve, ApplyPatch, Refactor, Verify, Diagnostics, Impact, Dependencies, Memory, Job,
+        WriteFile, EditFiles, AgentTask, Solve, ApplyPatch, Refactor, Verify, Diagnostics, Impact, Dependencies, Memory, Job, PrReady, Debug,
     ];
 
     public static readonly IReadOnlyList<string> All = [.. ReadOnly, .. Writing];

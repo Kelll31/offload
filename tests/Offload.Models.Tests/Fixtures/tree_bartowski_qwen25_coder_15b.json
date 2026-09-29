@@ -1,0 +1,314 @@
+[
+ {
+  "type": "file",
+  "oid": "55c38c8704cc0d5271b7479fb1abdebde815a253",
+  "size": 3409,
+  "path": ".gitattributes"
+ },
+ {
+  "type": "file",
+  "oid": "c39f32f7550bd7fabc18f957d08bba59ce8d2611",
+  "size": 601055008,
+  "lfs": {
+   "oid": "2b00b44724cb877ee442a190bec473eb7c50c5837ecf19fdd9fc3f0f48d94c39",
+   "size": 601055008,
+   "pointerSize": 134
+  },
+  "xetHash": "728272e135ec879074308330d9e0404f252658ec6a356d632b85a9f5a7442324",
+  "path": "Qwen2.5-Coder-1.5B-Instruct-IQ2_M.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "d6954eb3bf3db18841795f1174b3d69526e8c36c",
+  "size": 776664352,
+  "lfs": {
+   "oid": "82b606bd2b265e55640f5d349ca85a5e50de26199863255a4db4c523d6746695",
+   "size": 776664352,
+   "pointerSize": 134
+  },
+  "xetHash": "28c7c1b5e7634ada1ce63c6b0bc0a5b8cd43eaca6e08a71a06c2c1e4f34eede7",
+  "path": "Qwen2.5-Coder-1.5B-Instruct-IQ3_M.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "8dce752ec67d71a1a34f7253606104dcca8ded02",
+  "size": 731699488,
+  "lfs": {
+   "oid": "5ebc644352f2832e3904b7d6d014fe659d89b98f19a95f83a33ee2a71bcff8b9",
+   "size": 731699488,
+   "pointerSize": 134
+  },
+  "xetHash": "95c56326305b2aef3db5044ad1fd330f04d007d077149554d8d7755a5351cf78",
+  "path": "Qwen2.5-Coder-1.5B-Instruct-IQ3_XS.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "edcead42e824d8f0070a47f8314810863c1fe877",
+  "size": 895732000,
+  "lfs": {
+   "oid": "aef1c721b1624ccce701144d6908f01ac24cd17e33dc70a47ab37a3417458750",
+   "size": 895732000,
+   "pointerSize": 134
+  },
+  "xetHash": "a9e77895b91b17bc3aa3006d5df9b26f1abad050c5152e33eea4037c8a172431",
+  "path": "Qwen2.5-Coder-1.5B-Instruct-IQ4_XS.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "513f24bbc219c3102628ee7aea2d396c8f6519d8",
+  "size": 676305184,
+  "lfs": {
+   "oid": "f2fb79a783a0ee3fc7175b750c94649cc942bf98e8fd35587812be8b191b5c23",
+   "size": 676305184,
+   "pointerSize": 134
+  },
+  "xetHash": "d465a17bea81e849168ea030b8fd4793a6f44a582d4d486e93634b8a96c4283a",
+  "path": "Qwen2.5-Coder-1.5B-Instruct-Q2_K.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "ba2332834161dbb2708aeacd2a63558fcd8b49ff",
+  "size": 732825376,
+  "lfs": {
+   "oid": "a902f0f276565aee489ddd05e990a9782979db9231be0dca1a9622a664fb3599",
+   "size": 732825376,
+   "pointerSize": 134
+  },
+  "xetHash": "75c9c73b820ac0d396924ade5cb316a2b4a77f5041a3b9a2cf6bfee064dfcac2",
+  "path": "Qwen2.5-Coder-1.5B-Instruct-Q2_K_L.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "2e689893ea6d3b89319149860932f4aa026301e4",
+  "size": 880163104,
+  "lfs": {
+   "oid": "f5a9350364e8b231c11475f43c3039326a86c0ee890deaaf2b5a055d1c90cbd3",
+   "size": 880163104,
+   "pointerSize": 134
+  },
+  "xetHash": "5d99f8a1d92f88bf8fa5caac8d229922220231fcc22a1ebe364e9f0823f24af0",
+  "path": "Qwen2.5-Coder-1.5B-Instruct-Q3_K_L.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "6331ae8858e5bde7e1513e8777c11581c2666c73",
+  "size": 824178976,
+  "lfs": {
+   "oid": "0136801c84c9bb39f2e028a069f6b02a0a284073363550cea1a2ae5f2900c4d3",
+   "size": 824178976,
+   "pointerSize": 134
+  },
+  "xetHash": "52922eca15637f05b5f89b45056abf09e447cea2dffbdc57700d4fd6bf953da0",
+  "path": "Qwen2.5-Coder-1.5B-Instruct-Q3_K_M.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "cf33acf56885e4b10255fd5669d5a55f440d383c",
+  "size": 760944928,
+  "lfs": {
+   "oid": "523c3c957766904bee736932cb088b9d837d850b21d6d0236c5feb091b29e16c",
+   "size": 760944928,
+   "pointerSize": 134
+  },
+  "xetHash": "7fd808f1c369dac7ad3e73ce7ae02e9cce86ff49dc19b546e5e5e9842b38b188",
+  "path": "Qwen2.5-Coder-1.5B-Instruct-Q3_K_S.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "204ed7dd189b43c9256e39f735584369c375b3ba",
+  "size": 936683296,
+  "lfs": {
+   "oid": "54447a739273760e38c7c259777ecec3438132d1202084973279d6376b792ad7",
+   "size": 936683296,
+   "pointerSize": 134
+  },
+  "xetHash": "b7f7b6cc576eeed29acd4dafaca0c2a20b5b07d92305d8f242e02c192997034b",
+  "path": "Qwen2.5-Coder-1.5B-Instruct-Q3_K_XL.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "58ca4d102a833cd0055dabfc895fbaf1fcc811cf",
+  "size": 937535776,
+  "lfs": {
+   "oid": "1165e56fbe4751906354a065e0d1d84e7db0352750929d6fe508fd0565f650a4",
+   "size": 937535776,
+   "pointerSize": 134
+  },
+  "xetHash": "d944bef398705c5ae3131aa4e9c52bac42cb50443d6e547a51338d8869c51149",
+  "path": "Qwen2.5-Coder-1.5B-Instruct-Q4_0.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "a613f02436ff990ca253bd5c96aa0a9b57e08f86",
+  "size": 934955296,
+  "lfs": {
+   "oid": "a9fc4b8bf100f57e1d509018e8b46d74c101a7119aa66ef7a1f651f9cbc2eb0c",
+   "size": 934955296,
+   "pointerSize": 134
+  },
+  "xetHash": "cb520e564df4ebd6463ffd27daefe62553621df8d9e8fc07464469f9cdf7242b",
+  "path": "Qwen2.5-Coder-1.5B-Instruct-Q4_0_4_4.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "fc7a1cd93e622e236caf55cb77f25c7682e4a13a",
+  "size": 934955296,
+  "lfs": {
+   "oid": "bdaec13743cef4a7266434c4dddeeb4f494b25afc102123af175000451f8b5bb",
+   "size": 934955296,
+   "pointerSize": 134
+  },
+  "xetHash": "44e083d62f8ec1aef90f215061b0e1263243dbb3a1f8e3a514a0ec3d1829e7e3",
+  "path": "Qwen2.5-Coder-1.5B-Instruct-Q4_0_4_8.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "094d8265bc5c18f09cd64b873882106b66b4b37e",
+  "size": 934955296,
+  "lfs": {
+   "oid": "0320973b1d9504b769c1f2c58b4575f56edf4f8a338c0df14c490e24cc71b3a3",
+   "size": 934955296,
+   "pointerSize": 134
+  },
+  "xetHash": "9fd805bb3a6e69c179cee32d2cee775b29c2b9f01be5319ad621192eb3c31c5c",
+  "path": "Qwen2.5-Coder-1.5B-Instruct-Q4_0_8_8.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "1753818dce8e9c3628df0ebe6e67f8f5a250e75c",
+  "size": 1042568992,
+  "lfs": {
+   "oid": "38570009ab3f6d528ce1accd73f5c810ded5d4645d2ddff9cc55da307b23060b",
+   "size": 1042568992,
+   "pointerSize": 135
+  },
+  "xetHash": "a6b551c611d57509d5d939399f4a2491d7f4b22f566b65e1717c444f3499d9cf",
+  "path": "Qwen2.5-Coder-1.5B-Instruct-Q4_K_L.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "3c33d1b64744745d8057bcced1ab8da9b6c42fc9",
+  "size": 986048800,
+  "lfs": {
+   "oid": "f530705d447660a4336c329981af164b471b60b974b1d808d57e8ec9fe23b239",
+   "size": 986048800,
+   "pointerSize": 134
+  },
+  "xetHash": "c73d482d634b5c227d6634850b6e413fa4991b0a3399b832b9aef812c4949031",
+  "path": "Qwen2.5-Coder-1.5B-Instruct-Q4_K_M.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "33f7618deea2b17a77944eb8f2b56f76ba5ec08d",
+  "size": 940312864,
+  "lfs": {
+   "oid": "f04c69412530990b8f2de076b3413d6fdcc9ea8627388976112f7cb180034463",
+   "size": 940312864,
+   "pointerSize": 134
+  },
+  "xetHash": "a66cc1a73ae466037812063c709a7ddd85fafaf1e68532145cd2a3513e8020bc",
+  "path": "Qwen2.5-Coder-1.5B-Instruct-Q4_K_S.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "630daecb22e0562399270aec74a470bb00a24438",
+  "size": 1181570848,
+  "lfs": {
+   "oid": "7c77f2f4a7ad20606fdca8adb744692c9bdca8a634229d48efac71fc5d7c4524",
+   "size": 1181570848,
+   "pointerSize": 135
+  },
+  "xetHash": "bf8c0310f67ce2aa9977ef27f210897e1486a12496628a007f5d59b782f03200",
+  "path": "Qwen2.5-Coder-1.5B-Instruct-Q5_K_L.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "815220a83e68553222829ed1271ce8488f13aa05",
+  "size": 1125050656,
+  "lfs": {
+   "oid": "92440df3785a3caadbe744ee7d2cb1cb86dfe1c81140c8856739e1bd3561c8a9",
+   "size": 1125050656,
+   "pointerSize": 135
+  },
+  "xetHash": "713e381286c0f37db13944ac48f0cb2da4024b0aa4741aac21da49a44f171ea5",
+  "path": "Qwen2.5-Coder-1.5B-Instruct-Q5_K_M.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "99f3887a44154d2b8d89d8dac9de528a3d28b307",
+  "size": 1098729760,
+  "lfs": {
+   "oid": "6bcbdef60580032108cd87ef7d3fe2d9c637d6336d3ca0a5cdb85a6c76267d0f",
+   "size": 1098729760,
+   "pointerSize": 135
+  },
+  "xetHash": "1da1334fa7d757ced8af53cbac24210fa3b3ccb84c58afe695173071a0917d8e",
+  "path": "Qwen2.5-Coder-1.5B-Instruct-Q5_K_S.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "b6b70fcb5e2e693ac8b6be979ca007dd8b668275",
+  "size": 1272740128,
+  "lfs": {
+   "oid": "0960eab56b5a4dc03745ba3efeec69efce182f596bcef720720bf97983e10a22",
+   "size": 1272740128,
+   "pointerSize": 135
+  },
+  "xetHash": "86ddceb71e520e9f1a710b044a24ca8127ef79355fbb6fb03dbefe812666e2fe",
+  "path": "Qwen2.5-Coder-1.5B-Instruct-Q6_K.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "fff910bd1ac64d40f0720c5b76eb9c0e711b0b9a",
+  "size": 1329260320,
+  "lfs": {
+   "oid": "645de3c9b3fef6afaf42d4dcc106f491d28e5e91d7b35c5930e6a735bafae146",
+   "size": 1329260320,
+   "pointerSize": 135
+  },
+  "xetHash": "7bf6f4c87465f4a1aeb04389561256662f65eed512c4c71cd839be4d5e0710e2",
+  "path": "Qwen2.5-Coder-1.5B-Instruct-Q6_K_L.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "a48084bbbfe604298aa0319432990e76ced41704",
+  "size": 1646573344,
+  "lfs": {
+   "oid": "717ed8f7110e9ffc8a0e1a607ec131aa9ee3a8d69d5a6e11b5e15ed7b0f6af4c",
+   "size": 1646573344,
+   "pointerSize": 135
+  },
+  "xetHash": "85e04ba432136b8a8707c782378dff61cc29fc0b9da251c60b2ad184431d6655",
+  "path": "Qwen2.5-Coder-1.5B-Instruct-Q8_0.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "4371bc3952663d74af073a638fb6b98d1ba57669",
+  "size": 3093669376,
+  "lfs": {
+   "oid": "b10310f9b1ab63bd14b9710e84516e7b18b522079fd0c96812f948f9f817e68d",
+   "size": 3093669376,
+   "pointerSize": 135
+  },
+  "xetHash": "22d564bbd75e1fd2775a5fb9aacbf926737f423e6ad15442e2a06fa166820073",
+  "path": "Qwen2.5-Coder-1.5B-Instruct-f16.gguf"
+ },
+ {
+  "type": "file",
+  "oid": "b79accd207eb11b3c3ab2987541832ed6f6a81f4",
+  "size": 2042214,
+  "lfs": {
+   "oid": "131358aa2e0e574edac0177c109ca1002e54b1986ddded1d396968e40ac27f2f",
+   "size": 2042214,
+   "pointerSize": 132
+  },
+  "xetHash": "529764eb4a1bad3819576a3a2542a414b1e616cc8911372e28ad222fa174c172",
+  "path": "Qwen2.5-Coder-1.5B-Instruct.imatrix"
+ },
+ {
+  "type": "file",
+  "oid": "ea3c08595731f64e79a8a58e22fec734c6f176c6",
+  "size": 10850,
+  "path": "README.md"
+ }
+]

@@ -52,6 +52,9 @@ internal sealed class ToolStats
     /// <summary>Поправка «точные токены / эвристика» для этого вызова (null — только эвристика).</summary>
     public double? TokenRatio { get; set; }
 
+    /// <summary>Хотя бы один ответ модели в вызове обрезан по max_tokens (такой результат не кэшируется).</summary>
+    public bool AnyTruncated { get; private set; }
+
     public void AddScanned(long chars, int files = 0)
     {
         lock (_lock)
@@ -100,6 +103,7 @@ internal sealed class ToolStats
             CompletionTokens += r.CompletionTokens;
             ModelCalls++;
             ModelTime += r.Duration;
+            if (r.Truncated) AnyTruncated = true;
             var tps = r.GenerationTokensPerSecond;
             if (tps is null && r.CompletionTokens > 0 && r.Duration.TotalSeconds > 0) tps = r.CompletionTokens / r.Duration.TotalSeconds;
             if (tps is > 0) LastTps = tps;
@@ -133,7 +137,11 @@ internal sealed class LocalModel(LlamaClient client, AppConfig cfg, ProgressRepo
     /// <summary>Роль модели этого вызова (quality — основная, fast — быстрая).</summary>
     public ModelRole Role => role;
 
-    public InstalledModel? Model { get; } = cfg.RoleModel(role);
+    /// <summary>
+    /// Установленная модель роли (сэмплинг, отключение размышлений). Удалённый сервер (клиентский режим) — null: там другая
+    /// модель, её умолчания задаёт тот сервер, а размышления отключаются по шаблону чата из /props (<see cref="ServerProps.ReasoningHint"/>).
+    /// </summary>
+    public InstalledModel? Model { get; } = client.IsRemote ? null : cfg.RoleModel(role);
     public int ContextPerSlot { get; private set; } = 8192;
     public ServerProps? Props { get; private set; }
 
@@ -141,6 +149,7 @@ internal sealed class LocalModel(LlamaClient client, AppConfig cfg, ProgressRepo
     {
         get
         {
+            if (client.IsRemote) return $"{client.Model} @ {RemoteServer.DisplayHost(client.BaseUrl)}";
             var name = Model?.DisplayName;
             if (string.IsNullOrWhiteSpace(name)) name = Model?.Id;
             if (string.IsNullOrWhiteSpace(name)) name = Props?.ModelAlias ?? "local model";
@@ -155,7 +164,9 @@ internal sealed class LocalModel(LlamaClient client, AppConfig cfg, ProgressRepo
         Props = await client.GetPropsAsync(ct).ConfigureAwait(false);
         var ctx = Props?.ContextPerSlot ?? 0;
         if (ctx <= 0 && role != ModelRole.Quality && Model is not null) ctx = ModelRoleConfig.AuxContext(role, Model);
-        if (ctx <= 0) ctx = cfg.Server.ContextSize > 0 ? cfg.Server.ContextSize : Model?.RecommendedContext ?? 0;
+        // Удалённый сервер без /props (не llama.cpp): контекст по последней проверке трея, иначе 8192 — с запасом.
+        if (ctx <= 0 && client.IsRemote) ctx = cfg.Remote?.ContextSize ?? 0;
+        else if (ctx <= 0) ctx = cfg.Server.ContextSize > 0 ? cfg.Server.ContextSize : Model?.RecommendedContext ?? 0;
         if (ctx <= 0) ctx = 8192;
         ContextPerSlot = ctx;
     }
@@ -186,12 +197,14 @@ internal sealed class LocalModel(LlamaClient client, AppConfig cfg, ProgressRepo
     /// (ChatRequest.ChatTemplateKwargs {"enable_thinking": false} или ReasoningEffort "low");
     /// ответ дополнительно очищается от &lt;think&gt; в OutputCleaner.
     /// </summary>
-    internal static ChatRequest BuildRequest(InstalledModel? model, IReadOnlyList<ChatMessage> messages, int maxTokens, ResponseFormat? format = null)
+    /// <param name="reasoningHint">Способ отключения размышлений, когда записи о модели нет (удалённый сервер: по шаблону чата из /props).</param>
+    internal static ChatRequest BuildRequest(InstalledModel? model, IReadOnlyList<ChatMessage> messages, int maxTokens, ResponseFormat? format = null,
+        ReasoningControl? reasoningHint = null)
     {
         var s = model?.Sampling;
         IReadOnlyDictionary<string, object>? kwargs = null;
         string? effort = null;
-        switch (model?.Reasoning ?? ReasoningControl.None)
+        switch (model?.Reasoning ?? reasoningHint ?? ReasoningControl.None)
         {
             case ReasoningControl.EnableThinkingKwarg:
                 kwargs = new Dictionary<string, object> { ["enable_thinking"] = false };
@@ -216,7 +229,10 @@ internal sealed class LocalModel(LlamaClient client, AppConfig cfg, ProgressRepo
     }
 
     public Task<ModelReply> ChatAsync(string system, string user, int maxTokens, string label, CancellationToken ct) =>
-        SendAsync(BuildRequest(Model, [ChatMessage.System(system), ChatMessage.User(user)], maxTokens), system, user, label, ct);
+        SendAsync(BuildRequest(Model, [ChatMessage.System(system), ChatMessage.User(user)], maxTokens, null, ReasoningHint), system, user, label, ct);
+
+    /// <summary>Отключение размышлений без записи о модели: только для удалённого сервера (по шаблону чата из /props).</summary>
+    private ReasoningControl? ReasoningHint => Model is null && client.IsRemote ? Props?.ReasoningHint : null;
 
     /// <summary>
     /// Запрос со структурированным выводом (ROADMAP §9.2): response_format json_schema — llama-server ограничивает генерацию
@@ -225,7 +241,7 @@ internal sealed class LocalModel(LlamaClient client, AppConfig cfg, ProgressRepo
     public async Task<ModelJsonReply> ChatJsonAsync(string system, string user, ResponseFormat format, int maxTokens, string label, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(format);
-        var reply = await SendAsync(BuildRequest(Model, [ChatMessage.System(system), ChatMessage.User(user)], maxTokens, format),
+        var reply = await SendAsync(BuildRequest(Model, [ChatMessage.System(system), ChatMessage.User(user)], maxTokens, format, ReasoningHint),
             system, user, label, ct).ConfigureAwait(false);
         return new ModelJsonReply(reply, TryParseJson(reply.Text));
     }
@@ -287,7 +303,7 @@ internal sealed class LocalModel(LlamaClient client, AppConfig cfg, ProgressRepo
             }
             catch (LlamaApiException ex)
             {
-                throw MapError(ex);
+                throw MapError(ex, client.IsRemote);
             }
         }
         stats.Add(result);
@@ -302,11 +318,25 @@ internal sealed class LocalModel(LlamaClient client, AppConfig cfg, ProgressRepo
     /// Ошибки llama-server → понятные IDE сообщения на английском. Классификация — по LlamaApiException.Kind
     /// (его выставляет слой Llama по типу ошибки/кодам), подробности — только из Detail: Message локализован для UI.
     /// </summary>
-    internal static Exception MapError(LlamaApiException ex)
+    /// <param name="ex">Ошибка слоя Llama.</param>
+    /// <param name="remote">Удалённый сервер (клиентский режим): советы про сеть и ключ того сервера, а не про трей.</param>
+    internal static Exception MapError(LlamaApiException ex, bool remote = false)
     {
         Log.Warn("mcp", $"llama-server: {ex.Kind} {ex.StatusCode}: {ex.Message}");
         var detail = EnglishDetail(ex.Detail);
         var suffix = detail is null ? "" : " Details: " + detail;
+        if (remote)
+        {
+            switch (ex.Kind)
+            {
+                case LlamaErrorKind.Unauthorized:
+                    return new ToolException("The remote model server rejected the API key (401). Copy the key from Offload → Settings → Network access on the host PC into Offload → Settings → Remote server on this PC.");
+                case LlamaErrorKind.NotRunning:
+                case LlamaErrorKind.ConnectionFailed:
+                case LlamaErrorKind.ConnectionLost:
+                    return new ToolException("Lost connection to the remote model server (network, VPN or the host PC). Retry once; if it repeats, do the task yourself." + suffix);
+            }
+        }
         switch (ex.Kind)
         {
             case LlamaErrorKind.Unauthorized:

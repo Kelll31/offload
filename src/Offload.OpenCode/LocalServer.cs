@@ -31,20 +31,18 @@ internal static class LocalServer
         return client;
     });
 
-    /// <summary>URL для клиента: 0.0.0.0/:: (прослушивание всех адресов) заменяются на петлевой адрес, IPv6 — в скобках.</summary>
-    internal static string ClientBaseUrl(ServerSettings s)
-    {
-        var h = (s.Host ?? "").Trim();
-        if (h is "" or "0.0.0.0" or "*" or "+") h = "127.0.0.1";
-        else if (h is "::" or "[::]") h = "[::1]";
-        else if (h.Contains(':') && !h.StartsWith('[')) h = $"[{h}]";
-        return $"http://{h}:{s.Port}";
-    }
+    /// <summary>
+    /// URL своего сервера для клиента: 0.0.0.0/:: (прослушивание всех адресов) заменяются на петлевой адрес, IPv6 — в скобках;
+    /// в режиме «Доступ из сети» с конкретным адресом — этот адрес (петлевой тогда не отвечает).
+    /// </summary>
+    internal static string ClientBaseUrl(ServerSettings s) => LanServer.ClientBaseUrl(s.ListenHost(), s.Port);
 
     /// <param name="maxLoadingWait">Сколько ждать, пока сервер загружает модель (/health = 503).</param>
     public static async Task<ServerProbe> ProbeAsync(AppConfig cfg, Action<string>? report, TimeSpan maxLoadingWait, CancellationToken ct)
     {
-        var baseUrl = ClientBaseUrl(cfg.Server);
+        // Клиентский режим: удалённый сервер (адрес и ключ — из настроек «Удалённый сервер»).
+        var ep = cfg.MainEndpoint();
+        var baseUrl = ep.BaseUrl;
         var sw = Stopwatch.StartNew();
         var lastReport = TimeSpan.Zero;
         while (true)
@@ -55,6 +53,8 @@ internal static class LocalServer
                 using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
                 cts.CancelAfter(TimeSpan.FromSeconds(15));
                 using var req = new HttpRequestMessage(HttpMethod.Get, baseUrl + "/health");
+                // Удалённый сервер может стоять за обратным прокси, требующим ключ и для /health.
+                if (ep.IsRemote && ep.ApiKey.Length > 0) req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", ep.ApiKey);
                 using var resp = await ClientLazy.Value.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cts.Token);
                 code = resp.StatusCode;
             }
@@ -65,8 +65,9 @@ internal static class LocalServer
             catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException or IOException)
             {
                 Log.Warn("opencode", $"llama-server недоступен ({baseUrl}): {ex.Message}");
-                return new ServerProbe(false, null,
-                    L.F("Локальный сервер модели не отвечает ({0}). Запустите сервер в Offload и повторите попытку.", baseUrl));
+                return new ServerProbe(false, null, ep.IsRemote
+                    ? L.F("Удалённый сервер модели не отвечает ({0}). Проверьте сеть или VPN и Offload на том компьютере.", baseUrl)
+                    : L.F("Локальный сервер модели не отвечает ({0}). Запустите сервер в Offload и повторите попытку.", baseUrl));
             }
 
             if (code != HttpStatusCode.ServiceUnavailable || sw.Elapsed >= maxLoadingWait) break;
@@ -79,7 +80,8 @@ internal static class LocalServer
             await Task.Delay(TimeSpan.FromSeconds(2), ct);
         }
 
-        return new ServerProbe(true, await TryGetContextAsync(baseUrl, cfg.Server.ApiKey, UsesUnifiedKv(cfg.Server), ct), null);
+        // Настройки слотов удалённого сервера неизвестны — KV считаем общим (оценка контекста с запасом, как в LlamaClient.FromConfig).
+        return new ServerProbe(true, await TryGetContextAsync(baseUrl, ep.ApiKey, ep.IsRemote || UsesUnifiedKv(cfg.Server), ct), null);
     }
 
     /// <summary>

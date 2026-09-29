@@ -5,7 +5,7 @@
   // (при более старой установленной сборке интерфейс предупреждает перед активацией).
   // "version" — номер выпуска каталога (ГГГГММДДNN). Удалённый каталог (catalog/catalog.json, подпись Ed25519) применяется,
   // только если его версия больше встроенной; при правке каталога увеличивайте номер.
-  "version": 2026092400,
+  "version": 2026092700,
   "models": [
     {
       "id": "qwen3.6-35b-a3b-q4",
@@ -592,6 +592,78 @@
         "rag",
         "code-search"
       ]
+    },
+    {
+      // Модели автодополнения (role = fim): базовые Qwen2.5-Coder с токенами <|fim_prefix|>/<|fim_suffix|>/<|fim_middle|>,
+      // сборки ggml-org — те же, что рекомендует llama.vscode. В репозиториях только Q8_0. Сэмплинг задаёт IDE в запросе.
+      "id": "qwen2.5-coder-1.5b-fim-q8",
+      "displayName": "Qwen2.5-Coder 1.5B (автодополнение)",
+      "displayNameEn": "Qwen2.5-Coder 1.5B (autocomplete)",
+      "description": "Базовая модель Qwen2.5-Coder на 1,5 млрд параметров со специальными FIM-токенами: дописывает код между курсором и остальным файлом — автодополнение в IDE, как у Copilot, но локально (llama.vscode через /infill, Continue). Для чата и вызова инструментов не подходит. Файл Q8_0 около 1,6 ГБ, контекст до 32K; работает на любой видеокарте рядом с основной моделью или на процессоре. Лицензия Apache-2.0.",
+      "descriptionEn": "Base Qwen2.5-Coder model, 1.5B parameters, with dedicated FIM tokens: completes code between the cursor and the rest of the file — Copilot-style autocomplete in the IDE, but local (llama.vscode via /infill, Continue). Not suited for chat or tool calling. The Q8_0 file is about 1.6 GB, up to 32K context; runs on any GPU next to the main model or on the CPU. License: Apache-2.0.",
+      "role": "fim",
+      "repo": "ggml-org/Qwen2.5-Coder-1.5B-Q8_0-GGUF",
+      "revision": "8be1b8a895a84beea772817caaa71eba6b6e0d07",
+      "quants": ["Q8_0"],
+      "files": [
+        { "quant": "Q8_0", "path": "qwen2.5-coder-1.5b-q8_0.gguf", "size": 1646573056, "sha256": "29871c94d15727a6e243f79a37113d4ae625a6215b5e800bf41a23af2da32832" }
+      ],
+      "approxSizeBytes": 1646573056,
+      "paramsB": 1.54,
+      "activeParamsB": 1.54,
+      "isMoe": false,
+      "nativeContext": 32768,
+      "defaultContext": 8192,
+      "blockCount": 28,
+      "kv": { "layers": 28, "kvHeads": 2, "headDim": 128 },
+      "goodToolCalling": false,
+      "sampling": { "temperature": 0.1, "topP": 0.9, "topK": 40, "minP": 0.0, "repeatPenalty": 1.0, "presencePenalty": 0.0 },
+      "license": "Apache-2.0",
+      "minVramGb": 1,
+      "minRamGb": 0,
+      "isReasoning": false,
+      "reasoning": "None",
+      "hasMtp": false,
+      "architecture": "qwen2",
+      "cpuFriendly": true,
+      "priority": 220,
+      "releaseDate": "2024-09-18",
+      "tags": ["fim", "autocomplete", "code", "tiny"]
+    },
+    {
+      "id": "qwen2.5-coder-3b-fim-q8",
+      "displayName": "Qwen2.5-Coder 3B (автодополнение)",
+      "displayNameEn": "Qwen2.5-Coder 3B (autocomplete)",
+      "description": "Базовая модель Qwen2.5-Coder на 3 млрд параметров с FIM-токенами для автодополнения кода в IDE (llama.vscode через /infill, Continue). Подсказывает точнее версии 1.5B, но занимает вдвое больше памяти и отвечает медленнее: файл Q8_0 около 3,3 ГБ, контекст до 32K. Только автодополнение, без чата и вызова инструментов. Лицензия Qwen Research — только для некоммерческого использования; для коммерческих проектов выберите версию 1.5B.",
+      "descriptionEn": "Base Qwen2.5-Coder model, 3B parameters, with FIM tokens for code autocomplete in the IDE (llama.vscode via /infill, Continue). More accurate than the 1.5B variant but uses twice the memory and responds slower: the Q8_0 file is about 3.3 GB, up to 32K context. Autocomplete only — no chat or tool calling. License: Qwen Research — non-commercial use only; pick the 1.5B variant for commercial projects.",
+      "role": "fim",
+      "repo": "ggml-org/Qwen2.5-Coder-3B-Q8_0-GGUF",
+      "revision": "9c1de162ae417c9c3aacde97c729c4128de047d8",
+      "quants": ["Q8_0"],
+      "files": [
+        { "quant": "Q8_0", "path": "qwen2.5-coder-3b-q8_0.gguf", "size": 3285476160, "sha256": "a522a906e299ed34db738b9626b2cd0da9e446c14674468a22fc2eae3dbd344d" }
+      ],
+      "approxSizeBytes": 3285476160,
+      "paramsB": 3.09,
+      "activeParamsB": 3.09,
+      "isMoe": false,
+      "nativeContext": 32768,
+      "defaultContext": 8192,
+      "blockCount": 36,
+      "kv": { "layers": 36, "kvHeads": 2, "headDim": 128 },
+      "goodToolCalling": false,
+      "sampling": { "temperature": 0.1, "topP": 0.9, "topK": 40, "minP": 0.0, "repeatPenalty": 1.0, "presencePenalty": 0.0 },
+      "license": "Qwen Research",
+      "minVramGb": 2,
+      "minRamGb": 0,
+      "isReasoning": false,
+      "reasoning": "None",
+      "hasMtp": false,
+      "architecture": "qwen2",
+      "cpuFriendly": true,
+      "priority": 230,
+      "releaseDate": "2024-11-08",
+      "tags": ["fim", "autocomplete", "code", "small"]
     }
   ]
 }

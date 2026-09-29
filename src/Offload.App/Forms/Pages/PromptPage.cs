@@ -17,6 +17,9 @@ internal sealed class PromptPage : PageBase
     private readonly CheckBox _restrictWrites = Kit.Check(L.T("Разрешать запись файлов только внутри рабочей папки IDE"));
     private readonly CheckBox _redactSecrets = Kit.Check(L.T("Скрывать значения секретов (ключи, токены, пароли) в тексте, который видят модели"));
     private readonly CheckBox _protectBuildFiles = Kit.Check(L.T("Запрещать инструментам правку файлов сборки (*.csproj, package.json, Makefile…) без явного разрешения"));
+    private readonly CheckBox _workCache = Kit.Check(L.T("Кэшировать ответы локальной модели: тот же вопрос по неизменённым файлам — без повторной генерации"));
+    private readonly NumericUpDown _workCacheMb = Kit.Number(5, 4096, 50, 80, increment: 10);
+    private readonly CheckBox _autoMemory = Kit.Check(L.T("Автоматическая память проекта: запоминать уроки агента и «грабли» проверок (записи с пометкой auto)"));
     private readonly NumericUpDown _priceIn = Kit.Number(0, 1000, 3, 90, decimals: 2, increment: 0.5m);
     private readonly NumericUpDown _priceOut = Kit.Number(0, 1000, 15, 90, decimals: 2, increment: 0.5m);
     private readonly Button _save;
@@ -53,6 +56,14 @@ internal sealed class PromptPage : PageBase
         root.AddRow(_restrictWrites);
         root.AddRow(_redactSecrets);
         root.AddRow(_protectBuildFiles);
+        root.AddRow(_workCache);
+        var cacheSize = Kit.Grid();
+        // Срок жизни — как в WorkCache (1…365 дней); в интерфейсе не меняется, только в config.json.
+        var ttlDays = Math.Clamp(ConfigStore.Current.Mcp.WorkCacheTtlDays, 1, 365);
+        cacheSize.AddField(L.T("Размер кэша ответов:"), _workCacheMb,
+            L.F("МБ на рабочую папку; ответ хранится {0}", Ui.Plural(ttlDays, "день", "дня", "дней")));
+        root.AddRow(cacheSize);
+        root.AddRow(_autoMemory);
 
         root.AddRow(Kit.Section(L.T("Цены облачной модели (для оценки экономии)")));
         var prices = Kit.Grid();
@@ -74,6 +85,13 @@ internal sealed class PromptPage : PageBase
         _restrictWrites.CheckedChanged += (_, _) => MarkDirty();
         _redactSecrets.CheckedChanged += (_, _) => MarkDirty();
         _protectBuildFiles.CheckedChanged += (_, _) => MarkDirty();
+        _workCache.CheckedChanged += (_, _) =>
+        {
+            _workCacheMb.Enabled = _workCache.Checked;
+            MarkDirty();
+        };
+        _workCacheMb.ValueChanged += (_, _) => MarkDirty();
+        _autoMemory.CheckedChanged += (_, _) => MarkDirty();
         _priceIn.ValueChanged += (_, _) => MarkDirty();
         _priceOut.ValueChanged += (_, _) => MarkDirty();
 
@@ -111,6 +129,10 @@ internal sealed class PromptPage : PageBase
             _restrictWrites.Checked = m.RestrictWritesToWorkspace;
             _redactSecrets.Checked = m.RedactSecrets;
             _protectBuildFiles.Checked = m.ProtectBuildFiles;
+            _workCache.Checked = m.WorkCache;
+            _workCacheMb.Value = Math.Clamp(m.WorkCacheMaxMb, (int)_workCacheMb.Minimum, (int)_workCacheMb.Maximum);
+            _workCacheMb.Enabled = m.WorkCache;
+            _autoMemory.Checked = m.AutoMemory;
             _priceIn.Value = Math.Clamp((decimal)m.CloudInputPricePerMTok, _priceIn.Minimum, _priceIn.Maximum);
             _priceOut.Value = Math.Clamp((decimal)m.CloudOutputPricePerMTok, _priceOut.Minimum, _priceOut.Maximum);
             _preset.SelectedIndex = DetectPreset();
@@ -215,6 +237,9 @@ internal sealed class PromptPage : PageBase
             m.RestrictWritesToWorkspace = _restrictWrites.Checked;
             m.RedactSecrets = _redactSecrets.Checked;
             m.ProtectBuildFiles = _protectBuildFiles.Checked;
+            m.WorkCache = _workCache.Checked;
+            m.WorkCacheMaxMb = (int)_workCacheMb.Value;
+            m.AutoMemory = _autoMemory.Checked;
             m.CloudInputPricePerMTok = (double)_priceIn.Value;
             m.CloudOutputPricePerMTok = (double)_priceOut.Value;
         }), L.T("Не удалось сохранить настройки"));

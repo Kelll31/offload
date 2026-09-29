@@ -5,6 +5,9 @@ using static Offload.Mcp.Infrastructure.TextUtil;
 
 namespace Offload.Mcp.Tools;
 
+/// <summary>Находка правил безопасности: серьёзность, «путь:строка», правило, сообщение, строка кода (секрет замаскирован).</summary>
+internal sealed record SecurityFinding(string Severity, string Where, string Rule, string Message, string Text, bool Secret = false);
+
 /// <summary>
 /// local_security_review: проверка безопасности только изменённого кода (git diff + новые файлы). Детерминированные правила
 /// по добавленным строкам (секреты — маскируются, опасные API, снятые проверки, новые зависимости, чувствительные файлы), затем
@@ -21,45 +24,7 @@ internal static partial class SecurityReviewTool
         var set = await GitDiffs.CollectAsync(ctx, repo, t, includeUntracked: true).ConfigureAwait(false);
         ctx.Stats.AddScanned(set.Files.Sum(f => (long)f.Text.Length), set.Files.Count);
 
-        var findings = new List<(string Severity, string Where, string Rule, string Message, string Text)>();
-        var sensitive = new List<string>();
-        foreach (var f in set.Files)
-        {
-            var lang = Symbols.LangOf(f.Path);
-            if (SensitivePath().IsMatch(f.Path)) sensitive.Add(f.Path);
-            if (IsManifest(f.Path)) AddDependencyFindings(f, findings);
-            foreach (var (line, op, text) in Lines(f.Text))
-            {
-                var where = $"{f.Path}:{line}";
-                if (op == '-')
-                {
-                    if (RemovedGuard().IsMatch(text) && !CodeIndex.IsCommentLine(text))
-                        findings.Add(("medium", where, "guard-removed", "a security/validation check was removed or changed", text.Trim()));
-                    continue;
-                }
-                foreach (var h in CodeRules.Secrets(text)) findings.Add((h.Severity, where, h.Rule, h.Message, CodeRules.RedactLine(text.Trim())));
-                if (CodeIndex.IsCommentLine(text)) continue;
-                foreach (var h in CodeRules.Unsafe(lang, text)) findings.Add((h.Severity, where, h.Rule, h.Message, text.Trim()));
-            }
-        }
-        // Новые (неотслеживаемые) файлы — целиком, через те же проверки чтения.
-        foreach (var u in set.Untracked.Take(200))
-        {
-            SourceFile? file;
-            // Исходный текст: правила секретов ищут сами значения (в отчёте их маскирует CodeRules.RedactLine).
-            try { file = CodeIndex.LoadOne(ctx, Path.Combine(set.RepoRoot, u), unredacted: true); }
-            catch (ToolException) { continue; }
-            if (file is null) continue;
-            if (SensitivePath().IsMatch(u)) sensitive.Add(u + " (new)");
-            for (var i = 0; i < file.Lines.Length; i++)
-            {
-                var text = file.Lines[i];
-                if (text.Length > 2000) continue;
-                foreach (var h in CodeRules.Secrets(text)) findings.Add((h.Severity, $"{u}:{i + 1}", h.Rule, h.Message, CodeRules.RedactLine(text.Trim())));
-                if (CodeIndex.IsCommentLine(text)) continue;
-                foreach (var h in CodeRules.Unsafe(file.Lang, text)) findings.Add((h.Severity, $"{u}:{i + 1}", h.Rule, h.Message, text.Trim()));
-            }
-        }
+        var (findings, sensitive) = RuleFindings(ctx, set);
 
         var sb = new StringBuilder($"security review of {set.Description}: {set.Files.Count} changed file(s) +{set.Added} −{set.Removed}, {set.Untracked.Count} new\n");
         if (set.Excluded.Count > 0) sb.Append($"secret files excluded from the diff (not read): {string.Join(", ", set.Excluded.Take(10))}\n");
@@ -89,6 +54,55 @@ internal static partial class SecurityReviewTool
             }
         }
         return sb.ToString().TrimEnd();
+    }
+
+    /// <summary>
+    /// Детерминированные находки по diff (добавленные/удалённые строки) и по новым неотслеживаемым файлам: секреты (значения
+    /// маскируются), опасные API, снятые проверки, новые зависимости; плюс список затронутых чувствительных файлов.
+    /// Общая часть local_security_review и local_pr_ready.
+    /// </summary>
+    internal static (List<SecurityFinding> Findings, List<string> Sensitive) RuleFindings(ToolContext ctx, DiffSet set)
+    {
+        var findings = new List<SecurityFinding>();
+        var sensitive = new List<string>();
+        foreach (var f in set.Files)
+        {
+            var lang = Symbols.LangOf(f.Path);
+            if (SensitivePath().IsMatch(f.Path)) sensitive.Add(f.Path);
+            if (IsManifest(f.Path)) AddDependencyFindings(f, findings);
+            foreach (var (line, op, text) in Lines(f.Text))
+            {
+                var where = $"{f.Path}:{line}";
+                if (op == '-')
+                {
+                    if (RemovedGuard().IsMatch(text) && !CodeIndex.IsCommentLine(text))
+                        findings.Add(new("medium", where, "guard-removed", "a security/validation check was removed or changed", text.Trim()));
+                    continue;
+                }
+                foreach (var h in CodeRules.Secrets(text)) findings.Add(new(h.Severity, where, h.Rule, h.Message, CodeRules.RedactLine(text.Trim()), Secret: true));
+                if (CodeIndex.IsCommentLine(text)) continue;
+                foreach (var h in CodeRules.Unsafe(lang, text)) findings.Add(new(h.Severity, where, h.Rule, h.Message, text.Trim()));
+            }
+        }
+        // Новые (неотслеживаемые) файлы — целиком, через те же проверки чтения.
+        foreach (var u in set.Untracked.Take(200))
+        {
+            SourceFile? file;
+            // Исходный текст: правила секретов ищут сами значения (в отчёте их маскирует CodeRules.RedactLine).
+            try { file = CodeIndex.LoadOne(ctx, Path.Combine(set.RepoRoot, u), unredacted: true); }
+            catch (ToolException) { continue; }
+            if (file is null) continue;
+            if (SensitivePath().IsMatch(u)) sensitive.Add(u + " (new)");
+            for (var i = 0; i < file.Lines.Length; i++)
+            {
+                var text = file.Lines[i];
+                if (text.Length > 2000) continue;
+                foreach (var h in CodeRules.Secrets(text)) findings.Add(new(h.Severity, $"{u}:{i + 1}", h.Rule, h.Message, CodeRules.RedactLine(text.Trim()), Secret: true));
+                if (CodeIndex.IsCommentLine(text)) continue;
+                foreach (var h in CodeRules.Unsafe(file.Lang, text)) findings.Add(new(h.Severity, $"{u}:{i + 1}", h.Rule, h.Message, text.Trim()));
+            }
+        }
+        return (findings, sensitive);
     }
 
     /// <summary>Строки diff с номерами новой версии: (номер, операция '+'/'-'/' ', текст).</summary>
@@ -123,15 +137,15 @@ internal static partial class SecurityReviewTool
         Path.GetFileName(path) is "package.json" or "requirements.txt" or "pyproject.toml" or "go.mod" or "Cargo.toml" or "pom.xml" or "build.gradle" or "Directory.Packages.props"
         || path.EndsWith("proj", StringComparison.OrdinalIgnoreCase);
 
-    private static void AddDependencyFindings(FileDiff f, List<(string, string, string, string, string)> findings)
+    private static void AddDependencyFindings(FileDiff f, List<SecurityFinding> findings)
     {
         foreach (var (line, op, text) in Lines(f.Text))
         {
             if (op != '+') continue;
             if (DependencyLine().Match(text) is { Success: true } m)
-                findings.Add(("info", $"{f.Path}:{line}", "new-dependency", "dependency added/changed: review its source, license and version", text.Trim()));
+                findings.Add(new("info", $"{f.Path}:{line}", "new-dependency", "dependency added/changed: review its source, license and version", text.Trim()));
             else if (text.Contains("\"postinstall\"", StringComparison.Ordinal) || text.Contains("\"preinstall\"", StringComparison.Ordinal))
-                findings.Add(("medium", $"{f.Path}:{line}", "install-script", "npm install script runs arbitrary code on install", text.Trim()));
+                findings.Add(new("medium", $"{f.Path}:{line}", "install-script", "npm install script runs arbitrary code on install", text.Trim()));
         }
     }
 

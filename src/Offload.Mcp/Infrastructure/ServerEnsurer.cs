@@ -43,6 +43,7 @@ internal static class ServerEnsurer
         ModelRole role = ModelRole.Quality)
     {
         if (role != ModelRole.Quality) return await EnsureAuxAsync(cfg, state, progress, role, ct).ConfigureAwait(false);
+        if (cfg.IsRemote()) return await EnsureRemoteAsync(cfg, progress, ct).ConfigureAwait(false);
         var client = LlamaClient.ForRole(cfg, role);
         var health = await client.GetHealthAsync(ct).ConfigureAwait(false);
         if (health == HealthState.Ready) return await VerifiedAsync(client, role, fromTray: false, ct).ConfigureAwait(false);
@@ -111,7 +112,8 @@ internal static class ServerEnsurer
     /// </summary>
     private static async Task<LlamaClient> EnsureAuxAsync(AppConfig cfg, SessionState state, ProgressReporter progress, ModelRole role, CancellationToken ct)
     {
-        if (!cfg.SetupCompleted || cfg.ActiveModel() is null) throw new ToolException(NotSetUpMessage);
+        // В клиентском режиме основной модели здесь нет, но локальные серверы ролей работают, если модели назначены.
+        if (!cfg.IsRemote() && (!cfg.SetupCompleted || cfg.ActiveModel() is null)) throw new ToolException(NotSetUpMessage);
         if (cfg.RoleModel(role) is null) throw new ToolException($"No model is assigned to the '{role.Key()}' role in Offload.");
 
         await state.EnsureLock.WaitAsync(ct).ConfigureAwait(false);
@@ -139,6 +141,48 @@ internal static class ServerEnsurer
         {
             state.EnsureLock.Release();
         }
+    }
+
+    /// <summary>
+    /// Клиентский режим: основная модель на удалённом сервере. Трей не нужен (он этот сервер не запускает): /health — готов,
+    /// 503 — ждём загрузку модели не дольше ServerStartTimeoutSeconds, нет ответа — сразу ToolException (сеть/VPN/выключенный ПК).
+    /// Модель — id из /v1/models (предпочтительно сохранённый трем); псевдоним «offload» не сверяется: сервер может быть любым
+    /// OpenAI-совместимым, пользователь выбрал его адрес явно.
+    /// </summary>
+    internal static async Task<LlamaClient> EnsureRemoteAsync(AppConfig cfg, ProgressReporter progress, CancellationToken ct)
+    {
+        var client = LlamaClient.FromConfig(cfg);
+        var host = RemoteServer.DisplayHost(client.BaseUrl);
+        if (string.IsNullOrEmpty(client.ApiKey))
+            throw new ToolException(
+                $"The API key of the remote model server ({host}) is not available on this PC (not saved, or encrypted for another Windows user). " +
+                "Re-enter it in Offload → Settings → Remote server; do this task yourself for now.");
+
+        var timeout = TimeSpan.FromSeconds(Math.Clamp(cfg.Mcp.ServerStartTimeoutSeconds, 10, 1800));
+        var sw = Stopwatch.StartNew();
+        while (true)
+        {
+            var health = await RemoteProbe.HealthAsync(client, ct).ConfigureAwait(false);
+            if (health.State == HealthState.Ready) break;
+            if (health.State == HealthState.Down)
+            {
+                Log.Warn("mcp", $"Удалённый сервер {host} недоступен: {health.Detail}");
+                var why = LocalModel.EnglishDetail(health.Detail) is { } d ? $" ({d})" : "";
+                throw new ToolException(
+                    $"The remote model server {host} is not reachable{why}. Check that the PC hosting the model is on, Offload runs there with network access enabled, " +
+                    "and the network/VPN is up; or turn off the remote server in Offload settings. Do this task yourself for now.");
+            }
+            if (sw.Elapsed >= timeout)
+                throw new ToolException($"The remote model server {host} is still loading its model after {timeout.TotalSeconds:0} s; retry later or do this task yourself.");
+            progress.Report($"Remote model on {host} is loading… {sw.Elapsed.TotalSeconds:0} s");
+            await Task.Delay(1000, ct).ConfigureAwait(false);
+        }
+
+        var served = await RemoteProbe.ModelIdsAsync(client, ct).ConfigureAwait(false);
+        var model = RemoteProbe.PickModel(served, client.Model);
+        if (!string.Equals(model, client.Model, StringComparison.Ordinal))
+            Log.Info("mcp", $"Удалённый сервер {host} не отдаёт модель {client.Model} — используется {model}");
+        return client.WithModel(model);
     }
 
     /// <summary>Трей запущен (при необходимости — запустить и дождаться IPC). true — сервер уже ответил Ready, пока ждали.</summary>

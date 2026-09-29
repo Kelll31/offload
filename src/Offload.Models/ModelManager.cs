@@ -174,10 +174,6 @@ public static class ModelManager
         if (missing.Count > 0)
             throw new ModelException(L.F("Не хватает частей разбитой модели: {0}.", string.Join(", ", missing.Select(Path.GetFileName))));
 
-        var template = info.ChatTemplate ?? "";
-        var reasoning = string.Equals(info.Architecture, "gpt-oss", StringComparison.OrdinalIgnoreCase) ? ReasoningControl.ReasoningEffort
-            : template.Contains("enable_thinking", StringComparison.Ordinal) ? ReasoningControl.EnableThinkingKwarg
-            : ReasoningControl.None;
         var name = string.IsNullOrWhiteSpace(displayName)
             ? (string.IsNullOrWhiteSpace(info.Name) ? BaseName(path) : info.Name!.Trim())
             : displayName.Trim();
@@ -192,9 +188,8 @@ public static class ModelManager
             RecommendedContext = info.ContextLength > 0 ? Math.Min(info.ContextLength, CustomRecommendedContext) : 8192,
             IsMoe = info.IsMoe,
             Architecture = info.Architecture,
-            // Уверенно судить о качестве вызова инструментов нельзя — ориентируемся на поддержку в шаблоне.
-            GoodToolCalling = template.Contains("tool", StringComparison.OrdinalIgnoreCase),
-            Reasoning = reasoning,
+            GoodToolCalling = ToolCallingFrom(info),
+            Reasoning = ReasoningFrom(info),
             HasMtp = info.NextNPredictLayers > 0,
             Sampling = new SamplingSettings(),
             IsCustom = true,
@@ -213,6 +208,21 @@ public static class ModelManager
         Log.Info("models", $"Добавлена пользовательская модель {model.Id}: {path} ({info.Architecture}, контекст {info.ContextLength})");
         return model;
     }
+
+    /// <summary>Как отключать рассуждения модели — по архитектуре и шаблону чата из заголовка GGUF.</summary>
+    internal static ReasoningControl ReasoningFrom(GgufInfo info)
+    {
+        ArgumentNullException.ThrowIfNull(info);
+        return string.Equals(info.Architecture, "gpt-oss", StringComparison.OrdinalIgnoreCase) ? ReasoningControl.ReasoningEffort
+            : (info.ChatTemplate ?? "").Contains("enable_thinking", StringComparison.Ordinal) ? ReasoningControl.EnableThinkingKwarg
+            : ReasoningControl.None;
+    }
+
+    /// <summary>
+    /// Уверенно судить о качестве вызова инструментов нельзя — ориентируемся на поддержку в шаблоне чата.
+    /// </summary>
+    internal static bool ToolCallingFrom(GgufInfo info) =>
+        (info.ChatTemplate ?? "").Contains("tool", StringComparison.OrdinalIgnoreCase);
 
     public static void SetActive(string modelId)
     {
@@ -235,11 +245,11 @@ public static class ModelManager
         });
         if (!found) throw new ModelException(L.F("Модель «{0}» не установлена.", modelId));
         if (notChat)
-            throw new ModelException(L.F("«{0}» — модель эмбеддингов или реранкер: она не может быть активной. Назначьте её роли на вкладке «Модели».", modelId));
+            throw new ModelException(L.F("«{0}» — модель эмбеддингов, реранкер или модель автодополнения: она не может быть активной. Назначьте её роли на вкладке «Модели».", modelId));
     }
 
     /// <summary>
-    /// Назначить установленную модель вспомогательной роли (fast/embed/rerank) или снять назначение (null).
+    /// Назначить установленную модель вспомогательной роли (fast/embed/rerank/fim) или снять назначение (null).
     /// Модель должна подходить роли (<see cref="ModelRoleConfig.IsCompatible"/>); быстрая роль не может совпадать с активной моделью.
     /// </summary>
     public static void AssignRole(ModelRole role, string? modelId)
@@ -435,9 +445,8 @@ public static class ModelManager
         }
         if (model.Kind != ModelKind.Chat)
         {
-            // Модель эмбеддингов/реранкер не становится активной; свободной роли назначается сама.
-            var role = model.Kind == ModelKind.Embed ? ModelRole.Embed : ModelRole.Rerank;
-            if (c.AssignedId(role) is null) c.Assign(role, model.Id);
+            // Модель эмбеддингов/реранкер/автодополнения не становится активной; свободной роли назначается сама.
+            if (ModelRoleConfig.RoleFor(model.Kind) is { } role && c.AssignedId(role) is null) c.Assign(role, model.Id);
             FixActive(c);
             return;
         }
@@ -454,7 +463,7 @@ public static class ModelManager
         if (c.Models.ActiveModelId is null || !c.Models.Installed.Any(m => m.Id == c.Models.ActiveModelId && m.Kind == ModelKind.Chat))
             c.Models.ActiveModelId = c.Models.Installed.FirstOrDefault(m => m.Kind == ModelKind.Chat)?.Id;
         c.Models.Roles ??= new ModelRoles();
-        foreach (var role in ModelRoleConfig.Auxiliary)
+        foreach (var role in ModelRoleConfig.Assignable)
         {
             if (c.AssignedId(role) is { } id && c.RoleModel(role) is null)
             {

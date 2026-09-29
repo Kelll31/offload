@@ -14,7 +14,7 @@ internal static class HttpExecPolicy
     public static readonly IReadOnlySet<string> AlwaysBlocked = new HashSet<string>(StringComparer.Ordinal)
     {
         McpToolNames.Verify, McpToolNames.WriteFile, McpToolNames.EditFiles, McpToolNames.AgentTask, McpToolNames.Solve,
-        McpToolNames.ApplyPatch, McpToolNames.Refactor,
+        McpToolNames.ApplyPatch, McpToolNames.Refactor, McpToolNames.Debug, McpToolNames.PrReady,
     };
 
     /// <summary>

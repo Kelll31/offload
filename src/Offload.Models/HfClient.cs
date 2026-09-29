@@ -97,6 +97,9 @@ public static partial class HfClient
         // Файл из каталога: размеры и SHA-256 уже известны (и закреплены) — сеть не нужна.
         if (model.FindFile(q) is { } known)
         {
+            // Части разбитой модели известны точно (модель найдена на Hugging Face на закреплённой ревизии).
+            if (known.Parts is { Count: > 0 } parts)
+                return new ResolvedModel(model, known.Quant, [new HfFile(known.Path, known.Size, known.Sha256), .. parts]);
             if (known.ExtraShards is not { Count: > 0 })
                 return new ResolvedModel(model, known.Quant, [new HfFile(known.Path, known.Size, known.Sha256)]);
 

@@ -44,6 +44,20 @@ internal sealed class LocalHub : IDisposable
 
     public void AddTreeEntry(string repo, object entry) => Tree(repo).Add(entry);
 
+    /// <summary>Ответ поиска GET /api/models (JSON-массив).</summary>
+    public string SearchJson { get; set; } = "[]";
+
+    /// <summary>Сведения о репозитории GET /api/models/{repo} (JSON); нет записи — 401, как у настоящего хаба.</summary>
+    public Dictionary<string, string> Infos { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>Закрытые репозитории: resolve без заголовка Authorization — 401.</summary>
+    public HashSet<string> Gated { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>Сколько байт файлов отдано CDN (проверка ограничения чтения заголовка).</summary>
+    public long ServedBytes => Interlocked.Read(ref _served);
+
+    private long _served;
+
     private List<object> Tree(string repo) => _trees.TryGetValue(repo, out var t) ? t : _trees[repo] = [];
 
     private async Task LoopAsync()
@@ -78,6 +92,17 @@ internal sealed class LocalHub : IDisposable
                 Write(ctx, Encoding.UTF8.GetBytes(JsonSerializer.Serialize(page)), "application/json");
                 return;
             }
+            if (path == "/api/models")
+            {
+                Write(ctx, Encoding.UTF8.GetBytes(SearchJson), "application/json");
+                return;
+            }
+            if (path.StartsWith("/api/models/", StringComparison.Ordinal))
+            {
+                if (Infos.TryGetValue(path["/api/models/".Length..], out var info)) Write(ctx, Encoding.UTF8.GetBytes(info), "application/json");
+                else ctx.Response.StatusCode = 401;
+                return;
+            }
             if (path.Contains("/resolve/"))
             {
                 // Как HF: resolve → 302 на подписанный адрес CDN.
@@ -85,6 +110,11 @@ internal sealed class LocalHub : IDisposable
                 var repo = path[1..i];
                 var rest = path[(i + "/resolve/".Length)..];
                 var file = rest[(rest.IndexOf('/') + 1)..];
+                if (Gated.Contains(repo) && ctx.Request.Headers["Authorization"] is null)
+                {
+                    ctx.Response.StatusCode = 401;
+                    return;
+                }
                 if (!_files.ContainsKey($"{repo}/{file}"))
                 {
                     ctx.Response.StatusCode = 404;
@@ -99,17 +129,22 @@ internal sealed class LocalHub : IDisposable
                 var key = path["/cdn/".Length..];
                 var data = _files[key];
                 long start = 0;
+                long end = data.Length - 1;
                 var range = ctx.Request.Headers["Range"];
                 if (range is not null && range.StartsWith("bytes=", StringComparison.Ordinal))
                 {
-                    start = long.Parse(range[6..].Split('-')[0]);
+                    var bounds = range[6..].Split('-');
+                    start = long.Parse(bounds[0]);
+                    if (bounds.Length > 1 && bounds[1].Length > 0) end = Math.Min(end, long.Parse(bounds[1]));
                     ctx.Response.StatusCode = 206;
-                    ctx.Response.AddHeader("Content-Range", $"bytes {start}-{data.Length - 1}/{data.Length}");
+                    ctx.Response.AddHeader("Content-Range", $"bytes {start}-{end}/{data.Length}");
                 }
-                ctx.Response.ContentLength64 = data.Length - start;
-                var limit = FailAfterBytes >= 0 ? Math.Min(data.Length - start, FailAfterBytes) : data.Length - start;
+                var length = end - start + 1;
+                ctx.Response.ContentLength64 = length;
+                var limit = FailAfterBytes >= 0 ? Math.Min(length, FailAfterBytes) : length;
                 ctx.Response.OutputStream.Write(data, (int)start, (int)limit);
-                if (limit < data.Length - start)
+                Interlocked.Add(ref _served, limit);
+                if (limit < length)
                 {
                     FailAfterBytes = -1; // оборвать один раз
                     ctx.Response.Abort();

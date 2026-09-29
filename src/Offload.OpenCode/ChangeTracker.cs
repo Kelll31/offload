@@ -95,7 +95,7 @@ internal static class ChangeTracker
     {
         try
         {
-            var r = await ProcessRunner.RunAsync(git, ["-C", workDir, "rev-parse", "--show-toplevel"],
+            var r = await ProcessRunner.RunAsync(git, [.. GitSafety.SafeConfig, "-C", workDir, "rev-parse", "--show-toplevel"],
                 workingDirectory: workDir, environment: GitEnv, timeout: GitTimeout, ct: ct);
             if (!r.Success) return null;
             var line = r.StdOut.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).FirstOrDefault();
@@ -116,9 +116,23 @@ internal static class ChangeTracker
     {
         try
         {
+            // git status запускает fsmonitor и clean-фильтры из конфигурации репозитория (недоверенной) — гасим их
+            // (GitSafety). Если драйвер погасить нельзя — git не запускаем, изменения отслеживаются по снимку файлов.
+            var cfg = await ProcessRunner.RunAsync(git, [.. GitSafety.SafeConfig, "-C", root, .. GitSafety.ListConfigArgs],
+                workingDirectory: root, environment: GitEnv, timeout: GitTimeout, ct: ct);
+            if (!cfg.Success)
+            {
+                Log.Warn("opencode", $"git status не запускается: конфигурация репозитория не прочитана: {cfg.StdErr.Trim()}");
+                return null;
+            }
+            if (!GitSafety.TryBuildNeutralizers(GitSafety.ParseCommandKeys(cfg.StdOut), out var neutral, out var bad))
+            {
+                Log.Warn("opencode", $"git status не запускается: драйвер «{bad}» из конфигурации репозитория не погасить");
+                return null;
+            }
             // -z: пути без кавычек и экранирования (core.quotepath не влияет), в UTF-8, относительно корня.
             var r = await ProcessRunner.RunAsync(git,
-                ["-c", "core.quotepath=off", "--no-optional-locks", "-C", root,
+                [.. GitSafety.SafeConfig, .. neutral, "-c", "core.quotepath=off", "--no-optional-locks", "-C", root,
                  "status", "--porcelain=v1", "-z", "--untracked-files=all"],
                 workingDirectory: root, environment: GitEnv, timeout: GitTimeout, ct: ct);
             if (!r.Success)

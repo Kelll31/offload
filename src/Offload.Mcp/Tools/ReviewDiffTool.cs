@@ -1,4 +1,5 @@
 using System.Text;
+using Offload.Core;
 using Offload.Mcp.Infrastructure;
 
 namespace Offload.Mcp.Tools;
@@ -9,7 +10,10 @@ internal static class ReviewDiffTool
     public const int MaxChunks = 8;
     private const string NoIssues = "No significant issues found";
 
-    public static async Task<string> RunAsync(ToolContext ctx, string? workingDirectory, string? target, string? focus, int maxAnswerTokens)
+    /// <summary>Версия шаблона промпта для ключа кэша результатов (менять при правке промптов ниже).</summary>
+    private const string CacheOp = "review_diff/1";
+
+    public static async Task<string> RunAsync(ToolContext ctx, string? workingDirectory, string? target, string? focus, int maxAnswerTokens, bool fresh = false)
     {
         var maxAnswer = Math.Clamp(maxAnswerTokens <= 0 ? 1200 : maxAnswerTokens, 64, 4096);
         var repo = GitDiffs.ResolveRepo(ctx, workingDirectory);
@@ -22,6 +26,10 @@ internal static class ReviewDiffTool
             if (set.Untracked.Count > 0) nothing += $"\nuntracked (not reviewed, contents not in diff): {string.Join(", ", set.Untracked.Take(20))}";
             return nothing;
         }
+
+        // Тот же diff (по содержимому) с тем же фокусом — готовое ревью без запуска модели.
+        var cacheKey = new WorkCacheKey(CacheOp, McpToolNames.ReviewDiff).Arg("focus", focus?.Trim() ?? "").Arg("max", maxAnswer).Diff(set);
+        if (await WorkCache.TryGetAsync(ctx, cacheKey, fresh).ConfigureAwait(false) is { } cached) return cached;
 
         var model = await ctx.GetModelAsync().ConfigureAwait(false);
         var focusText = string.IsNullOrWhiteSpace(focus) ? "" : $"\nFocus especially on: {focus.Trim()[..Math.Min(focus.Trim().Length, 300)]}.";
@@ -110,6 +118,8 @@ internal static class ReviewDiffTool
         sb.Append(cov);
         if (set.Excluded.Count > 0) sb.Append($"\nexcluded (secret files): {string.Join(", ", set.Excluded.Take(10))}");
         if (set.Untracked.Count > 0) sb.Append($"\nuntracked files (not reviewed): {string.Join(", ", set.Untracked.Take(15))}{(set.Untracked.Count > 15 ? ", …" : "")}");
-        return sb.ToString();
+        var output = sb.ToString();
+        WorkCache.Put(ctx, cacheKey, output);
+        return output;
     }
 }

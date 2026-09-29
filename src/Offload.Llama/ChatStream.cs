@@ -291,5 +291,10 @@ internal static class LlamaErrorText
         return message is not null && message.Contains("exceeds the available context size", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static string Shorten(string s, int max) => s.Length <= max ? s : s[..max] + "…";
+    /// <summary>Текст ошибки сервера (в клиентском режиме — недоверенного) для показа: без управляющих символов, не длиннее max.</summary>
+    private static string Shorten(string s, int max)
+    {
+        var clean = new string(s.Select(c => char.IsControl(c) && c is not ('\n' or '\t') ? ' ' : c).ToArray());
+        return clean.Length <= max ? clean : clean[..max] + "…";
+    }
 }

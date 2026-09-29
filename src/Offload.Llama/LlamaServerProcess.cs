@@ -52,6 +52,9 @@ public sealed class LlamaServerProcess : IDisposable
     /// </summary>
     public bool LastFailureBlamesBuild { get; private set; }
 
+    /// <summary>Последний неудачный запуск завершился нехваткой памяти (видеопамяти или ОЗУ) — по строкам журнала llama-server.</summary>
+    public bool LastFailureOutOfMemory { get; private set; }
+
     /// <summary>
     /// Клиент именно запущенного процесса (его адрес и ключ), а не текущих настроек: config.json могли изменить
     /// вручную после запуска. null — сервер не запущен.
@@ -68,10 +71,26 @@ public sealed class LlamaServerProcess : IDisposable
     public event Action<string>? OutputLine;
 
     /// <summary>
-    /// Расчёт размещения «Авто» под оборудование (FitCalculator живёт в Offload.Models, поэтому передаётся снаружи).
-    /// Вызывается перед каждым запуском в режиме «Авто»; null или ошибка — размещение решает --fit, как раньше.
+    /// Расчёт размещения под оборудование (FitCalculator живёт в Offload.Models, поэтому передаётся снаружи): «Авто»
+    /// (-c, --n-cpu-moe), разделение по видеокартам и подобранные параметры. Вызывается перед каждым запуском основного
+    /// сервера; null или ошибка — размещение решает --fit, как раньше.
     /// </summary>
     public Func<AppConfig, InstalledModel, CancellationToken, Task<ServerPlacement?>>? PlacementProvider { get; set; }
+
+    /// <summary>
+    /// Готовое размещение вместо <see cref="PlacementProvider"/> (пробные запуски автоподбора: одно и то же размещение
+    /// с разными параметрами, без пересчёта между пробами). null — обычный расчёт.
+    /// </summary>
+    public ServerPlacement? PlacementOverride { get; set; }
+
+    /// <summary>Последний запуск (удачный или нет) шёл с подобранными параметрами автоподбора.</summary>
+    public bool LastStartUsedTunedProfile { get; private set; }
+
+    /// <summary>
+    /// Не применять сохранённый профиль автоподбора при следующих запусках (повтор после неудачного запуска с ним:
+    /// профиль остаётся на диске, этот запуск идёт с обычными параметрами).
+    /// </summary>
+    public bool IgnoreTunedProfile { get; set; }
 
     /// <summary>
     /// Роль сервера. Quality — основной сервер (активная модель, порт и аргументы из настроек). Вспомогательная роль
@@ -103,6 +122,9 @@ public sealed class LlamaServerProcess : IDisposable
             {
                 if (State == ServerState.Running && _run is { } current && !current.Exited.Task.IsCompleted) return;
             }
+            LastStartUsedTunedProfile = false;
+            LastFailureBlamesBuild = false;
+            LastFailureOutOfMemory = false;
             // Проверки портов и запуск процесса — не в потоке интерфейса.
             var placement = await ResolvePlacementAsync(cfg, ct).ConfigureAwait(false);
             var run = await Task.Run(() => Launch(cfg, placement), ct).ConfigureAwait(false);
@@ -192,13 +214,15 @@ public sealed class LlamaServerProcess : IDisposable
 
     private async Task<ServerPlacement?> ResolvePlacementAsync(AppConfig cfg, CancellationToken ct)
     {
-        if (Role != ModelRole.Quality || PlacementProvider is not { } provider || cfg.Server.ContextSize > 0 || cfg.Server.CpuMoeLayers >= 0) return null;
-        if (cfg.ActiveModel() is not { } model) return null;
+        if (Role != ModelRole.Quality) return null;
+        if (PlacementOverride is { } fixedPlacement) return fixedPlacement;
+        if (PlacementProvider is not { } provider || cfg.ActiveModel() is not { } model) return null;
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         cts.CancelAfter(PlacementTimeout);
         try
         {
-            return await provider(cfg, model, cts.Token).ConfigureAwait(false);
+            var placement = await provider(cfg, model, cts.Token).ConfigureAwait(false);
+            return IgnoreTunedProfile && placement is { Tuned: not null } ? placement with { Tuned = null } : placement;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -233,7 +257,29 @@ public sealed class LlamaServerProcess : IDisposable
             throw;
         }
 
-        var host = string.IsNullOrWhiteSpace(cfg.Server.Host) ? "127.0.0.1" : cfg.Server.Host.Trim();
+        // Ключи — до выбора порта: в режиме «Доступ из сети» нерасшифровываемый сетевой ключ останавливает запуск.
+        IReadOnlyDictionary<string, string?> environment;
+        try
+        {
+            environment = LlamaServerArgs.BuildEnvironment(cfg, main: !aux, role: Role);
+        }
+        catch (InvalidOperationException ex)
+        {
+            SetFailed(ex.Message);
+            throw;
+        }
+        // Вспомогательные серверы — всегда на петлевом адресе; основной — на адресе сети в режиме «Доступ из сети».
+        var host = aux ? cfg.Server.LoopbackHost() : cfg.Server.ListenHost();
+        if (!aux && cfg.Server.IsActive())
+        {
+            // Выбранного адреса сети у компьютера больше нет (DHCP, VPN): иначе ни один порт не откроется и ошибка будет про «занятый порт».
+            if (LanServer.StaleBindAddressError(cfg.Server) is { } stale)
+            {
+                SetFailed(stale);
+                throw new LlamaServerException(stale);
+            }
+            Log.Info("llama", $"Доступ из сети включён: llama-server слушает {host} (ключ обязателен)");
+        }
         var requested = cfg.Server.AuxPort(Role);
         int port;
         try
@@ -273,7 +319,7 @@ public sealed class LlamaServerProcess : IDisposable
             StandardErrorEncoding = Encoding.UTF8,
         };
         foreach (var a in plan.Arguments) psi.ArgumentList.Add(a);
-        foreach (var (name, value) in LlamaServerArgs.BuildEnvironment(cfg))
+        foreach (var (name, value) in environment)
         {
             if (value is null) psi.Environment.Remove(name);
             else psi.Environment[name] = value;
@@ -283,7 +329,7 @@ public sealed class LlamaServerProcess : IDisposable
             psi.Environment["CUDA_CACHE_MAXSIZE"] = "4294967296";
 
         var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
-        var run = new Run(process, plan, LocalHttp.ClientBaseUrl(host, port), cfg.Server.ApiKey ?? "");
+        var run = new Run(process, plan, LocalHttp.ClientBaseUrl(host, port), (aux ? LlamaServerArgs.AuxApiKey(cfg, Role) : cfg.Server.ApiKey) ?? "");
         run.Writer = ServerLogWriter.TryOpen(AuxServerArgs.LogFilePath(Role));
         run.Writer?.WriteLine($"==== {DateTime.Now:yyyy-MM-dd HH:mm:ss} Запуск: {LlamaServerArgs.Describe(plan)}"); // l10n-ignore: журнал llama-server
 
@@ -319,6 +365,7 @@ public sealed class LlamaServerProcess : IDisposable
         {
             _run = run;
             CurrentPlan = plan;
+            LastStartUsedTunedProfile = plan.Tuned is not null;
             ProcessId = pid;
             StartedAtUtc = null;
             LastError = null;
@@ -328,6 +375,10 @@ public sealed class LlamaServerProcess : IDisposable
         Log.Info("llama", $"Запущен llama-server{(aux ? " (" + Role.Key() + ")" : "")} (PID {pid}), порт {port}, модель {Path.GetFileName(model.FilePath)}, контекст {plan.ContextSize}×{plan.Parallel}");
         if (plan.Placement is { } applied)
             Log.Info("llama", $"Размещение «Авто»: контекст {plan.ContextSize}×{plan.Parallel}, --n-cpu-moe {plan.CpuMoeLayers} ({applied.Reason})");
+        if (plan.Split is { } split)
+            Log.Info("llama", split.IsMulti ? $"Видеокарты: {split.Describe()} ({split.DeviceArg}, -ts {split.TensorSplitArg}, -mg {split.MainIndex})" : $"Видеокарта: {split.DeviceArg} ({split.Describe()})");
+        if (plan.Tuned is { } tuned)
+            Log.Info("llama", $"Подобранные параметры от {tuned.TunedAtUtc:yyyy-MM-dd}: {LlamaAutoTune.Describe(tuned)}");
         return run;
     }
 
@@ -407,7 +458,9 @@ public sealed class LlamaServerProcess : IDisposable
         var code = await run.Exited.Task.ConfigureAwait(false);
         if (run.StopRequested) throw new OperationCanceledException(L.T("Запуск llama-server прерван остановкой сервера."));
         var message = DescribeExit(run, code, whileStarting: true);
-        var blamesBuild = ServerExitDiagnostics.BlamesBuild(run.TailSnapshot(), code);
+        var tail = run.TailSnapshot();
+        var blamesBuild = ServerExitDiagnostics.BlamesBuild(tail, code);
+        var outOfMemory = ServerExitDiagnostics.IsOutOfMemory(tail);
         var failed = false;
         lock (_lock)
         {
@@ -417,6 +470,7 @@ public sealed class LlamaServerProcess : IDisposable
                 ProcessId = null;
                 LastError = message;
                 LastFailureBlamesBuild = blamesBuild;
+                LastFailureOutOfMemory = outOfMemory;
                 SetStateLocked(ServerState.Failed);
                 failed = true;
             }

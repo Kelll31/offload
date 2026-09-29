@@ -151,6 +151,8 @@ internal static class Texts
             McpToolNames.Dependencies => L.T("Зависимости"),
             McpToolNames.Memory => L.T("Память проекта"),
             McpToolNames.Solve => L.T("Решение задачи"),
+            McpToolNames.PrReady => L.T("Готовность к PR"),
+            McpToolNames.Debug => L.T("Отладка"),
             _ => null,
         };
         return title is null ? tool : $"{title} ({tool})";

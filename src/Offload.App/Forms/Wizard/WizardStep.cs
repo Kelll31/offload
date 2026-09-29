@@ -20,6 +20,12 @@ internal sealed class WizardState
 
     public string? Quant { get; set; }
 
+    /// <summary>
+    /// Основная модель работает на другом компьютере (клиентский режим): модель не скачивается и свой сервер не запускается;
+    /// адрес и ключ удалённого сервера задаются после мастера в «Настройках» → «Удалённый сервер».
+    /// </summary>
+    public bool RemoteModel { get; set; }
+
     public string ModelsDir { get; set; } = "";
 
     public bool InstallOpenCode { get; set; } = true;

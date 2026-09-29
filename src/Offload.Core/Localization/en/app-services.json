@@ -47,6 +47,8 @@
   "Зависимости": "Dependencies",
   "Память проекта": "Project memory",
   "Решение задачи": "Solve task",
+  "Готовность к PR": "PR readiness",
+  "Отладка": "Debugging",
   "Нет данных": "No data",
   "Прочие ({0})": "Other ({0})",
   "Разделы": "Sections",

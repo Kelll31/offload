@@ -64,7 +64,9 @@ internal static partial class DiagnosticsBundle
     /// </summary>
     internal static IReadOnlyList<string> SecretsOf(AppConfig cfg)
     {
-        var list = new List<string?> { cfg.Server.ApiKey, cfg.Mcp.HttpToken };
+        // Сетевой ключ («Доступ из сети») и ключ удалённого сервера — расшифрованные: в журналы они не пишутся, но маска — страховка.
+        var list = new List<string?> { cfg.Server.ApiKey, cfg.Autocomplete?.ApiKey, cfg.Mcp.HttpToken, Ui.Try(() => cfg.Server.LanApiKey(), null, "LanApiKey"),
+            Ui.Try(() => cfg.RemoteApiKey(), null, "RemoteApiKey") };
         list.AddRange(ProxyCredentials(cfg.Network?.ProxyUrl));
         return list.Where(s => !string.IsNullOrWhiteSpace(s)).Select(s => s!).Distinct(StringComparer.Ordinal).ToList();
     }
@@ -305,6 +307,8 @@ internal static partial class DiagnosticsBundle
             if (!string.IsNullOrWhiteSpace(server.LastError)) sb.AppendLine(c, $"Last error: {server.LastError}");
         }
         sb.AppendLine(c, $"Endpoint: {cfg.Server.Host}:{cfg.Server.Port}, context: {cfg.Server.ContextSize}, parallel: {cfg.Server.Parallel}, auto start: {cfg.Server.AutoStart}");
+        sb.AppendLine(c, $"Network access: {(cfg.Server.IsActive() ? "on, " + cfg.Server.LanBindAddress : cfg.Server.LanAccess ? "requested, no LAN key" : "off")}; " +
+                         $"remote server: {(cfg.IsRemote() ? RemoteServer.DisplayHost(cfg.MainEndpoint().BaseUrl) : "off")}");
         sb.AppendLine();
 
         sb.AppendLine("[Integrations]");

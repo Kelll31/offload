@@ -53,6 +53,14 @@ internal static class JobTool
             case "discard":
                 RequireSameWorkspace(ctx, job, "discard");
                 RequireIdleSandbox(job, "discard");
+                if (!SandboxState.IsOpen(job.Sandbox?.State) && await AgentRace.DiscardCandidatesAsync(job, null).ConfigureAwait(false) is var removed and > 0)
+                {
+                    // Гонка агентов, прерванная до выбора победителя: убираются песочницы кандидатов.
+                    job.Status = JobStatus.Discarded;
+                    job.FinishedUtc ??= DateTime.UtcNow;
+                    JobStore.Save(job);
+                    return $"Discarded job {job.Id}: {removed} race candidate sandbox(es) and branches removed; your project was not changed.";
+                }
                 if (job.Sandbox is not { } sb || !SandboxState.IsOpen(sb.State))
                     throw new ToolException($"Job {job.Id} has no open sandbox (status {job.Status}); to undo applied changes use action=revert.");
                 await AgentTaskTool.DiscardAsync(job, sb).ConfigureAwait(false);
@@ -198,6 +206,10 @@ internal static class JobTool
         {
             await AgentTaskTool.DiscardAsync(job, old).ConfigureAwait(false);
             dropped = $" Its sandbox branch {old.Branch} was discarded.";
+        }
+        else if (await AgentRace.DiscardCandidatesAsync(job, null).ConfigureAwait(false) is var races and > 0)
+        {
+            dropped = $" Its {races} race candidate sandbox(es) were discarded.";
         }
         string? newId = null;
         // allow_build_files исходной задачи действует и на повтор; описание проверяется заново по текущим настройкам.

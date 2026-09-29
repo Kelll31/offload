@@ -22,6 +22,9 @@ internal interface IAppShell
 {
     ServerController Server { get; }
 
+    /// <summary>Сервер автодополнения в IDE (роль fim).</summary>
+    AutocompleteService Autocomplete { get; }
+
     HardwareCache Hardware { get; }
 
     /// <summary>Найденное при запуске обновление llama.cpp (null — нет или не проверялось).</summary>

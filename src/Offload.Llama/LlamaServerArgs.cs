@@ -43,6 +43,8 @@ public static class LlamaServerArgs
     /// <param name="placement">
     /// Размещение, рассчитанное под оборудование (FitCalculator). Применяется только в режиме «Авто»
     /// (ContextSize = 0 и CpuMoeLayers = -1): явные -c и --n-cpu-moe вместо решения --fit. null — как раньше.
+    /// Разделение по видеокартам (<see cref="ServerPlacement.Split"/>) и подобранные параметры (<see cref="ServerPlacement.Tuned"/>)
+    /// применяются в любом режиме; одноимённые флаги из доп. аргументов пользователя важнее.
     /// </param>
     /// <remarks>Ключ API передаётся переменной окружения процесса (<see cref="BuildEnvironment"/>), не аргументом.</remarks>
     public static ServerLaunchPlan Build(AppConfig cfg, InstalledModel model, string serverExePath, ServerPlacement? placement = null)
@@ -59,9 +61,13 @@ public static class LlamaServerArgs
         var ctx = auto is not null ? ResolveContext(auto.ContextPerSlot, model) : ResolveContext(s.ContextSize, model);
         var total = (int)Math.Min(int.MaxValue, (long)ctx * parallel);
         var args = new List<string>();
+        // Подобранные параметры и разделение по видеокартам уступают флагам из доп. аргументов пользователя.
+        var tuned = placement?.Tuned;
+        var extra = SanitizeExtra(SplitArgs(s.ExtraArgs ?? ""));
 
         args.AddRange(["-m", Path.GetFullPath(model.FilePath)]);
-        args.AddRange(["--host", string.IsNullOrWhiteSpace(s.Host) ? "127.0.0.1" : s.Host.Trim()]);
+        // «Доступ из сети» (LanServer.IsActive): адрес сети вместо петлевого — только вместе с сетевым ключом.
+        args.AddRange(["--host", s.ListenHost()]);
         // Порт всегда явно: значение по умолчанию llama-server скоро сменится (8080 → 9931).
         args.AddRange(["--port", s.Port.ToString(Inv)]);
         // Ключ — не в командной строке (её видит любая программа пользователя), а в окружении процесса: BuildEnvironment.
@@ -76,23 +82,28 @@ public static class LlamaServerArgs
         if (parallel > 1) args.Add("-kvu");
 
         // -fa всегда со значением: «голый» -fa съедает следующий аргумент.
-        var fa = NormalizeFlashAttention(s.FlashAttention);
+        var fa = NormalizeFlashAttention(tuned?.FlashAttention ?? s.FlashAttention);
         args.AddRange(["-fa", fa]);
-        if (NormalizeCacheType(s.CacheType) is { } cache)
+        if (NormalizeCacheType(tuned?.CacheType ?? s.CacheType) is { } cache)
         {
             args.AddRange(["-ctk", cache]);
             // Квантованный V-кэш требует flash attention.
             if (fa != "off" || !IsQuantized(cache)) args.AddRange(["-ctv", cache]);
         }
+        if (tuned is { UBatch: > 0 } && !HasFlag(extra, UBatchFlags)) args.AddRange(["-ub", tuned.UBatch.ToString(Inv)]);
+        if (tuned is { Batch: > 0 } && !HasFlag(extra, BatchFlags)) args.AddRange(["-b", tuned.Batch.ToString(Inv)]);
 
         // -1 — не передаём -ngl: слои по видеопамяти распределяет --fit.
         if (s.GpuLayers >= 0) args.AddRange(["-ngl", s.GpuLayers.ToString(Inv)]);
 
+        var split = AddGpuSplit(args, placement?.Split, tuned, extra);
+
         int cpuMoe;
         if (auto is not null)
         {
-            // «Авто» с оценкой: выгрузка экспертов по расчёту (0 — все эксперты в видеопамяти, флаг не нужен).
-            cpuMoe = auto.CpuMoeLayers > 0 && (model.IsMoe || model.IsCustom) ? auto.CpuMoeLayers : 0;
+            // «Авто» с оценкой: выгрузка экспертов по расчёту (0 — все эксперты в видеопамяти, флаг не нужен);
+            // автоподбор мог сдвинуть её на несколько слоёв.
+            cpuMoe = auto.CpuMoeLayers > 0 && (model.IsMoe || model.IsCustom) ? Math.Max(0, auto.CpuMoeLayers + (tuned?.CpuMoeDelta ?? 0)) : 0;
             if (cpuMoe > 0) args.AddRange(["--n-cpu-moe", cpuMoe.ToString(Inv)]);
         }
         else if (s.CpuMoeLayers > 0 && (model.IsMoe || model.IsCustom))
@@ -122,13 +133,43 @@ public static class LlamaServerArgs
         if (sp.PresencePenalty > 0) AddNumber(args, "--presence-penalty", sp.PresencePenalty);
 
         // MTP-спекуляция: только для моделей со встроенным MTP-слоем и одного слота.
-        if (s.EnableMtp && model.HasMtp && parallel == 1)
+        if ((tuned?.Mtp ?? s.EnableMtp) && model.HasMtp && parallel == 1)
             args.AddRange(["--spec-type", "draft-mtp", "--spec-draft-n-max", "2"]);
 
-        args.AddRange(SanitizeExtra(SplitArgs(s.ExtraArgs ?? "")));
+        args.AddRange(extra);
 
-        return new ServerLaunchPlan(Path.GetFullPath(serverExePath), args, ctx, parallel, cpuMoe, DefaultAlias, auto);
+        return new ServerLaunchPlan(Path.GetFullPath(serverExePath), args, ctx, parallel, cpuMoe, DefaultAlias, auto, split, tuned);
     }
+
+    private static readonly string[] UBatchFlags = ["-ub", "--ubatch-size"];
+    private static readonly string[] BatchFlags = ["-b", "--batch-size"];
+    private static readonly string[] DeviceFlags = ["-dev", "--device"];
+    private static readonly string[] TensorSplitFlags = ["-ts", "--tensor-split"];
+    private static readonly string[] MainGpuFlags = ["-mg", "--main-gpu"];
+    private static readonly string[] SplitModeFlags = ["-sm", "--split-mode"];
+
+    /// <summary>
+    /// Видеокарты: --device (выбранные устройства llama.cpp), при нескольких — --tensor-split, --main-gpu, --split-mode.
+    /// Пользователь задал --device сам — разделение Offload не передаётся целиком (иначе число долей не совпадёт с числом
+    /// устройств); остальные флаги пропускаются по одному. Возвращает применённое разделение или null.
+    /// </summary>
+    private static GpuSplit? AddGpuSplit(List<string> args, GpuSplit? split, TunedProfile? tuned, IReadOnlyList<string> extra)
+    {
+        if (split is not { Devices.Count: > 0 } || HasFlag(extra, DeviceFlags)) return null;
+        args.AddRange(["--device", split.DeviceArg]);
+        if (!split.IsMulti) return split;
+        if (!HasFlag(extra, SplitModeFlags)) args.AddRange(["-sm", NormalizeSplitMode(tuned?.SplitMode ?? split.SplitMode)]);
+        if (!HasFlag(extra, TensorSplitFlags)) args.AddRange(["-ts", split.TensorSplitArg]);
+        if (!HasFlag(extra, MainGpuFlags)) args.AddRange(["-mg", Math.Clamp(split.MainIndex, 0, split.Devices.Count - 1).ToString(Inv)]);
+        return split;
+    }
+
+    internal static string NormalizeSplitMode(string? value) =>
+        string.Equals(value?.Trim(), GpuSplit.RowMode, StringComparison.OrdinalIgnoreCase) ? GpuSplit.RowMode : GpuSplit.LayerMode;
+
+    /// <summary>Флаг (в любом из написаний, также «--флаг=значение») есть среди аргументов.</summary>
+    internal static bool HasFlag(IReadOnlyList<string> args, IReadOnlyCollection<string> names) =>
+        args.Any(a => names.Contains(a.Split('=', 2)[0], StringComparer.Ordinal));
 
     /// <summary>Переменная окружения llama-server с ключом API (аналог --api-key, см. «llama-server --help»).</summary>
     public const string ApiKeyEnvVar = "LLAMA_API_KEY";
@@ -137,14 +178,36 @@ public static class LlamaServerArgs
     /// Переменные окружения процесса llama-server. Значение null — убрать унаследованную переменную
     /// (иначе чужой LLAMA_API_KEY из окружения пользователя подменил бы ключ или включил его без ведома Offload).
     /// </summary>
-    public static IReadOnlyDictionary<string, string?> BuildEnvironment(AppConfig cfg)
+    /// <param name="cfg">Настройки.</param>
+    /// <param name="main">
+    /// Основной сервер: в режиме «Доступ из сети» — локальный и сетевой ключи через запятую (<see cref="LanServer.ApiKeysForServer"/>;
+    /// нерасшифровываемый сетевой ключ — InvalidOperationException). Вспомогательные серверы (127.0.0.1) — ключ роли
+    /// (<see cref="AuxApiKey"/>).
+    /// </param>
+    /// <param name="role">Роль вспомогательного сервера (для main = false).</param>
+    public static IReadOnlyDictionary<string, string?> BuildEnvironment(AppConfig cfg, bool main = true, ModelRole role = ModelRole.Fast)
     {
         ArgumentNullException.ThrowIfNull(cfg);
-        var key = cfg.Server?.ApiKey?.Trim();
+        var key = main && cfg.Server is { } server ? LanServer.ApiKeysForServer(server) : AuxApiKey(cfg, role);
         return new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
         {
             [ApiKeyEnvVar] = string.IsNullOrEmpty(key) ? null : key,
         };
+    }
+
+    /// <summary>
+    /// Ключ API вспомогательного сервера роли: у автодополнения — свой (<see cref="AutocompleteSettings.ApiKey"/>: он попадает
+    /// в файлы IDE открытым текстом), у остальных ролей — локальный ключ основного сервера. Ключа автодополнения нет —
+    /// InvalidOperationException: запускать сервер без ключа или с ключом основного сервера нельзя.
+    /// </summary>
+    public static string? AuxApiKey(AppConfig cfg, ModelRole role)
+    {
+        ArgumentNullException.ThrowIfNull(cfg);
+        if (role != ModelRole.Fim) return cfg.Server?.ApiKey?.Trim();
+        var key = cfg.Autocomplete?.ApiKey?.Trim();
+        if (string.IsNullOrEmpty(key) || string.Equals(key, cfg.Server?.ApiKey?.Trim(), StringComparison.Ordinal))
+            throw new InvalidOperationException(L.T("Не задан отдельный ключ API сервера автодополнения — перезапустите Offload, он будет создан."));
+        return key;
     }
 
     /// <summary>

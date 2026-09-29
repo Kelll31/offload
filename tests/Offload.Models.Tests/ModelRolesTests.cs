@@ -1,4 +1,5 @@
 using Offload.Core.Config;
+using Offload.Core.Hardware;
 
 namespace Offload.Models.Tests;
 
@@ -178,6 +179,32 @@ public class ModelRolesTests
         var tight = RoleBudget.Evaluate(cfg, FitTests.Hw(20, 64), ModelCatalog.All);
         Assert.False(tight.Fits);
         Assert.True(tight.TotalVramBytes > tight.VramBudgetBytes);
+    }
+
+    [Fact]
+    public void RoleBudget_TwoCardSplit_BudgetIsSumOfCards()
+    {
+        // Две карты по 20 ГБ: основная модель делится между ними — роли помещаются, хотя на одну карту не поместились бы.
+        var cfg = TwoRoles("qwen3.8-27b-q4", "qwen3.5-4b-q4");
+        const long GiB = 1L << 30;
+        var split = new GpuSplit([new GpuSplitDevice("CUDA0", "RTX", 20 * GiB, 19 * GiB), new GpuSplitDevice("CUDA1", "RTX", 20 * GiB, 19 * GiB)], 0);
+        var hw = FitTests.Hw(20, 64);
+        Assert.False(RoleBudget.Evaluate(cfg, hw, ModelCatalog.All).Fits);
+
+        var r = RoleBudget.Evaluate(cfg, hw, ModelCatalog.All, split: split);
+        Assert.Equal(split.BudgetBytes, r.VramBudgetBytes);
+        Assert.True(r.Fits);
+    }
+
+    [Fact]
+    public void RoleBudget_RemoteMode_MainModelNotCounted()
+    {
+        var cfg = TwoRoles("qwen3.8-27b-q4", "qwen3.5-4b-q4");
+        cfg.Remote.Enabled = true;
+        cfg.Remote.Url = "http://192.168.1.10:8765";
+        var r = RoleBudget.Evaluate(cfg, FitTests.Hw(20, 64), ModelCatalog.All);
+        Assert.DoesNotContain(r.Items, i => i.Role == ModelRole.Quality);
+        Assert.True(r.Fits);
     }
 
     [Fact]

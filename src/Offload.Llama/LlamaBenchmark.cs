@@ -16,7 +16,7 @@ public sealed record BenchmarkResult(
 /// <summary>
 /// Встроенный замер скорости работающего llama-server: короткий прогрев и один фиксированный запрос через ChatAsync
 /// (скорости — из timings ответа). Промпт начинается с уникальной строки, чтобы кэш промпта не завышал результат.
-/// Автоматический перебор флагов (--n-cpu-moe, -ub/-b, тип кэша, MTP) — следующий шаг, здесь только замер.
+/// Перебор флагов (--n-cpu-moe, -ub/-b, тип кэша, MTP) на основе этого замера — <see cref="LlamaAutoTune"/>.
 /// </summary>
 public static class LlamaBenchmark
 {

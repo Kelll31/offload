@@ -10,7 +10,10 @@ internal static class AskFilesTool
     public const int MaxChunks = 8;
     private const string NothingRelevant = "NOTHING RELEVANT";
 
-    public static async Task<string> RunAsync(ToolContext ctx, string[]? paths, string? question, string? answerFormat, int maxAnswerTokens)
+    /// <summary>Версия шаблона промпта для ключа кэша результатов (менять при правке промптов ниже).</summary>
+    private const string CacheOp = "ask_files/1";
+
+    public static async Task<string> RunAsync(ToolContext ctx, string[]? paths, string? question, string? answerFormat, int maxAnswerTokens, bool fresh = false)
     {
         var specs = ToolHelpers.RequireList(paths, "paths", 64);
         var q = ToolHelpers.RequireText(question, "question", 4000);
@@ -23,6 +26,10 @@ internal static class AskFilesTool
             .ConfigureAwait(false);
         if (gathered.Files.Count == 0)
             throw new ToolException("No readable files for the given paths. " + gathered.CoverageLine());
+
+        // Тот же вопрос по неизменённым файлам — готовый ответ без запуска модели.
+        var cacheKey = new WorkCacheKey(CacheOp).Arg("format", format).Arg("max", maxAnswer).Files(gathered).Ask(q);
+        if (await WorkCache.TryGetAsync(ctx, cacheKey, fresh).ConfigureAwait(false) is { } cached) return cached;
 
         var model = await ctx.GetModelAsync().ConfigureAwait(false);
         var system = model.SystemPrompt(FormatRules(format) +
@@ -53,7 +60,9 @@ internal static class AskFilesTool
         notes.AddRange(plan.Uncovered.Select(f => $"{f.Display} (not read: exceeded {MaxChunks} parts)"));
         var coverage = gathered.CoverageLine(plan.CoveredFiles(gathered.Files), notes);
         if (plan.Chunks.Count > 1) coverage += $" · answered in {plan.Chunks.Count} parts and merged";
-        return answer.TrimEnd() + "\n\n" + coverage;
+        var result = answer.TrimEnd() + "\n\n" + coverage;
+        WorkCache.Put(ctx, cacheKey, result);
+        return result;
     }
 
     private static async Task<(string Answer, ChunkPlan Plan)> AnswerAsync(ToolContext ctx, LocalModel model, GatherResult gathered,

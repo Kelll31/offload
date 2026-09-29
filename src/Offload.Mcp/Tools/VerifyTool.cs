@@ -66,6 +66,8 @@ internal static partial class VerifyTool
             }
             else sb.Append('\n');
         }
+        // Автоматическая память: FAILED → PASSED той же команды с понятной первопричиной-«граблями».
+        AutoMemory.NoteVerify(ctx, cmd, res, run.LogPath);
         if (res.Passed) return sb.ToString().TrimEnd();
 
         var diags = DiagnosticParser.Parse(File.ReadLines(run.LogPath)).Where(d => d.Severity == "error").ToList();

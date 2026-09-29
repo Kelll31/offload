@@ -13,11 +13,12 @@ namespace Offload.Mcp.Tools;
 internal static class SolveTool
 {
     public static async Task<string> RunAsync(ToolContext ctx, string? task, string? kind, string? verifyCommand, string[]? allowedPaths, string[]? contextPaths,
-        string? merge, int maxFiles, int maxMinutes, bool background, bool review)
+        string? merge, int maxFiles, int maxMinutes, bool background, bool review, int race = 1)
     {
         var t = ToolHelpers.RequireText(task, "task", 8000);
         var k = (kind ?? "feature").Trim().ToLowerInvariant();
         if (k is not ("feature" or "bug" or "refactor" or "tests" or "issue")) throw new ToolException("kind must be feature, bug, refactor, tests or issue.");
+        AgentRace.ValidateCount(race);
 
         // 1. Команда проверки: явная или по карте проекта (для багов и тестов — тесты, иначе тесты или сборка).
         var verify = verifyCommand;
@@ -89,6 +90,7 @@ internal static class SolveTool
             Review = review,
             Tool = McpToolNames.Solve,
             Preamble = preamble.ToString(),
+            Race = race,
         }).ConfigureAwait(false);
     }
 }

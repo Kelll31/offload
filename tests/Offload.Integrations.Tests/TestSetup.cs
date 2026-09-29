@@ -108,6 +108,7 @@ public sealed class RealProfileGuard : IDisposable
         Path.Combine(Home, ".claude", "rules", "offload.md"),
         Path.Combine(Home, ".claude", "agents", "offload-runner.md"),
         Path.Combine(Home, ".continue", "mcpServers", "offload.yaml"),
+        Path.Combine(Home, ".continue", "models", "offload-autocomplete.yaml"),
     ];
 
     internal static IEnumerable<string> WatchedFiles()

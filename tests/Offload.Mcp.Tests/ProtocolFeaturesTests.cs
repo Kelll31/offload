@@ -139,6 +139,7 @@ public sealed class ProtocolFeaturesTests
         var templates = (await h.Client.ListResourceTemplatesAsync(cancellationToken: Ct)).Select(t => t.UriTemplate).ToList();
         Assert.Contains(ResourceUris.RunTemplate, templates);
         Assert.Contains(ResourceUris.JobDiffTemplate, templates);
+        Assert.Contains(ResourceUris.RaceDiffTemplate, templates);
 
         var memory = await h.Client.ReadResourceAsync(ResourceUris.Memory, cancellationToken: Ct);
         Assert.Contains("No entries", Assert.IsType<TextResourceContents>(Assert.Single(memory.Contents)).Text);

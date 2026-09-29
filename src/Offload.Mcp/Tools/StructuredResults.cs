@@ -231,6 +231,12 @@ internal sealed record StatusModel
 
     [JsonPropertyName("asleep"), Description("The model is unloaded to save memory and reloads on the next call.")]
     public bool Asleep { get; init; }
+
+    [JsonPropertyName("remote"), Description("host:port of the remote model server when the main model runs on another PC; null for the local server.")]
+    public string? Remote { get; init; }
+
+    [JsonPropertyName("latency_ms"), Description("Round-trip time of the remote server's /health, ms; null for the local server or when unreachable.")]
+    public int? LatencyMs { get; init; }
 }
 
 /// <summary>Очередь GPU.</summary>

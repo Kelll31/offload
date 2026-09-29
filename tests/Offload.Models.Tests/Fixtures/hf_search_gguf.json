@@ -1,0 +1,110 @@
+[
+ {
+  "_id": "66eadc78e465d6302b676354",
+  "id": "Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF",
+  "cardData": {
+   "license": "apache-2.0",
+   "license_link": "https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct-GGUF/blob/main/LICENSE",
+   "language": [
+    "en"
+   ],
+   "base_model": [
+    "Qwen/Qwen2.5-Coder-1.5B-Instruct"
+   ],
+   "pipeline_tag": "text-generation",
+   "library_name": "transformers",
+   "tags": [
+    "code",
+    "codeqwen",
+    "chat",
+    "qwen",
+    "qwen-coder"
+   ]
+  },
+  "gated": false,
+  "lastModified": "2024-11-12T02:56:34.000Z",
+  "likes": 118,
+  "trendingScore": 0,
+  "sha": "f86cb2c1fa58255f8052cc32aeede1b7482d4361",
+  "downloads": 93870,
+  "pipeline_tag": "text-generation"
+ },
+ {
+  "_id": "66eb2003e604909be7d0e530",
+  "id": "bartowski/Qwen2.5-Coder-1.5B-Instruct-GGUF",
+  "cardData": {
+   "base_model": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
+   "language": [
+    "en"
+   ],
+   "library_name": "transformers",
+   "license": "apache-2.0",
+   "license_link": "https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct/blob/main/LICENSE",
+   "pipeline_tag": "text-generation",
+   "tags": [
+    "code",
+    "codeqwen",
+    "chat",
+    "qwen",
+    "qwen-coder"
+   ],
+   "quantized_by": "bartowski"
+  },
+  "gated": false,
+  "lastModified": "2024-09-19T15:10:38.000Z",
+  "likes": 15,
+  "trendingScore": 0,
+  "sha": "1af47f78b1f9b0c242fabe43f7a365d5a67f3207",
+  "downloads": 47093,
+  "pipeline_tag": "text-generation"
+ },
+ {
+  "_id": "66eb200461228b02f8294887",
+  "id": "lmstudio-community/Qwen2.5-Coder-1.5B-Instruct-GGUF",
+  "cardData": {
+   "base_model": "Qwen/Qwen2.5-Coder-1.5B-Instruct",
+   "language": [
+    "en"
+   ],
+   "library_name": "transformers",
+   "license": "apache-2.0",
+   "license_link": "https://huggingface.co/Qwen/Qwen2.5-Coder-1.5B-Instruct/blob/main/LICENSE",
+   "pipeline_tag": "text-generation",
+   "tags": [
+    "code",
+    "codeqwen",
+    "chat",
+    "qwen",
+    "qwen-coder"
+   ],
+   "quantized_by": "bartowski"
+  },
+  "gated": false,
+  "lastModified": "2024-09-19T15:04:52.000Z",
+  "likes": 4,
+  "trendingScore": 0,
+  "sha": "9bc56eb9080d6930b3fee54ef2cc1d75263ecb18",
+  "downloads": 6440,
+  "pipeline_tag": "text-generation"
+ },
+ {
+  "_id": "67d1f1f08dbf13ec3de1e1fd",
+  "id": "google/gemma-3-4b-it-qat-q4_0-gguf",
+  "cardData": {
+   "base_model": "google/gemma-3-4b-it",
+   "license": "gemma",
+   "tags": [
+    "gemma3",
+    "gemma",
+    "google"
+   ],
+   "pipeline_tag": "image-text-to-text"
+  },
+  "gated": "manual",
+  "lastModified": "2025-04-11T00:58:36.000Z",
+  "likes": 293,
+  "sha": "15f73f5eee9c28f53afefef5723e29680c2fc78a",
+  "downloads": 2607,
+  "pipeline_tag": "image-text-to-text"
+ }
+]

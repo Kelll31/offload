@@ -70,9 +70,12 @@ internal sealed class TestEnv : IDisposable
 
     public string PathOf(string rel) => Path.Combine(Workspace, rel.Replace('/', '\\'));
 
-    public ToolContext Context(SessionState? state = null, CancellationToken ct = default) => new()
+    public ToolContext Context(SessionState? state = null, CancellationToken ct = default) => ContextFor("test", state, ct);
+
+    /// <summary>Контекст вызова инструмента <paramref name="tool"/> (для вложенных вызовов — внешний, например local_pr_ready).</summary>
+    public ToolContext ContextFor(string tool, SessionState? state = null, CancellationToken ct = default) => new()
     {
-        Tool = "test",
+        Tool = tool,
         Cfg = ConfigStore.Reload(),
         State = state ?? new SessionState(),
         Progress = new ProgressReporter(null, null),
