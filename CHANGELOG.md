@@ -5,6 +5,8 @@
 
 ## [Не выпущено]
 
+## [1.0.4] — 2026-09-29
+
 ### Добавлено
 
 - **Автоподключение Claude.** Claude Code и Claude Desktop (в том числе MSIX-версия), установленные до или после Offload,
@@ -256,7 +258,8 @@
 Первый публичный выпуск: трей и мастер настройки, установка llama.cpp и моделей, OpenCode, подключение к 20 IDE,
 24 MCP-инструмента и 8 MCP-промптов, русский и английский интерфейс.
 
-[Не выпущено]: https://github.com/Kelll31/offload/compare/v1.0.3...HEAD
+[Не выпущено]: https://github.com/Kelll31/offload/compare/v1.0.4...HEAD
+[1.0.4]: https://github.com/Kelll31/offload/compare/v1.0.3...v1.0.4
 [1.0.3]: https://github.com/Kelll31/offload/compare/v1.0.2...v1.0.3
 [1.0.2]: https://github.com/Kelll31/offload/compare/v1.0.1...v1.0.2
 [1.0.1]: https://github.com/Kelll31/offload/compare/1.0.0...v1.0.1
