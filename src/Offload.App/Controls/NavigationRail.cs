@@ -15,10 +15,10 @@ internal sealed class NavigationRail : Control
 
     private const int ExpandedWidth = 232;
     private const int CollapsedWidth = 52;
-    private const int ItemHeight = 38;
-    private const int HeaderHeight = 56;
-    private const int GroupHeight = 30;
-    private const int FooterHeight = 64;
+    private const int ItemHeight = 40;
+    private const int HeaderHeight = 64;
+    private const int GroupHeight = 32;
+    private const int FooterHeight = 76;
 
     private readonly List<Item> _items = [];
     private readonly ToolTip _tip = new() { InitialDelay = 400, ShowAlways = true };
@@ -29,6 +29,7 @@ internal sealed class NavigationRail : Control
     private bool _collapsed;
     private string? _tipShownFor;
 
+    private readonly Dictionary<string, int> _badges = new(StringComparer.OrdinalIgnoreCase);
     private Color _statusColor = Color.Gray;
     private string _statusTitle = "";
     private string _statusDetail = "";
@@ -99,6 +100,15 @@ internal sealed class NavigationRail : Control
         Invalidate();
     }
 
+    /// <summary>Счётчик у пункта навигации (0 — скрыть).</summary>
+    public void SetBadge(string key, int count)
+    {
+        if (_badges.TryGetValue(key, out var old) && old == count) return;
+        if (count <= 0) _badges.Remove(key);
+        else _badges[key] = count;
+        Invalidate();
+    }
+
     /// <summary>Состояние в нижнем блоке: цвет точки, заголовок и подробность (модель).</summary>
     public void SetStatus(Color color, string title, string detail)
     {
@@ -130,19 +140,19 @@ internal sealed class NavigationRail : Control
                 groupRect = new Rectangle(0, y, Width, gh);
                 y += gh;
             }
-            var r = new Rectangle(Px(6), y, Width - Px(12), Px(ItemHeight) - Px(2));
+            var r = new Rectangle(Px(10), y, Width - Px(20), Px(ItemHeight) - Px(4));
             yield return (i, r, groupTitle, groupRect);
             y += Px(ItemHeight);
         }
     }
 
-    private Rectangle StatusRect => new(Px(6), Height - Px(FooterHeight) + Px(6), Width - Px(12) - (_collapsed ? 0 : Px(40)), Px(FooterHeight) - Px(14));
+    private Rectangle StatusRect => new(Px(10), Height - Px(FooterHeight) + Px(8), Width - Px(20) - (_collapsed ? 0 : Px(42)), Px(FooterHeight) - Px(20));
 
     private Rectangle ThemeRect => _collapsed
-        ? new Rectangle(Px(6), Height - Px(FooterHeight) - Px(40), Width - Px(12), Px(36))
-        : new Rectangle(Width - Px(6) - Px(36), Height - Px(FooterHeight) + Px(6) + (Px(FooterHeight) - Px(14) - Px(36)) / 2, Px(36), Px(36));
+        ? new Rectangle(Px(8), Height - Px(FooterHeight) - Px(40), Width - Px(16), Px(36))
+        : new Rectangle(Width - Px(10) - Px(36), Height - Px(FooterHeight) + Px(8) + (Px(FooterHeight) - Px(20) - Px(36)) / 2, Px(36), Px(36));
 
-    private Rectangle ToggleRect => new(Px(6), Px(10), Px(36), Px(36));
+    private Rectangle ToggleRect => new(Px(8), Px(14), Px(36), Px(36));
 
     private int HitTest(Point p)
     {
@@ -162,21 +172,39 @@ internal sealed class NavigationRail : Control
         g.SmoothingMode = SmoothingMode.AntiAlias;
         g.Clear(BackColor);
 
+        // Правая граница панели.
+        using (var border = new Pen(Theme.Border))
+            g.DrawLine(border, Width - 1, 0, Width - 1, Height);
+
         // Кнопка сворачивания и логотип.
         DrawButtonBack(g, ToggleRect, _hover == -4);
-        DrawGlyph(g, Glyphs.Menu, ToggleRect, Theme.TextPrimary, 11f);
+        DrawGlyph(g, Glyphs.Menu, ToggleRect, Theme.TextMuted, 11f);
         if (!_collapsed)
         {
             var x = ToggleRect.Right + Px(8);
             if (_logo is not null)
             {
-                var size = Px(22);
+                var size = Px(26);
                 g.InterpolationMode = InterpolationMode.HighQualityBicubic;
                 g.DrawImage(_logo, new Rectangle(x, ToggleRect.Y + (ToggleRect.Height - size) / 2, size, size));
-                x += size + Px(8);
+                x += size + Px(9);
             }
-            TextRenderer.DrawText(g, "Offload", Theme.Semibold(11.5f), new Rectangle(x, ToggleRect.Y, Width - x, ToggleRect.Height),
+            var brandFont = Theme.Bold(12.5f);
+            var brand = TextRenderer.MeasureText("Offload", brandFont, Size.Empty, TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
+            TextRenderer.DrawText(g, "Offload", brandFont, new Rectangle(x, ToggleRect.Y, Width - x, ToggleRect.Height),
                 Theme.TextPrimary, TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
+            // Версия — маленькая «таблетка» рядом с названием.
+            var vx = x + brand.Width + Px(8);
+            var verFont = Theme.Semibold(7.5f);
+            var ver = "v" + Offload.Core.AppInfo.Version;
+            var vs = TextRenderer.MeasureText(ver, verFont, Size.Empty, TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
+            var pill = new Rectangle(vx, ToggleRect.Y + (ToggleRect.Height - Px(18)) / 2, vs.Width + Px(12), Px(18));
+            if (pill.Right < Width - Px(8))
+            {
+                Draw.Fill(g, pill, Theme.AccentLight, pill.Height / 2);
+                TextRenderer.DrawText(g, ver, verFont, pill, Theme.Accent,
+                    TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
+            }
         }
 
         foreach (var (i, r, groupTitle, groupRect) in LayoutItems())
@@ -191,8 +219,8 @@ internal sealed class NavigationRail : Control
                 }
                 else
                 {
-                    var gr = new Rectangle(Px(18), groupRect.Y + Px(8), groupRect.Width - Px(24), groupRect.Height - Px(8));
-                    TextRenderer.DrawText(g, groupTitle, Theme.Semibold(8.5f), gr, Theme.TextFaint,
+                    var gr = new Rectangle(Px(22), groupRect.Y + Px(10), groupRect.Width - Px(28), groupRect.Height - Px(10));
+                    TextRenderer.DrawText(g, groupTitle.ToUpper(L.Culture), Theme.Semibold(7.5f), gr, Theme.TextFaint,
                         TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
                 }
             }
@@ -207,60 +235,86 @@ internal sealed class NavigationRail : Control
         if (selected || hover)
         {
             using var b = new SolidBrush(selected ? Theme.NavSelected : Theme.NavHover);
-            using var path = Rounded(r, Px(5));
+            using var path = Rounded(r, Px(8));
             g.FillPath(b, path);
         }
         if (selected)
         {
-            var pill = new Rectangle(r.X, r.Y + (r.Height - Px(16)) / 2, Px(3), Px(16));
-            using var b = new SolidBrush(Theme.Accent);
-            using var path = Rounded(pill, Px(2));
-            g.FillPath(b, path);
+            var bar = new Rectangle(r.X + Px(2), r.Y + (r.Height - Px(18)) / 2, Px(4), Px(18));
+            Draw.Gradient(g, bar, Px(2), Theme.Fill, Theme.FillEnd, LinearGradientMode.Vertical);
         }
         if (focused)
         {
-            using var pen = new Pen(Theme.TextPrimary, Px(1)) { DashStyle = DashStyle.Dot };
-            g.DrawRectangle(pen, Rectangle.Inflate(r, -1, -1));
+            using var pen = new Pen(Theme.Accent, Px(2));
+            using var path = Rounded(Rectangle.Inflate(r, -1, -1), Px(8));
+            g.DrawPath(pen, path);
         }
 
-        var iconRect = new Rectangle(r.X + Px(8), r.Y, Px(24), r.Height);
-        DrawGlyph(g, it.Glyph, iconRect, selected ? Theme.Accent : Theme.TextPrimary, 11.5f);
+        var iconRect = new Rectangle(r.X + Px(10), r.Y, Px(24), r.Height);
+        DrawGlyph(g, it.Glyph, iconRect, selected ? Theme.Accent : Theme.TextMuted, 12f);
         if (!_collapsed)
         {
-            var tr = new Rectangle(iconRect.Right + Px(10), r.Y, r.Right - iconRect.Right - Px(12), r.Height);
-            TextRenderer.DrawText(g, it.Title, selected ? Theme.Semibold(9.5f) : Font, tr, Theme.TextPrimary,
+            var tr = new Rectangle(iconRect.Right + Px(12), r.Y, r.Right - iconRect.Right - Px(14), r.Height);
+            TextRenderer.DrawText(g, it.Title, selected ? Theme.Semibold(9.5f) : Font, tr, selected ? Theme.TextPrimary : Theme.TextMuted,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
+            if (_badges.TryGetValue(it.Key, out var badge) && badge > 0) DrawBadge(g, badge, new Point(r.Right - Px(12), r.Y + r.Height / 2));
         }
+        else if (_badges.TryGetValue(it.Key, out var badge) && badge > 0)
+        {
+            DrawBadge(g, badge, new Point(iconRect.Right - Px(2), r.Y + Px(9)), dotOnly: true);
+        }
+    }
+
+    /// <summary>Счётчик у пункта (например, непрочитанные уведомления): справа по центру или точка в свёрнутом виде.</summary>
+    private void DrawBadge(Graphics g, int count, Point rightMiddle, bool dotOnly = false)
+    {
+        if (dotOnly)
+        {
+            var d = Px(8);
+            using var b = new SolidBrush(Theme.Red);
+            g.FillEllipse(b, rightMiddle.X - d / 2, rightMiddle.Y - d / 2, d, d);
+            return;
+        }
+        var text = count > 99 ? "99+" : count.ToString(L.Culture);
+        var font = Theme.Semibold(7.5f);
+        var ts = TextRenderer.MeasureText(text, font, Size.Empty, TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
+        var h = Px(18);
+        var w = Math.Max(h, ts.Width + Px(10));
+        var rect = new Rectangle(rightMiddle.X - w, rightMiddle.Y - h / 2, w, h);
+        Draw.Gradient(g, rect, h / 2, Theme.Fill, Theme.FillEnd, LinearGradientMode.Horizontal);
+        TextRenderer.DrawText(g, text, font, rect, Theme.OnFill,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
     }
 
     private void DrawFooter(Graphics g)
     {
-        using (var pen = new Pen(Theme.Border))
-            g.DrawLine(pen, Px(12), Height - Px(FooterHeight), Width - Px(12), Height - Px(FooterHeight));
-
         var sr = StatusRect;
-        if (_hover == -2)
+        using (var b = new SolidBrush(_hover == -2 ? Theme.CardHover : Theme.Card))
+        using (var path = Rounded(sr, Px(10)))
         {
-            using var b = new SolidBrush(Theme.NavHover);
-            using var path = Rounded(sr, Px(5));
             g.FillPath(b, path);
+            using var pen = new Pen(Theme.Border);
+            g.DrawPath(pen, path);
         }
         var dot = Px(10);
-        var dotRect = new Rectangle(sr.X + Px(15), sr.Y + (sr.Height - dot) / 2, dot, dot);
+        var dotRect = new Rectangle(sr.X + Px(14), sr.Y + (sr.Height - dot) / 2, dot, dot);
+        // Ореол вокруг точки состояния.
+        using (var halo = new SolidBrush(Color.FromArgb(60, _statusColor)))
+            g.FillEllipse(halo, Rectangle.Inflate(dotRect, Px(4), Px(4)));
         using (var b = new SolidBrush(_statusColor)) g.FillEllipse(b, dotRect);
         if (!_collapsed)
         {
-            var tx = dotRect.Right + Px(12);
+            var tx = dotRect.Right + Px(14);
             var half = sr.Height / 2;
-            TextRenderer.DrawText(g, _statusTitle, Theme.Semibold(9f), new Rectangle(tx, sr.Y + Px(4), sr.Right - tx - Px(4), half - Px(2)),
+            TextRenderer.DrawText(g, _statusTitle, Theme.Semibold(9f), new Rectangle(tx, sr.Y + Px(4), sr.Right - tx - Px(6), half - Px(2)),
                 Theme.TextPrimary, TextFormatFlags.Left | TextFormatFlags.Bottom | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
-            TextRenderer.DrawText(g, _statusDetail, Theme.Regular(8.5f), new Rectangle(tx, sr.Y + half + Px(1), sr.Right - tx - Px(4), half - Px(4)),
+            TextRenderer.DrawText(g, _statusDetail, Theme.Regular(8.5f), new Rectangle(tx, sr.Y + half + Px(1), sr.Right - tx - Px(6), half - Px(4)),
                 Theme.TextMuted, TextFormatFlags.Left | TextFormatFlags.Top | TextFormatFlags.NoPadding | TextFormatFlags.EndEllipsis);
         }
 
         var th = ThemeRect;
         DrawButtonBack(g, th, _hover == -3);
-        DrawGlyph(g, Theme.IsDark ? Glyphs.Moon : Glyphs.Sun, th, Theme.TextPrimary, 11f);
+        DrawGlyph(g, Theme.IsDark ? Glyphs.Moon : Glyphs.Sun, th, Theme.TextMuted, 11f);
     }
 
     private void DrawButtonBack(Graphics g, Rectangle r, bool hover)
@@ -515,4 +569,14 @@ internal static class Glyphs
     public const string Delete = "";
     public const string Link = "";
     public const string Wand = "";
+    public const string Bell = "\uE7ED";
+    public const string Keyboard = "\uE765";
+    public const string Clock = "\uE823";
+    public const string Save = "\uE74E";
+    public const string OpenFile = "\uE8E5";
+    public const string Upload = "\uE898";
+    public const string Shield = "\uEA18";
+    public const string Power = "\uE7E8";
+    public const string Sparkle = "\uE734";
+    public const string ChevronRight = "\uE76C";
 }

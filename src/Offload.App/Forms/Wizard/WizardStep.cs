@@ -33,6 +33,15 @@ internal sealed class WizardState
     /// <summary>Идентификаторы IDE, которые нужно подключить.</summary>
     public HashSet<string> Ides { get; } = [];
 
+    /// <summary>Найденные на компьютере IDE (из них пользователь выбирал): не выбранные из этого списка считаются отказом.</summary>
+    public HashSet<string> IdesFound { get; } = [];
+
+    /// <summary>Мастер запущен впервые (настройка ещё не завершалась): все найденные IDE предлагались по умолчанию.</summary>
+    public bool IdesFirstRun { get; set; }
+
+    /// <summary>Подключать и восстанавливать подключения к Claude автоматически (<see cref="UiSettings.AutoRepairIntegrations"/>).</summary>
+    public bool AutoConnect { get; set; } = true;
+
     /// <summary>Список IDE уже загружен (иначе шаг IDE ещё не открывался и выбор берётся из конфигурации).</summary>
     public bool IdesLoaded { get; set; }
 

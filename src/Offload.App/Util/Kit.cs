@@ -169,42 +169,58 @@ internal static class Kit
     /// <summary>Заголовок раздела.</summary>
     public static SectionHeader Section(string text, bool first = false) => new(text, first);
 
-    public static Button Button(string text, EventHandler? onClick = null, int minWidth = 96)
+    public static ModernButton Button(string text, EventHandler? onClick = null, int minWidth = 96)
     {
-        var b = new Button
+        var b = new ModernButton
         {
             Text = text,
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowOnly,
-            MinimumSize = new Size(minWidth, 30),
+            MinimumSize = new Size(minWidth, 32),
+            Padding = new Padding(6, 0, 6, 0),
+            Margin = new Padding(0, 2, 8, 2),
+            UseMnemonic = false,
+        };
+        if (onClick is not null) b.Click += onClick;
+        return b;
+    }
+
+    /// <summary>Кнопка со значком слева.</summary>
+    public static ModernButton IconButton(string glyph, string text, EventHandler? onClick = null, int minWidth = 96)
+    {
+        var b = Button(text, onClick, minWidth);
+        b.Glyph = glyph;
+        return b;
+    }
+
+    /// <summary>Тихая кнопка: без фона и рамки до наведения (второстепенные действия).</summary>
+    public static ModernButton Subtle(string text, EventHandler? onClick = null, int minWidth = 60)
+    {
+        var b = Button(text, onClick, minWidth);
+        b.Kind = ButtonKind.Subtle;
+        return b;
+    }
+
+    public static ModernButton Primary(string text, EventHandler? onClick = null, int minWidth = 110)
+    {
+        var b = new ModernButton(ButtonKind.Primary)
+        {
+            Text = text,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowOnly,
+            MinimumSize = new Size(minWidth, 32),
             Padding = new Padding(8, 0, 8, 0),
             Margin = new Padding(0, 2, 8, 2),
-            UseVisualStyleBackColor = true,
             UseMnemonic = false,
         };
         if (onClick is not null) b.Click += onClick;
         return b;
     }
 
-    public static AccentButton Primary(string text, EventHandler? onClick = null, int minWidth = 110)
+    /// <summary>Переключатель (флажок в виде переключателя Windows 11).</summary>
+    public static ToggleSwitch Check(string text, bool isChecked = false)
     {
-        var b = new AccentButton
-        {
-            Text = text,
-            AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowOnly,
-            MinimumSize = new Size(minWidth, 30),
-            Padding = new Padding(10, 0, 10, 0),
-            Margin = new Padding(0, 2, 8, 2),
-            UseMnemonic = false,
-        };
-        if (onClick is not null) b.Click += onClick;
-        return b;
-    }
-
-    public static CheckBox Check(string text, bool isChecked = false)
-    {
-        return new CheckBox
+        return new ToggleSwitch
         {
             Text = text,
             Checked = isChecked,
@@ -212,7 +228,6 @@ internal static class Kit
             UseMnemonic = false,
             Margin = new Padding(0, 4, 8, 4),
             Anchor = AnchorStyles.Left,
-            BackColor = Color.Transparent,
         };
     }
 

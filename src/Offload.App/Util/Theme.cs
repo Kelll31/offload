@@ -27,18 +27,25 @@ internal static class Theme
     public const string PresetCustom = "custom";
     public const string PresetContrast = "contrast";
 
+    /// <summary>Схема, следующая за цветом акцента Windows («Персонализация» → «Цвета»).</summary>
+    public const string PresetSystemAccent = "system-accent";
+
     /// <summary>Готовая цветовая схема: акцент для светлой и тёмной основы; Midnight/Contrast — своя тёмная основа.</summary>
     public sealed record PresetInfo(string Key, string Name, Color LightAccent, Color DarkAccent, bool ForcesDark = false);
 
     /// <summary>Готовые схемы (Name — русский текст, в интерфейсе через L.T).</summary>
     public static readonly IReadOnlyList<PresetInfo> Presets =
     [
-        new(PresetDefault, "Синяя (Windows)", Color.FromArgb(0, 95, 184), Color.FromArgb(96, 205, 255)), // l10n-key
+        new(PresetDefault, "Индиго (Offload)", Color.FromArgb(79, 70, 229), Color.FromArgb(129, 140, 248)), // l10n-key
+        new("blue", "Синяя (Windows)", Color.FromArgb(0, 95, 184), Color.FromArgb(96, 205, 255)), // l10n-key
+        new(PresetSystemAccent, "Как акцент Windows", Color.Empty, Color.Empty), // l10n-key
         new("teal", "Бирюзовая", Color.FromArgb(0, 120, 124), Color.FromArgb(76, 194, 180)), // l10n-key
         new("green", "Зелёная", Color.FromArgb(16, 124, 16), Color.FromArgb(108, 203, 95)), // l10n-key
         new("purple", "Фиолетовая", Color.FromArgb(118, 76, 178), Color.FromArgb(180, 150, 255)), // l10n-key
         new("orange", "Оранжевая", Color.FromArgb(188, 72, 12), Color.FromArgb(255, 150, 90)), // l10n-key
         new("pink", "Розовая", Color.FromArgb(180, 44, 140), Color.FromArgb(240, 120, 220)), // l10n-key
+        new("aurora", "Аврора (тёмная)", Color.FromArgb(45, 212, 191), Color.FromArgb(45, 212, 191), ForcesDark: true), // l10n-key
+        new("graphite", "Графит (тёмная)", Color.FromArgb(251, 146, 60), Color.FromArgb(251, 146, 60), ForcesDark: true), // l10n-key
         new("midnight", "Полночь (тёмная)", Color.FromArgb(122, 162, 255), Color.FromArgb(122, 162, 255), ForcesDark: true), // l10n-key
         new(PresetContrast, "Высокий контраст (тёмная)", Color.FromArgb(255, 214, 0), Color.FromArgb(255, 214, 0), ForcesDark: true), // l10n-key
     ];
@@ -84,11 +91,15 @@ internal static class Theme
         var palette = Preset switch
         {
             "midnight" => Palette.Midnight,
+            "aurora" => Palette.Aurora,
+            "graphite" => Palette.Graphite,
             PresetContrast => Palette.Contrast,
             _ => IsDark ? Palette.Dark : Palette.Light,
         };
         if (Preset == PresetCustom && TryParseColor(accent, out var custom)) palette = WithAccent(palette, custom, IsDark);
-        else if (info is not null && Preset != PresetDefault && !info.ForcesDark) palette = WithAccent(palette, IsDark ? info.DarkAccent : info.LightAccent, IsDark);
+        else if (Preset == PresetSystemAccent && SystemAccentColor() is { } sys) palette = WithAccent(palette, ReadableAccent(sys, IsDark), IsDark);
+        else if (info is not null && Preset != PresetDefault && Preset != PresetSystemAccent && !info.ForcesDark)
+            palette = WithAccent(palette, IsDark ? info.DarkAccent : info.LightAccent, IsDark);
         _p = palette;
         return IsDark;
     }
@@ -118,17 +129,89 @@ internal static class Theme
     /// <summary>Палитра с другим акцентом: оттенки наведения/нажатия, подложка и контрастный текст на акценте — из него.</summary>
     private static Palette WithAccent(Palette p, Color accent, bool dark)
     {
-        var luminance = (0.299 * accent.R + 0.587 * accent.G + 0.114 * accent.B) / 255;
+        var luminance = Luminance(accent);
+        // Заливка кнопок: на тёмной основе светлый акцент затемняется, чтобы белый текст оставался читаемым.
+        var fill = dark && luminance > 0.55 ? Blend(accent, Color.Black, 0.28) : accent;
         return p with
         {
             Accent = accent,
             AccentHover = Blend(accent, Color.Black, dark ? 0.10 : 0.12),
             AccentPressed = Blend(accent, Color.Black, dark ? 0.20 : 0.25),
             OnAccent = luminance > 0.6 ? Color.Black : Color.White,
-            AccentLight = Blend(p.Background, accent, dark ? 0.25 : 0.12),
+            AccentLight = Blend(p.Background, accent, dark ? 0.22 : 0.10),
+            NavSelected = Blend(p.Background, accent, dark ? 0.16 : 0.09),
+            Fill = fill,
+            FillEnd = ShiftHue(fill, 28),
+            OnFill = Luminance(fill) > 0.62 ? Color.Black : Color.White,
             // Акцент — первая серия графиков; похожие на него цвета убираем, чтобы две серии не совпали.
             Series = [accent, .. p.Series.Skip(1).Where(c => ColorDistance(c, accent) > 60), .. p.Series.Skip(1).Where(c => ColorDistance(c, accent) <= 60).Select(c => Blend(c, dark ? Color.White : Color.Black, 0.35))],
         };
+    }
+
+    private static double Luminance(Color c) => (0.299 * c.R + 0.587 * c.G + 0.114 * c.B) / 255;
+
+    /// <summary>Сдвинуть оттенок на <paramref name="degrees"/> (для второго цвета градиента).</summary>
+    internal static Color ShiftHue(Color c, float degrees)
+    {
+        var h = (c.GetHue() + degrees) % 360f;
+        var s = c.GetSaturation();
+        var l = c.GetBrightness();
+        return FromHsl(h < 0 ? h + 360 : h, s, l);
+    }
+
+    internal static Color FromHsl(float h, float s, float l)
+    {
+        if (s <= 0) return Color.FromArgb((int)(l * 255), (int)(l * 255), (int)(l * 255));
+        var q = l < 0.5f ? l * (1 + s) : l + s - l * s;
+        var p = 2 * l - q;
+        float Hue(float t)
+        {
+            if (t < 0) t += 1;
+            if (t > 1) t -= 1;
+            if (t < 1f / 6) return p + (q - p) * 6 * t;
+            if (t < 1f / 2) return q;
+            if (t < 2f / 3) return p + (q - p) * (2f / 3 - t) * 6;
+            return p;
+        }
+        var hk = h / 360f;
+        return Color.FromArgb(
+            (int)Math.Round(Math.Clamp(Hue(hk + 1f / 3), 0, 1) * 255),
+            (int)Math.Round(Math.Clamp(Hue(hk), 0, 1) * 255),
+            (int)Math.Round(Math.Clamp(Hue(hk - 1f / 3), 0, 1) * 255));
+    }
+
+    /// <summary>
+    /// Цвет акцента Windows (HKCU\…\Explorer\Accent, AccentColorMenu: 0xAABBGGRR). null — не задан или недоступен.
+    /// </summary>
+    public static Color? SystemAccentColor()
+    {
+        try
+        {
+            using var k = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Explorer\Accent");
+            if (k?.GetValue("AccentColorMenu") is int abgr) return FromAbgr(abgr);
+            using var dwm = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\DWM");
+            if (dwm?.GetValue("AccentColor") is int dwmAbgr) return FromAbgr(dwmAbgr);
+        }
+        catch (Exception ex) when (ex is System.Security.SecurityException or IOException or UnauthorizedAccessException)
+        {
+            // Нет доступа к реестру — схема по умолчанию.
+        }
+        return null;
+    }
+
+    /// <summary>Значение реестра 0xAABBGGRR → цвет.</summary>
+    internal static Color FromAbgr(int abgr) => Color.FromArgb(abgr & 0xFF, (abgr >> 8) & 0xFF, (abgr >> 16) & 0xFF);
+
+    /// <summary>
+    /// Акцент Windows, подогнанный под фон: на светлой основе слишком светлый цвет затемняется, на тёмной слишком тёмный —
+    /// осветляется (иначе ссылки и выделение не читаются).
+    /// </summary>
+    internal static Color ReadableAccent(Color c, bool dark)
+    {
+        var l = Luminance(c);
+        if (dark && l < 0.45) return Blend(c, Color.White, Math.Min(0.6, 0.45 - l + 0.25));
+        if (!dark && l > 0.55) return Blend(c, Color.Black, Math.Min(0.6, l - 0.55 + 0.2));
+        return c;
     }
 
     /// <summary>Тёмная тема приложений в параметрах Windows.</summary>
@@ -156,6 +239,19 @@ internal static class Theme
     /// <summary>Мягкая подложка акцентного цвета (выделение, подсветка).</summary>
     public static Color AccentLight => _p.AccentLight;
 
+    /// <summary>Градиентная заливка основных кнопок и значков: начало, конец и текст на ней.</summary>
+    public static Color Fill => _p.Fill;
+    public static Color FillEnd => _p.FillEnd;
+    public static Color OnFill => _p.OnFill;
+
+    /// <summary>Цвет тени карточек (с прозрачностью).</summary>
+    public static Color Shadow => IsDark ? Color.FromArgb(70, 0, 0, 0) : Color.FromArgb(22, 20, 24, 60);
+
+    /// <summary>Радиусы скругления (логические пиксели): элементы управления, карточки, крупные блоки.</summary>
+    public const int RadiusControl = 6;
+    public const int RadiusCard = 12;
+    public const int RadiusHero = 16;
+
     public static Color Green => _p.Green;
     public static Color Amber => _p.Amber;
     public static Color Red => _p.Red;
@@ -180,7 +276,7 @@ internal static class Theme
     /// <summary>Фон карточки при наведении.</summary>
     public static Color CardHover => _p.CardHover;
     /// <summary>Фон боковой панели.</summary>
-    public static Color Sidebar => _p.Background;
+    public static Color Sidebar => Blend(_p.Background, _p.Card, IsDark ? 0.35 : 0.55);
     /// <summary>Выделенный пункт навигации.</summary>
     public static Color NavSelected => _p.NavSelected;
     public static Color NavHover => _p.NavHover;
@@ -278,6 +374,11 @@ internal static class Theme
             _ = NativeMethods.DwmSetWindowAttribute(form.Handle, NativeMethods.DWMWA_USE_IMMERSIVE_DARK_MODE, ref dark, sizeof(int));
             var caption = ColorTranslator.ToWin32(Surface);
             _ = NativeMethods.DwmSetWindowAttribute(form.Handle, NativeMethods.DWMWA_CAPTION_COLOR, ref caption, sizeof(int));
+            // Windows 11: скруглённые углы и тонкая рамка оттенка акцента.
+            var corners = NativeMethods.DWMWCP_ROUND;
+            _ = NativeMethods.DwmSetWindowAttribute(form.Handle, NativeMethods.DWMWA_WINDOW_CORNER_PREFERENCE, ref corners, sizeof(int));
+            var border = ColorTranslator.ToWin32(Blend(Border, Accent, 0.45));
+            _ = NativeMethods.DwmSetWindowAttribute(form.Handle, NativeMethods.DWMWA_BORDER_COLOR, ref border, sizeof(int));
         }
         catch
         {
@@ -291,38 +392,41 @@ internal static class Theme
         Color WarnText, Color ErrorText, Color OkText,
         Color TextPrimary, Color TextMuted, Color TextFaint, Color Border,
         Color Background, Color Card, Color CardHover, Color NavSelected, Color NavHover, Color Input, Color Track,
-        Color[] Series)
+        Color[] Series, Color Fill, Color FillEnd, Color OnFill)
     {
         public static readonly Palette Light = new(
-            Accent: Color.FromArgb(0, 95, 184),
-            AccentHover: Color.FromArgb(0, 84, 166),
-            AccentPressed: Color.FromArgb(0, 70, 140),
+            Accent: Color.FromArgb(79, 70, 229),
+            AccentHover: Color.FromArgb(67, 56, 202),
+            AccentPressed: Color.FromArgb(55, 48, 163),
             OnAccent: Color.White,
-            AccentLight: Color.FromArgb(229, 241, 251),
-            Green: Color.FromArgb(16, 137, 62),
+            AccentLight: Color.FromArgb(238, 240, 255),
+            Green: Color.FromArgb(22, 163, 74),
             Amber: Color.FromArgb(234, 160, 0),
-            Red: Color.FromArgb(209, 52, 56),
-            Gray: Color.FromArgb(138, 136, 134),
-            WarnText: Color.FromArgb(157, 93, 0),
-            ErrorText: Color.FromArgb(164, 38, 44),
-            OkText: Color.FromArgb(16, 124, 16),
-            TextPrimary: Color.FromArgb(27, 27, 27),
-            TextMuted: Color.FromArgb(96, 94, 92),
-            TextFaint: Color.FromArgb(138, 136, 134),
-            Border: Color.FromArgb(229, 229, 229),
-            Background: Color.FromArgb(243, 243, 243),
-            Card: Color.FromArgb(251, 251, 251),
-            CardHover: Color.FromArgb(246, 246, 246),
-            NavSelected: Color.FromArgb(233, 233, 233),
-            NavHover: Color.FromArgb(237, 237, 237),
+            Red: Color.FromArgb(220, 38, 38),
+            Gray: Color.FromArgb(148, 152, 163),
+            WarnText: Color.FromArgb(161, 98, 7),
+            ErrorText: Color.FromArgb(185, 28, 28),
+            OkText: Color.FromArgb(21, 128, 61),
+            TextPrimary: Color.FromArgb(22, 24, 29),
+            TextMuted: Color.FromArgb(91, 96, 107),
+            TextFaint: Color.FromArgb(141, 146, 156),
+            Border: Color.FromArgb(227, 229, 236),
+            Background: Color.FromArgb(244, 245, 249),
+            Card: Color.White,
+            CardHover: Color.FromArgb(248, 249, 252),
+            NavSelected: Color.FromArgb(230, 231, 250),
+            NavHover: Color.FromArgb(234, 236, 243),
             Input: Color.White,
-            Track: Color.FromArgb(225, 225, 225),
+            Track: Color.FromArgb(226, 228, 236),
             Series:
             [
-                Color.FromArgb(0, 95, 184), Color.FromArgb(0, 153, 188), Color.FromArgb(135, 100, 184),
-                Color.FromArgb(202, 80, 16), Color.FromArgb(16, 137, 62), Color.FromArgb(194, 57, 179),
-                Color.FromArgb(234, 160, 0), Color.FromArgb(96, 94, 92),
-            ]);
+                Color.FromArgb(79, 70, 229), Color.FromArgb(14, 165, 233), Color.FromArgb(168, 85, 247),
+                Color.FromArgb(234, 88, 12), Color.FromArgb(22, 163, 74), Color.FromArgb(219, 39, 119),
+                Color.FromArgb(234, 179, 8), Color.FromArgb(100, 116, 139),
+            ],
+            Fill: Color.FromArgb(79, 70, 229),
+            FillEnd: Color.FromArgb(147, 51, 234),
+            OnFill: Color.White);
 
         /// <summary>«Полночь»: тёмно-синяя основа.</summary>
         public static readonly Palette Midnight = new(
@@ -354,7 +458,10 @@ internal static class Theme
                 Color.FromArgb(122, 162, 255), Color.FromArgb(76, 194, 180), Color.FromArgb(180, 150, 255),
                 Color.FromArgb(255, 150, 90), Color.FromArgb(108, 203, 95), Color.FromArgb(240, 120, 220),
                 Color.FromArgb(252, 206, 0), Color.FromArgb(160, 170, 190),
-            ]);
+            ],
+            Fill: Color.FromArgb(79, 110, 230),
+            FillEnd: Color.FromArgb(139, 92, 246),
+            OnFill: Color.White);
 
         /// <summary>Высокий контраст: чёрный фон, белый текст, жёлтый акцент, заметные границы.</summary>
         public static readonly Palette Contrast = new(
@@ -386,37 +493,113 @@ internal static class Theme
                 Color.FromArgb(255, 214, 0), Color.FromArgb(0, 230, 255), Color.FromArgb(255, 120, 255),
                 Color.FromArgb(255, 150, 60), Color.FromArgb(0, 255, 120), Color.FromArgb(160, 160, 255),
                 Color.FromArgb(255, 255, 255), Color.FromArgb(190, 190, 190),
-            ]);
+            ],
+            Fill: Color.FromArgb(255, 214, 0),
+            FillEnd: Color.FromArgb(255, 214, 0),
+            OnFill: Color.Black);
 
         public static readonly Palette Dark = new(
-            Accent: Color.FromArgb(96, 205, 255),
-            AccentHover: Color.FromArgb(87, 187, 232),
-            AccentPressed: Color.FromArgb(78, 168, 209),
+            Accent: Color.FromArgb(129, 140, 248),
+            AccentHover: Color.FromArgb(115, 125, 235),
+            AccentPressed: Color.FromArgb(99, 108, 214),
             OnAccent: Color.Black,
-            AccentLight: Color.FromArgb(38, 58, 72),
-            Green: Color.FromArgb(108, 203, 95),
-            Amber: Color.FromArgb(252, 206, 0),
-            Red: Color.FromArgb(255, 110, 120),
-            Gray: Color.FromArgb(140, 140, 140),
-            WarnText: Color.FromArgb(252, 225, 0),
-            ErrorText: Color.FromArgb(255, 153, 164),
-            OkText: Color.FromArgb(108, 203, 95),
-            TextPrimary: Color.FromArgb(242, 242, 242),
-            TextMuted: Color.FromArgb(200, 200, 200),
-            TextFaint: Color.FromArgb(150, 150, 150),
-            Border: Color.FromArgb(60, 60, 60),
-            Background: Color.FromArgb(32, 32, 32),
-            Card: Color.FromArgb(43, 43, 43),
-            CardHover: Color.FromArgb(50, 50, 50),
-            NavSelected: Color.FromArgb(45, 45, 45),
-            NavHover: Color.FromArgb(40, 40, 40),
-            Input: Color.FromArgb(28, 28, 28),
-            Track: Color.FromArgb(62, 62, 62),
+            AccentLight: Color.FromArgb(40, 42, 74),
+            Green: Color.FromArgb(74, 222, 128),
+            Amber: Color.FromArgb(250, 204, 21),
+            Red: Color.FromArgb(248, 113, 113),
+            Gray: Color.FromArgb(128, 134, 148),
+            WarnText: Color.FromArgb(250, 204, 21),
+            ErrorText: Color.FromArgb(252, 165, 165),
+            OkText: Color.FromArgb(74, 222, 128),
+            TextPrimary: Color.FromArgb(236, 237, 242),
+            TextMuted: Color.FromArgb(163, 168, 181),
+            TextFaint: Color.FromArgb(111, 116, 131),
+            Border: Color.FromArgb(43, 46, 56),
+            Background: Color.FromArgb(18, 19, 24),
+            Card: Color.FromArgb(27, 29, 36),
+            CardHover: Color.FromArgb(34, 37, 46),
+            NavSelected: Color.FromArgb(36, 38, 62),
+            NavHover: Color.FromArgb(29, 31, 40),
+            Input: Color.FromArgb(21, 23, 28),
+            Track: Color.FromArgb(43, 46, 56),
             Series:
             [
-                Color.FromArgb(96, 205, 255), Color.FromArgb(76, 194, 180), Color.FromArgb(180, 150, 255),
-                Color.FromArgb(255, 150, 90), Color.FromArgb(108, 203, 95), Color.FromArgb(240, 120, 220),
-                Color.FromArgb(252, 206, 0), Color.FromArgb(170, 170, 170),
-            ]);
+                Color.FromArgb(129, 140, 248), Color.FromArgb(56, 189, 248), Color.FromArgb(192, 132, 252),
+                Color.FromArgb(251, 146, 60), Color.FromArgb(74, 222, 128), Color.FromArgb(244, 114, 182),
+                Color.FromArgb(250, 204, 21), Color.FromArgb(148, 163, 184),
+            ],
+            Fill: Color.FromArgb(99, 102, 241),
+            FillEnd: Color.FromArgb(147, 51, 234),
+            OnFill: Color.White);
+
+        /// <summary>«Аврора»: глубокий сине-зелёный фон, бирюзовый акцент с переходом в фиолетовый.</summary>
+        public static readonly Palette Aurora = new(
+            Accent: Color.FromArgb(45, 212, 191),
+            AccentHover: Color.FromArgb(38, 190, 172),
+            AccentPressed: Color.FromArgb(30, 165, 150),
+            OnAccent: Color.Black,
+            AccentLight: Color.FromArgb(20, 58, 62),
+            Green: Color.FromArgb(52, 211, 153),
+            Amber: Color.FromArgb(251, 191, 36),
+            Red: Color.FromArgb(251, 113, 133),
+            Gray: Color.FromArgb(120, 140, 150),
+            WarnText: Color.FromArgb(252, 211, 77),
+            ErrorText: Color.FromArgb(253, 164, 175),
+            OkText: Color.FromArgb(52, 211, 153),
+            TextPrimary: Color.FromArgb(230, 244, 244),
+            TextMuted: Color.FromArgb(150, 180, 184),
+            TextFaint: Color.FromArgb(100, 128, 134),
+            Border: Color.FromArgb(28, 52, 58),
+            Background: Color.FromArgb(8, 20, 24),
+            Card: Color.FromArgb(13, 30, 35),
+            CardHover: Color.FromArgb(18, 38, 44),
+            NavSelected: Color.FromArgb(17, 48, 52),
+            NavHover: Color.FromArgb(14, 34, 39),
+            Input: Color.FromArgb(6, 16, 19),
+            Track: Color.FromArgb(28, 52, 58),
+            Series:
+            [
+                Color.FromArgb(45, 212, 191), Color.FromArgb(167, 139, 250), Color.FromArgb(56, 189, 248),
+                Color.FromArgb(251, 146, 60), Color.FromArgb(52, 211, 153), Color.FromArgb(244, 114, 182),
+                Color.FromArgb(251, 191, 36), Color.FromArgb(148, 163, 184),
+            ],
+            Fill: Color.FromArgb(13, 148, 136),
+            FillEnd: Color.FromArgb(124, 58, 237),
+            OnFill: Color.White);
+
+        /// <summary>«Графит»: нейтральная тёмно-серая основа, тёплый оранжевый акцент.</summary>
+        public static readonly Palette Graphite = new(
+            Accent: Color.FromArgb(251, 146, 60),
+            AccentHover: Color.FromArgb(234, 130, 46),
+            AccentPressed: Color.FromArgb(214, 115, 35),
+            OnAccent: Color.Black,
+            AccentLight: Color.FromArgb(60, 42, 30),
+            Green: Color.FromArgb(132, 204, 22),
+            Amber: Color.FromArgb(250, 204, 21),
+            Red: Color.FromArgb(248, 113, 113),
+            Gray: Color.FromArgb(140, 140, 140),
+            WarnText: Color.FromArgb(250, 204, 21),
+            ErrorText: Color.FromArgb(252, 165, 165),
+            OkText: Color.FromArgb(163, 230, 53),
+            TextPrimary: Color.FromArgb(240, 238, 235),
+            TextMuted: Color.FromArgb(172, 168, 162),
+            TextFaint: Color.FromArgb(120, 117, 112),
+            Border: Color.FromArgb(50, 49, 47),
+            Background: Color.FromArgb(22, 22, 21),
+            Card: Color.FromArgb(31, 31, 30),
+            CardHover: Color.FromArgb(38, 38, 37),
+            NavSelected: Color.FromArgb(48, 40, 34),
+            NavHover: Color.FromArgb(34, 34, 33),
+            Input: Color.FromArgb(18, 18, 17),
+            Track: Color.FromArgb(50, 49, 47),
+            Series:
+            [
+                Color.FromArgb(251, 146, 60), Color.FromArgb(56, 189, 248), Color.FromArgb(192, 132, 252),
+                Color.FromArgb(250, 204, 21), Color.FromArgb(132, 204, 22), Color.FromArgb(244, 114, 182),
+                Color.FromArgb(45, 212, 191), Color.FromArgb(168, 162, 158),
+            ],
+            Fill: Color.FromArgb(234, 88, 12),
+            FillEnd: Color.FromArgb(219, 39, 119),
+            OnFill: Color.White);
     }
 }

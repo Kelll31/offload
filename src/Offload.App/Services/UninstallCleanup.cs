@@ -1,3 +1,4 @@
+using Offload.Core.Config;
 using Offload.Core.Ipc;
 using Offload.Core.Logging;
 using Offload.Integrations;
@@ -35,6 +36,9 @@ internal static class UninstallCleanup
             for (var i = 0; i < 40 && IpcClient.IsTrayRunning(); i++) Thread.Sleep(250);
         });
         Step("отключение от IDE", () => IntegrationRegistry.UnregisterAllAsync().GetAwaiter().GetResult()); // l10n-ignore
+        // Записей в IDE больше нет — список подключений в настройках очищается (при «оставить данные» переустановка подключит
+        // Claude заново); отказы пользователя сохраняются.
+        Step("список подключений", () => ConfigStore.Update(c => c.ClearConnections())); // l10n-ignore
         // Все дополнения сразу (навык, правило, субагент, разрешения) — новое дополнение не будет забыто.
         Step("дополнения Claude Code", () => { foreach (var r in ClaudeCodeExtras.RemoveAll()) Report(r); }); // l10n-ignore
         // Секции Offload в AGENTS.md (Codex) и GEMINI.md (Gemini CLI); текст пользователя в этих файлах остаётся.

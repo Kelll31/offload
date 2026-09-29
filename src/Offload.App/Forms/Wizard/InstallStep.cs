@@ -486,8 +486,12 @@ internal sealed class InstallStep : WizardStep
         var errors = new List<string>();
         var connected = new List<string>();
         var hints = new List<string>();
-        var spec = McpServerSpec.ForCurrentExecutable();
+        var checks = new List<IdeCheckLine>();
+        var spec = InstallInfo.McpSpec();
         var cfg = ConfigStore.Current;
+        var installedCopies = InstallInfo.Installed?.ExePath is { } installedExe ? new[] { installedExe } : [];
+        // Пока мастер правит подключения, фоновое автоподключение и автовосстановление не вмешиваются.
+        IntegrationWatcher.PauseFor(TimeSpan.FromMinutes(5));
 
         // Шаг IDE мог не открываться (например, данные не загрузились) — тогда ничего не меняем в IDE.
         if (s.IdesLoaded)
@@ -507,11 +511,15 @@ internal sealed class InstallStep : WizardStep
                         if (r.Ok)
                         {
                             connected.Add(integration.DisplayName);
+                            // Явный выбор пользователя: отказ снимается, подключение считается ручным.
                             ConfigStore.Update(c =>
                             {
                                 if (!c.Integrations.Contains(id)) c.Integrations.Add(id);
+                                c.Undecline(id);
+                                c.MarkConnected(id, auto: false);
                             });
                             if (integration.PostRegisterHint is { Length: > 0 } hint) hints.Add(hint);
+                            checks.Add(await VerifyAsync(integration, spec, installedCopies, p, ct));
                         }
                         else
                         {
@@ -522,9 +530,19 @@ internal sealed class InstallStep : WizardStep
                     {
                         p.Report(new StepProgress(L.F("Отключение: {0}…", integration.DisplayName)));
                         var r = await integration.UnregisterAsync(ct);
-                        if (r.Ok) ConfigStore.Update(c => c.Integrations.Remove(id));
+                        if (r.Ok)
+                            ConfigStore.Update(c =>
+                            {
+                                c.Integrations.Remove(id);
+                                c.ForgetState(id);
+                            });
                         else errors.Add($"{integration.DisplayName}: {r.Message}");
                     }
+                    // Снятая галочка у найденной IDE — отказ: автоподключение её не тронет, пока пользователь не подключит сам.
+                    // При повторном запуске мастера без выбора остаются и IDE, которые просто не предлагались по умолчанию, —
+                    // отказом считаем только то, что раньше было подключено, и клиентов, которые подключаются автоматически.
+                    if (!wanted && s.IdesFound.Contains(id) && (s.IdesFirstRun || was || AutoConnectPolicy.Ids.Contains(id)))
+                        ConfigStore.Update(c => c.Decline(id));
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
@@ -559,6 +577,7 @@ internal sealed class InstallStep : WizardStep
                     errors.Add("Claude Code: " + Ui.FriendlyError(ex));
                 }
             }
+            ConfigStore.Update(c => c.Ui.AutoRepairIntegrations = s.AutoConnect);
         }
 
         p.Report(new StepProgress(L.T("Автозапуск…")));
@@ -573,10 +592,49 @@ internal sealed class InstallStep : WizardStep
             errors.Add(L.F("Автозапуск: {0}", Ui.FriendlyError(ex)));
         }
 
+        IntegrationWatcher.PauseFor(IntegrationWatcher.Debounce);
         HintsText = hints.Distinct().ToList();
+        IdeChecks = checks;
         if (errors.Count > 0) throw new InvalidOperationException(string.Join("; ", errors));
+        var problems = checks.Where(c => !c.Ok).ToList();
+        if (problems.Count > 0)
+            throw new InstallWarning(L.F("подключено, но проверка не прошла: {0}", string.Join("; ", problems.Select(c => $"{c.Name} — {c.Text}"))));
         return connected.Count == 0 ? L.T("IDE не выбраны") : string.Join(", ", connected);
     }
+
+    /// <summary>Сквозная проверка после записи: сервер запускается тем же способом, что и в IDE (initialize + tools/list).</summary>
+    private static async Task<IdeCheckLine> VerifyAsync(
+        IIdeIntegration integration, McpServerSpec spec, IReadOnlyCollection<string> installedCopies, IProgress<StepProgress> p, CancellationToken ct)
+    {
+        p.Report(new StepProgress(L.F("Проверка: {0}…", integration.DisplayName)));
+        VerifyResult v;
+        try
+        {
+            v = await IntegrationVerifier.VerifyAsync(integration, spec, installedCopies, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            Log.Warn("wizard", $"Проверка {integration.Id}: {ex.Message}");
+            v = new VerifyResult(false, FailureKind.StartFailed, ex.Message, 0, TimeSpan.Zero);
+        }
+        // Клиент без автоматической проверки (подключение вручную) — не ошибка.
+        var notVerifiable = v.Kind == FailureKind.NotVerifiable;
+        if (!notVerifiable)
+            ConfigStore.Update(c => c.RecordCheck(integration.Id, v.Ok, v.Summary, DateTime.UtcNow));
+        Log.Write(v.Ok || notVerifiable ? LogLevel.Info : LogLevel.Warn, "wizard", $"{integration.Id}: проверка — {(v.Ok ? "успешно" : v.Message)}");
+        return new IdeCheckLine(integration.Id, integration.DisplayName, v.Ok || notVerifiable,
+            notVerifiable ? L.T("подключено (автоматической проверки для этой IDE нет)") : v.Summary, v.Hint);
+    }
+
+    /// <summary>Итог проверки подключения одной IDE (для итогового шага мастера).</summary>
+    internal sealed record IdeCheckLine(string Id, string Name, bool Ok, string Text, string Hint);
+
+    /// <summary>Результаты проверки подключённых IDE (после этапа «Подключение к IDE»).</summary>
+    internal IReadOnlyList<IdeCheckLine> IdeChecks { get; private set; } = [];
 
     /// <summary>Подсказки IDE после подключения («Перезапустите Cursor» и т. п.).</summary>
     public IReadOnlyList<string> HintsText { get; private set; } = [];

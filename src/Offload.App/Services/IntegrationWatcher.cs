@@ -196,11 +196,18 @@ internal sealed class IntegrationWatcher : IDisposable
     public static void PauseFor(TimeSpan duration) =>
         Interlocked.Exchange(ref _pausedUntilTicks, (DateTime.UtcNow + duration).Ticks);
 
+    /// <summary>Сколько ещё действует пауза <see cref="PauseFor"/> (ноль — проверки не приостановлены).</summary>
+    public static TimeSpan PausedRemaining()
+    {
+        var left = new DateTime(Interlocked.Read(ref _pausedUntilTicks), DateTimeKind.Utc) - DateTime.UtcNow;
+        return left > TimeSpan.Zero ? left : TimeSpan.Zero;
+    }
+
     private void OnTimer() => _ = CheckAsync();
 
     private async Task CheckAsync()
     {
-        var paused = new DateTime(Interlocked.Read(ref _pausedUntilTicks), DateTimeKind.Utc) - DateTime.UtcNow;
+        var paused = PausedRemaining();
         if (paused > TimeSpan.Zero)
         {
             Schedule(paused + Debounce);
@@ -224,7 +231,7 @@ internal sealed class IntegrationWatcher : IDisposable
             var cfg = ConfigStore.Current;
             if (!Enabled(cfg)) return;
             var report = await IntegrationRegistry.RepairAsync(
-                cfg.Integrations.ToList(), McpServerSpec.ForCurrentExecutable(), id => _policy.TryAcquire(id, DateTime.UtcNow)).ConfigureAwait(false);
+                cfg.Integrations.ToList(), InstallInfo.McpSpec(), id => _policy.TryAcquire(id, DateTime.UtcNow)).ConfigureAwait(false);
             Report(report);
         }
         catch (Exception ex)

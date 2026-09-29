@@ -24,7 +24,6 @@
   "Проверка запуска не выполнялась: команда или аргументы отличаются от Offload ({0} {1}). Запускается только {2} {3}.": "Launch check skipped: the command or arguments differ from Offload ({0} {1}). Only {2} {3} is launched.",
   "Путь к Offload в IDE обновлён": "Offload path in IDE updated",
   "Путь к Offload в настройках снова устарел: {0}. Обновление приостановлено на час — проверьте настройки IDE (раздел «Интеграции» → «Проверить»).": "The Offload path in settings is outdated again: {0}. Updates are paused for an hour — check the IDE settings (Integrations → Check).",
-  "Следить за подключениями к IDE": "Watch IDE connections",
   "Указывает на другую копию Offload": "Points to another copy of Offload",
   "Установлена более новая версия OpenCode {0}, чем {1} — она оставлена без изменений.": "A newer OpenCode version {0} than {1} is installed — it was left unchanged.",
   "Установлена более новая версия OpenCode {0}. Канал «проверенная версия» заменит её на более старую {1}. Продолжить откат?": "A newer OpenCode version {0} is installed. The \"tested version\" channel will replace it with the older {1}. Continue the downgrade?",

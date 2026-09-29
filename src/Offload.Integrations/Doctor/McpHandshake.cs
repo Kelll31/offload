@@ -16,7 +16,8 @@ public sealed record HandshakeResult(
     int ToolCount,
     TimeSpan Elapsed,
     string? Error,
-    int NonJsonLines);
+    int NonJsonLines,
+    FailureKind Kind = FailureKind.None);
 
 /// <summary>
 /// Минимальный MCP-клиент stdio (JSON-RPC 2.0, по сообщению в строке) — как это делают IDE и scripts/mcp-smoke.mjs:
@@ -74,7 +75,7 @@ internal static class McpHandshake
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            return Fail(L.F("сервер не ответил за {0} с", (int)timeout.TotalSeconds), sw, session);
+            return Fail(L.F("сервер не ответил за {0} с", (int)timeout.TotalSeconds), sw, session, FailureKind.Timeout);
         }
         catch (EndOfStreamException)
         {
@@ -96,7 +97,7 @@ internal static class McpHandshake
     {
         var sw = Stopwatch.StartNew();
         if (Editing.CommandPath.IsUnc(command))
-            return new HandshakeResult(false, null, null, null, 0, sw.Elapsed, L.F("сетевой путь не запускается: {0}", command), 0);
+            return new HandshakeResult(false, null, null, null, 0, sw.Elapsed, L.F("сетевой путь не запускается: {0}", command), 0, FailureKind.ExeBlocked);
         var psi = new ProcessStartInfo
         {
             FileName = command,
@@ -128,7 +129,7 @@ internal static class McpHandshake
         }
         catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or IOException)
         {
-            return new HandshakeResult(false, null, null, null, 0, sw.Elapsed, L.F("не удалось запустить {0}: {1}", command, ex.Message), 0);
+            return new HandshakeResult(false, null, null, null, 0, sw.Elapsed, L.F("не удалось запустить {0}: {1}", command, ex.Message), 0, LaunchFailureKind(ex));
         }
         JobObject.Shared?.TryAdd(process);
         process.BeginErrorReadLine();
@@ -167,6 +168,15 @@ internal static class McpHandshake
         }
     }
 
+    /// <summary>Коды Win32: 5 — отказано в доступе, 225/226 — антивирус, 740 — нужны права, 1260 — запрещено политикой.</summary>
+    internal static FailureKind LaunchFailureKind(Exception ex) => ex switch
+    {
+        System.ComponentModel.Win32Exception { NativeErrorCode: 5 or 225 or 226 or 740 or 1260 } => FailureKind.ExeBlocked,
+        System.ComponentModel.Win32Exception { NativeErrorCode: 2 or 3 } => FailureKind.ExeMissing,
+        UnauthorizedAccessException => FailureKind.ExeBlocked,
+        _ => FailureKind.StartFailed,
+    };
+
     private static int SafeExitCode(Process p)
     {
         try { return p.ExitCode; } catch (InvalidOperationException) { return -1; }
@@ -174,8 +184,8 @@ internal static class McpHandshake
 
     private static string Last(string s, int max) => s.Length <= max ? s : "…" + s[^max..];
 
-    private static HandshakeResult Fail(string error, Stopwatch sw, Session session) =>
-        new(false, null, null, null, 0, sw.Elapsed, error, session.NonJsonLines);
+    private static HandshakeResult Fail(string error, Stopwatch sw, Session session, FailureKind kind = FailureKind.StartFailed) =>
+        new(false, null, null, null, 0, sw.Elapsed, error, session.NonJsonLines, kind);
 
     private static string? Str(JsonNode? n) => n is JsonValue v && v.TryGetValue<string>(out var s) ? s : null;
 

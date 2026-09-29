@@ -27,7 +27,8 @@ internal enum ProbeState
     Error,
 }
 
-internal sealed record FileProbe(string Path, ProbeState State, EntryInfo? Entry = null, string? Error = null)
+internal sealed record FileProbe(
+    string Path, ProbeState State, EntryInfo? Entry = null, string? Error = null, FailureKind ErrorKind = FailureKind.ConfigInvalid)
 {
     public IntegrationStatus ToStatus(McpServerSpec spec) => State switch
     {
@@ -135,6 +136,10 @@ internal abstract class IntegrationBase : IIdeIntegration
         if (statuses.Any(s => s is IntegrationStatus.Registered or IntegrationStatus.Outdated)) return IntegrationStatus.Outdated;
         return IntegrationStatus.NotRegistered;
     }
+
+    /// <summary>Причина ошибки чтения/правки файла: занят или недоступен — <see cref="FailureKind.ConfigLocked"/>, иначе не разобран.</summary>
+    internal static FailureKind KindOf(Exception ex) =>
+        ex is IOException or UnauthorizedAccessException ? FailureKind.ConfigLocked : FailureKind.ConfigInvalid;
 
     /// <summary>Текст ошибки для исключений правки файлов.</summary>
     protected static string? DescribeFailure(string path, Exception ex) => ex switch

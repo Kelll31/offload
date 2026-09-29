@@ -1,5 +1,21 @@
 **Offload** — приложение для Windows, которое запускает бесплатную локальную модель для программирования и подключает её к Claude Code, Cursor, VS Code, Codex и другим IDE как MCP-сервер. Облачный агент отдаёт ей рутину: чтение больших файлов и логов, тесты, шаблонный код, механические правки. Облачных токенов уходит меньше.
 
+## Что нового в 1.0.4
+
+- **Поставил Offload — и он сам подключился к Claude.** Claude Code и Claude Desktop (в том числе из Microsoft Store), установленные до или после Offload, подключаются без единого клика; про «позже» Offload узнаёт сам — проверяет раз в 15 минут.
+- **Подключение проверяется, а не предполагается.** Offload запускает `Offload.exe --mcp` так же, как это сделает Claude, и показывает итог: «проверено, 25 инструментов, 1,2 с» либо причину (антивирус, занятый или повреждённый файл настроек, посторонний текст в stdout) и что делать.
+- **Ваш отказ важнее автоматики.** Сняли галочку в мастере или нажали «Отключить» — автоподключение это не вернёт. Чужая запись `offload` не заменяется, Claude сам не перезапускается.
+- **Обновление не ломает подключение:** в Claude прописывается путь установленной копии Offload, он не меняется при обновлении.
+- Выключается одной настройкой: «Интеграции» → «Подключать Claude автоматически и следить за подключениями к IDE».
+- **Новый облик.** Фирменная индиго-палитра с градиентами, скруглённые кнопки и переключатели в стиле Windows 11, карточки с мягкой тенью, шапка раздела со значком и состоянием сервера и Claude, новая боковая панель. Новые схемы «Аврора» и «Графит», а также «Как акцент Windows».
+- **Палитра команд Ctrl+K** — найти любой раздел или действие по паре букв. **Ctrl+Alt+O** открывает Offload из любой программы, **F1** — все сочетания клавиш.
+- **Центр уведомлений и «тихие часы».** Всё, что Offload сообщал, собрано в одном разделе со счётчиком непрочитанных; ночью всплывающие окна не мешают.
+- **Карточка «Claude» на главной** и ежедневная проверка: Offload сам раз в сутки убеждается, что подключения работают, и скажет, только если что-то сломалось. Меню «Claude» в трее — проверить и подключить в один щелчок.
+- **Автоподключение Cursor, Windsurf, VS Code и других** — по вашему выбору на странице «Интеграции».
+- **Откат настроек IDE** из резервной копии, которую Offload делает перед каждой правкой.
+- **Тренды в статистике** («+35 % к прошлой неделе») и экономия за сегодня прямо в подсказке значка.
+- **Перенос настроек** на другой компьютер: экспорт и импорт без ключей, путей и параметров безопасности.
+
 ## Что нового в 1.0.3
 
 - **Автоподбор параметров под вашу видеокарту.** Одна кнопка на странице «Сервер»: Offload перебирает настройки llama-server, замеряет скорость и запоминает самый быстрый набор для этой модели и этого компьютера. Контекст не уменьшается; при отмене всё возвращается как было.
@@ -71,6 +87,8 @@
 - **`Offload-Setup-<version>.exe`** — installer for most users (per-user, no admin rights; the language follows Windows). Silent install: `/VERYSILENT`.
 - **`Offload.exe`** — portable single file.
 - **`SHA256SUMS.txt`** — checksums. Verify provenance with `gh attestation verify <file> --repo Kelll31/offload`.
+
+**New in 1.0.4:** Offload connects itself to Claude — Claude Code and Claude Desktop (including the Microsoft Store build), installed before or after Offload, are connected without a click (checked every 15 minutes); the connection is verified by launching `Offload.exe --mcp` like Claude does, with the result or the reason and what to do; your refusals are remembered and someone else's `offload` entry is never replaced; the path written into Claude is the installed copy's, so updates don't break it. One switch turns it off: Integrations → "Connect Claude automatically and watch IDE connections". Plus a new look (indigo gradients, Windows 11-style rounded buttons and toggles, soft-shadow cards, a page header with server and Claude status, new "Aurora", "Graphite" and "Windows accent" schemes), a Ctrl+K command palette, a global Ctrl+Alt+O hotkey and F1 shortcut help, a notification center with quiet hours, a Claude card on the Status page with a daily connection check and a Claude menu in the tray, opt-in auto-connect for Cursor, Windsurf, VS Code and other IDEs, restoring IDE configs from Offload's backups, trends against last week and today's savings in the tray tooltip, and settings export/import without keys, paths or security settings.
 
 **New in 1.0.3:** one-click auto-tuning of llama-server for your GPU (the fastest set is saved per model and PC); automatic model split across several GPUs; remote server mode — a laptop can use the model running on a powerful PC with Offload (trusted network or VPN, plain HTTP); IDE autocomplete via a small FIM coder model for llama.vscode and Continue; search and install any GGUF model from Hugging Face with a fit estimate; new tools local_pr_ready (pre-PR check in one call) and local_debug (from reproduction to a verified fix); agent race (race=2…4 on local_agent_task and local_solve); a result cache for unchanged code and automatic project memory; local_impact also suggests tests related to the change by meaning (with an embedding model; marked semantic and never run by run_tests); the installer is now built with a pinned Inno Setup version locally and in CI.
 

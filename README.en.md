@@ -187,6 +187,18 @@ The server publishes ready-made scenarios; in Claude Code they're available as `
 2. Run it — the setup wizard opens. It suggests an llama.cpp build and model for your hardware, downloads everything needed and connects the IDEs it finds.
 3. Restart Claude Code (or run `/mcp`) — the `offload` server appears.
 
+**Everything connects by itself.** Offload connects Claude Code and Claude Desktop (including the Microsoft Store build) without a
+single click — both the ones already installed and the ones you install **later**: every 15 minutes in the background it looks for
+a Claude without an `offload` entry, adds it (with a backup of the config), installs the skill and read permissions for Claude Code
+and **verifies** that the connection works by launching `Offload.exe --mcp` the way Claude itself will (`initialize` +
+`tools/list`). You get one notification: what is connected, what needs a restart and, if the check failed, the reason and what to
+do (antivirus, a locked file, a damaged config…). The path written into Claude's settings is the installed copy's path, so it does
+not change when Offload updates. What Offload never does: replace someone else's `offload` entry, touch what you declined (unchecked
+in the wizard or clicked "Disconnect" on the Integrations tab), edit configs in developer mode or from a portable copy, or restart
+Claude for you. To turn auto-connect off: Integrations → "Connect Claude automatically and watch IDE connections".
+
+**Also in 1.0.4:** a new look (indigo gradients, Windows 11-style buttons and toggles, "Aurora", "Graphite" and "Windows accent" schemes), a Ctrl+K command palette, a global Ctrl+Alt+O hotkey and F1 shortcut help, a notification center with quiet hours, a Claude card on the Status page with a daily connection check and a Claude menu in the tray, opt-in auto-connect for other IDEs, restoring IDE configs from Offload's backups, and settings export/import without keys, paths or security settings.
+
 Requirements: Windows 10 1809+ / Windows 11 x64, preferably an NVIDIA/AMD/Intel GPU with 8+ GB VRAM (also works on CPU, but slowly), 10-30 GB of free space for the model. llama.cpp builds need the Visual C++ Redistributable — the wizard installs it itself (a UAC prompt will appear).
 
 ### Manual setup for any IDE

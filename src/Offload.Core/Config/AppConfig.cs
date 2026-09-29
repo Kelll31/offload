@@ -34,8 +34,100 @@ public sealed class AppConfig
     /// </summary>
     public List<string> DeclinedIntegrations { get; set; } = [];
 
+    /// <summary>
+    /// IDE, которые пользователь разрешил подключать автоматически в дополнение к Claude Code и Claude Desktop
+    /// (например, Cursor, Windsurf): автоподключение действует для них по тем же правилам.
+    /// </summary>
+    public List<string> AutoConnectExtra { get; set; } = [];
+
+    /// <summary>Сведения о подключении IDE (кто подключил и итог последней проверки) по идентификатору интеграции.</summary>
+    public Dictionary<string, IntegrationState> IntegrationStates { get; set; } = new(StringComparer.Ordinal);
+
     /// <summary>Автодополнение кода в IDE (FIM) на отдельном llama-server роли fim.</summary>
     public AutocompleteSettings Autocomplete { get; set; } = new();
+}
+
+/// <summary>Сведения о подключении одной IDE: подключена ли автоматически и что показала последняя проверка запуском.</summary>
+public sealed class IntegrationState
+{
+    /// <summary>Offload подключил IDE сам (автоподключение), а не по клику пользователя.</summary>
+    public bool AutoConnected { get; set; }
+
+    /// <summary>Когда проверяли подключение в последний раз (UTC).</summary>
+    public DateTime? LastCheckUtc { get; set; }
+
+    /// <summary>Итог последней проверки: сервер по записи запускается и отвечает.</summary>
+    public bool LastCheckOk { get; set; }
+
+    /// <summary>Краткий итог проверки для интерфейса («проверено (25 инструментов, 1,2 с)» или причина сбоя).</summary>
+    public string? LastCheckText { get; set; }
+}
+
+/// <summary>Правки <see cref="AppConfig.IntegrationStates"/> (вызывать внутри <c>ConfigStore.Update</c>).</summary>
+public static class IntegrationStateExtensions
+{
+    /// <summary>Отметить подключение IDE: автоматическое или по действию пользователя (старый итог проверки сбрасывается).</summary>
+    public static void MarkConnected(this AppConfig cfg, string id, bool auto)
+    {
+        cfg.IntegrationStates ??= new(StringComparer.Ordinal);
+        cfg.IntegrationStates[id] = new IntegrationState { AutoConnected = auto };
+    }
+
+    /// <summary>Запомнить итог проверки (способ подключения сохраняется).</summary>
+    public static void RecordCheck(this AppConfig cfg, string id, bool ok, string text, DateTime utc)
+    {
+        cfg.IntegrationStates ??= new(StringComparer.Ordinal);
+        if (!cfg.IntegrationStates.TryGetValue(id, out var state)) cfg.IntegrationStates[id] = state = new IntegrationState();
+        state.LastCheckUtc = utc;
+        state.LastCheckOk = ok;
+        state.LastCheckText = text;
+    }
+
+    /// <summary>Забыть сведения об IDE (после отключения).</summary>
+    public static void ForgetState(this AppConfig cfg, string id) => cfg.IntegrationStates?.Remove(id);
+
+    /// <summary>Пользователь отказался от подключения IDE (или отключил её): автоподключение её больше не трогает.</summary>
+    public static void Decline(this AppConfig cfg, string id)
+    {
+        cfg.DeclinedIntegrations ??= [];
+        if (!cfg.DeclinedIntegrations.Contains(id)) cfg.DeclinedIntegrations.Add(id);
+    }
+
+    /// <summary>Пользователь подключил IDE сам — отказ снимается.</summary>
+    public static void Undecline(this AppConfig cfg, string id) => cfg.DeclinedIntegrations?.Remove(id);
+
+    /// <summary>
+    /// Забыть все подключения (после удаления программы записи в IDE сняты): список подключённых IDE и сведения о них очищаются,
+    /// а отказы пользователя (<see cref="AppConfig.DeclinedIntegrations"/>) сохраняются — при переустановке с прежними данными
+    /// Offload не будет подключать то, от чего пользователь отказался.
+    /// </summary>
+    public static void ClearConnections(this AppConfig cfg)
+    {
+        cfg.Integrations?.Clear();
+        cfg.IntegrationStates?.Clear();
+    }
+
+    /// <summary>
+    /// Как выглядит связь с Claude (для подсказки значка в трее): нет подключённого Claude, всё в порядке или последняя
+    /// проверка запуском не прошла.
+    /// </summary>
+    public static ClaudeLink ClaudeLink(this AppConfig cfg, IEnumerable<string> claudeIds)
+    {
+        var connected = claudeIds.Where(id => cfg.Integrations?.Contains(id) == true).ToList();
+        if (connected.Count == 0) return Config.ClaudeLink.None;
+        var failed = connected.Any(id => cfg.IntegrationStates is { } st && st.TryGetValue(id, out var state) && state is { LastCheckUtc: not null, LastCheckOk: false });
+        return failed ? Config.ClaudeLink.NeedsAttention : Config.ClaudeLink.Connected;
+    }
+}
+
+/// <summary>Состояние связи с Claude Code / Claude Desktop.</summary>
+public enum ClaudeLink
+{
+    /// <summary>Claude не подключён (или не установлен).</summary>
+    None,
+    Connected,
+    /// <summary>Последняя проверка подключения не прошла.</summary>
+    NeedsAttention,
 }
 
 /// <summary>
@@ -622,6 +714,18 @@ public sealed class UiSettings
     /// Не действует в режиме разработчика и в копии, запущенной не из папки установки.
     /// </summary>
     public bool AutoRepairIntegrations { get; set; } = true;
+
+    /// <summary>«Тихие часы»: в промежуток <see cref="QuietHoursFrom"/>–<see cref="QuietHoursTo"/> всплывающие уведомления не показываются.</summary>
+    public bool QuietHoursEnabled { get; set; }
+
+    /// <summary>Начало тихих часов, «ЧЧ:ММ».</summary>
+    public string QuietHoursFrom { get; set; } = "22:00";
+
+    /// <summary>Конец тихих часов, «ЧЧ:ММ» (может быть раньше начала — промежуток через полночь).</summary>
+    public string QuietHoursTo { get; set; } = "08:00";
+
+    /// <summary>Глобальная горячая клавиша Ctrl+Alt+O открывает панель управления из любой программы.</summary>
+    public bool GlobalHotkey { get; set; } = true;
 }
 
 /// <summary>

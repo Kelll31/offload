@@ -1,4 +1,5 @@
 using Offload.App.Controls;
+using Offload.App.Forms;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -23,7 +24,9 @@ internal sealed class IntegrationsPage : PageBase
     /// <param name="LastCallUtc">Последнее обращение из IDE.</param>
     /// <param name="Need">Что не так с записью (для текста статуса и кнопки).</param>
     /// <param name="Tracked">Offload подключал эту IDE (она в cfg.Integrations): пропавшая запись — «удалена», а не «не подключена».</param>
-    private sealed record Row(IIdeIntegration Integration, IntegrationStatus Status, bool Installed, DateTime? LastCallUtc, RepairNeed Need, bool Tracked)
+    /// <param name="State">Как подключена (автоматически или вручную) и итог последней проверки запуском.</param>
+    private sealed record Row(IIdeIntegration Integration, IntegrationStatus Status, bool Installed, DateTime? LastCallUtc, RepairNeed Need, bool Tracked,
+        IntegrationState? State = null)
     {
         /// <summary>Запись Offload пропала из настроек IDE, которую Offload подключал.</summary>
         public bool Removed => Tracked && Status == IntegrationStatus.NotRegistered;
@@ -37,10 +40,24 @@ internal sealed class IntegrationsPage : PageBase
     private readonly Button _check;
     private readonly Button _checkAll;
     private readonly Button _openConfig;
+    private readonly Button _backups;
+    private readonly CheckedListBox _autoExtra = new()
+    {
+        CheckOnClick = true,
+        IntegralHeight = false,
+        Dock = DockStyle.Fill,
+        BorderStyle = BorderStyle.None,
+        MultiColumn = true,
+        ColumnWidth = 220,
+        Margin = new Padding(0, 4, 0, 4),
+    };
+    private readonly Label _autoExtraHint = Kit.Hint("");
+    private readonly CardPanel _autoExtraCard = new() { Padding = new Padding(16, 10, 16, 12) };
+    private bool _loadingExtra;
     private readonly Button _refresh;
     private readonly Label _status = Kit.Wrap("");
     private readonly TextBox _report = Kit.MultiLine(170, mono: true, readOnly: true);
-    private readonly CheckBox _autoRepair = Kit.Check(L.T("Следить за подключениями к IDE"));
+    private readonly CheckBox _autoRepair = Kit.Check(L.T("Подключать Claude автоматически и следить за подключениями к IDE"));
     private readonly Label _wslHint = Kit.Hint("");
     private readonly Button _wslDetect;
 
@@ -72,9 +89,14 @@ internal sealed class IntegrationsPage : PageBase
         });
         _checkAll = Kit.Button(L.T("Проверить все"), async (_, _) => await CheckAsync(ConnectedIntegrations()), 120);
         _openConfig = Kit.Button(L.T("Открыть файл конфигурации"), (_, _) => OpenConfig(), 170);
+        _backups = Kit.IconButton(Glyphs.History, L.T("Резервные копии…"), (_, _) => ShowBackups(), 150);
         _refresh = Kit.Button(L.T("Обновить список"), async (_, _) => await RefreshAsync());
         _wslDetect = Kit.Button(L.T("Найти в WSL"), async (_, _) => await DetectWslAsync(), 120);
-        _list.SelectedIndexChanged += (_, _) => UpdateUiState();
+        _list.SelectedIndexChanged += (_, _) =>
+        {
+            UpdateUiState();
+            ShowLastCheck();
+        };
         _list.DoubleClick += async (_, _) =>
         {
             if (Selected() is { Installed: true, Status: not IntegrationStatus.Registered }) await RegisterSelectedAsync();
@@ -85,7 +107,7 @@ internal sealed class IntegrationsPage : PageBase
         root.AddRow(Kit.Hint(
             L.T("Offload подключается к IDE как MCP-сервер: IDE сама запускает «Offload.exe --mcp» и может поручать локальной модели чтение файлов, ревью изменений, сообщения коммитов и простые правки. Перед изменением файла настроек IDE делается резервная копия.")));
         root.AddFixedRow(230, _list);
-        root.AddRow(Kit.Flow(_register, _unregister, _registerAll, _check, _checkAll, _openConfig, _refresh));
+        root.AddRow(Kit.Flow(_register, _unregister, _registerAll, _check, _checkAll, _openConfig, _backups, _refresh));
         root.AddRow(_status);
         // Остановленные дистрибутивы WSL: Offload не запускает их сам (это поднимает виртуальную машину) — только по кнопке.
         _wslHint.Visible = _wslDetect.Visible = false;
@@ -97,6 +119,17 @@ internal sealed class IntegrationsPage : PageBase
         root.AddRow(Indented(Kit.Hint(DevMode.Active
             ? L.T("Если программу переместили, путь к Offload в настройках подключённых IDE обновляется сам. Если запись удалена, изменена или имя «offload» занято другим сервером, Offload ничего не меняет — только сообщает, а восстановить подключение можно здесь. В режиме разработчика не действует.")
             : L.T("Если программу переместили, путь к Offload в настройках подключённых IDE обновляется сам. Если запись удалена, изменена или имя «offload» занято другим сервером, Offload ничего не меняет — только сообщает, а восстановить подключение можно здесь."))));
+        root.AddRow(Kit.Section(L.T("Автоподключение других IDE")));
+        root.AddRow(Kit.Hint(L.T("Claude Code и Claude Desktop подключаются сами. Отметьте здесь другие IDE, которые Offload тоже должен подключать автоматически — сразу и после их переустановки или сброса настроек. Чужая запись «offload» не заменяется, отказ («Отключить») запоминается.")));
+        _autoExtra.BackColor = Theme.Card;
+        _autoExtra.ForeColor = Theme.TextPrimary;
+        _autoExtra.AccessibleName = L.T("IDE для автоподключения");
+        _autoExtra.ItemCheck += (_, e) => ToggleAutoExtra(e);
+        _autoExtraCard.AddFixedRow(96, _autoExtra);
+        root.AddRow(_autoExtraCard);
+        root.AddRow(_autoExtraHint);
+
+        root.AddRow(Kit.Section(L.T("Инструменты записи")));
         root.AddRow(_approveWrite);
         _pendingWrite.Margin = new Padding(20, 0, 0, 6);
         root.AddRow(_pendingWrite);
@@ -189,7 +222,7 @@ internal sealed class IntegrationsPage : PageBase
     }
 
     private static McpServerSpec Spec() =>
-        Ui.Try(McpServerSpec.ForCurrentExecutable,
+        Ui.Try(InstallInfo.McpSpec,
             new McpServerSpec(AppInfo.McpServerId, AppPaths.ExecutablePath, [AppInfo.McpArg], new Dictionary<string, string>()),
             "McpServerSpec");
 
@@ -214,6 +247,7 @@ internal sealed class IntegrationsPage : PageBase
         _check.Enabled = !busy && row is { Installed: true };
         _checkAll.Enabled = !busy && ConnectedIntegrations().Count > 0;
         _openConfig.Enabled = row?.Integration.ConfigPath is { Length: > 0 };
+        _backups.Enabled = !busy && row?.Integration.ConfigPath is { Length: > 0 };
         _refresh.Enabled = !busy;
     }
 
@@ -226,6 +260,7 @@ internal sealed class IntegrationsPage : PageBase
         {
             var spec = Spec();
             var tracked = ConfigStore.Current.Integrations.ToHashSet(StringComparer.Ordinal);
+            var states = ConfigStore.Current.IntegrationStates.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.Ordinal);
             IReadOnlyList<string> stoppedWsl = [];
             var (rows, error) = await Task.Run<(List<Row>, string?)>(() =>
             {
@@ -242,7 +277,8 @@ internal sealed class IntegrationsPage : PageBase
                         if (!installed && status is IntegrationStatus.NotRegistered) status = IntegrationStatus.ClientNotFound;
                         var need = installed ? Ui.Try(() => IntegrationRegistry.Assess(i, spec), RepairNeed.None, $"{i.Id}.Assess") : RepairNeed.None;
                         return new Row(i, status, installed || status is IntegrationStatus.Registered or IntegrationStatus.Outdated,
-                            lastCalls.TryGetValue(i.Id, out var t) ? t : null, need, tracked.Contains(i.Id));
+                            lastCalls.TryGetValue(i.Id, out var t) ? t : null, need, tracked.Contains(i.Id),
+                            states.GetValueOrDefault(i.Id));
                     }).ToList();
                     return (list, null);
                 }
@@ -277,6 +313,7 @@ internal sealed class IntegrationsPage : PageBase
                 if (r.Integration.Id == selectedId) item.Selected = true;
             }
             _list.EndUpdate();
+            FillAutoExtra(rows);
             _wslHint.Visible = _wslDetect.Visible = stoppedWsl.Count > 0;
             if (stoppedWsl.Count > 0)
                 _wslHint.Text = L.F("Дистрибутивы WSL не запущены: {0}. Offload не запускает их сам — нажмите «Найти в WSL», чтобы запустить их и проверить Claude Code внутри.", string.Join(", ", stoppedWsl));
@@ -316,8 +353,36 @@ internal sealed class IntegrationsPage : PageBase
         { Status: IntegrationStatus.Outdated, Need: RepairNeed.StaleSettings } => L.T("Устарели настройки записи"),
         { Status: IntegrationStatus.Outdated, Need: RepairNeed.OtherCopy } => L.T("Указывает на другую копию Offload"),
         { Status: IntegrationStatus.Outdated, Need: RepairNeed.Missing } => L.T("Подключена не во всех файлах"),
+        { Status: IntegrationStatus.Registered, State.AutoConnected: true } => L.T("Подключена автоматически"),
         _ => Texts.Integration(r.Status),
     };
+
+    /// <summary>Итог последней проверки запуском для выбранной IDE (дата и результат) — в строке состояния.</summary>
+    private void ShowLastCheck()
+    {
+        if (Selected() is not { State: { LastCheckUtc: { } at } state } row || IsBusy) return;
+        _status.ForeColor = state.LastCheckOk ? Theme.OkText : Theme.WarnText;
+        _status.Text = L.F("{0}: последняя проверка {1} — {2}", Ui.Try(() => row.Integration.DisplayName, row.Integration.Id, "DisplayName"),
+            at.ToLocalTime().ToString("g", L.Culture), state.LastCheckText ?? "—");
+    }
+
+    /// <summary>Проверить подключение запуском сервера и запомнить итог (для метки в списке). Не бросает исключений.</summary>
+    private static async Task<VerifyResult> VerifyAsync(IIdeIntegration integration, McpServerSpec spec)
+    {
+        VerifyResult v;
+        try
+        {
+            var installed = InstallInfo.Installed?.ExePath is { } exe ? new[] { exe } : [];
+            v = await Task.Run(() => IntegrationVerifier.VerifyAsync(integration, spec, installed));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            v = new VerifyResult(false, FailureKind.StartFailed, ex.Message, 0, TimeSpan.Zero);
+        }
+        if (v.Kind != FailureKind.NotVerifiable)
+            ConfigStore.Update(c => c.RecordCheck(integration.Id, v.Ok, v.Summary, DateTime.UtcNow));
+        return v;
+    }
 
     private async Task<IntegrationResult?> RegisterAsync(IIdeIntegration integration)
     {
@@ -336,10 +401,21 @@ internal sealed class IntegrationsPage : PageBase
         Log.Info("integrations", $"{integration.Id}: {(result.Ok ? "подключено" : "ошибка")} — {result.Message}");
         if (result.Ok)
         {
+            // Явное действие пользователя важнее списка отказов; подключение считается ручным.
             ConfigStore.Update(c =>
             {
                 if (!c.Integrations.Contains(integration.Id)) c.Integrations.Add(integration.Id);
+                c.Undecline(integration.Id);
+                c.MarkConnected(integration.Id, auto: false);
             });
+            _status.ForeColor = Theme.TextMuted;
+            _status.Text = L.F("Проверка: {0}…", integration.DisplayName);
+            var v = await VerifyAsync(integration, spec);
+            if (v.Kind != FailureKind.NotVerifiable)
+            {
+                var line = v.Ok ? L.F("Проверка: {0}.", v.Summary) : L.F("Проверка не прошла: {0}. {1}", v.Summary, v.Hint).Trim();
+                result = result with { Message = result.Message + Environment.NewLine + line };
+            }
         }
         return result;
     }
@@ -373,7 +449,12 @@ internal sealed class IntegrationsPage : PageBase
         {
             // Нашей записи в файле нет — только перестаём следить за IDE и напоминать о ней.
             if (!Ui.Confirm(Owner, L.F("Записи Offload в настройках «{0}» нет. Больше не следить за этой IDE?", i.DisplayName))) return;
-            if (!Ui.RunSafe(Owner, () => ConfigStore.Update(c => c.Integrations.Remove(i.Id)), L.T("Не удалось сохранить настройку"))) return;
+            if (!Ui.RunSafe(Owner, () => ConfigStore.Update(c =>
+                {
+                    c.Integrations.Remove(i.Id);
+                    c.ForgetState(i.Id);
+                    c.Decline(i.Id);
+                }), L.T("Не удалось сохранить настройку"))) return;
             Log.Info("integrations", $"{i.Id}: больше не отслеживается (записи Offload нет)");
             _status.ForeColor = Theme.OkText;
             _status.Text = L.F("{0}: Offload больше не следит за этой IDE. Файл настроек не изменялся.", i.DisplayName);
@@ -391,7 +472,13 @@ internal sealed class IntegrationsPage : PageBase
             {
                 var r = await i.UnregisterAsync();
                 Log.Info("integrations", $"{i.Id}: отключение — {r.Message}");
-                if (r.Ok) ConfigStore.Update(c => c.Integrations.Remove(i.Id));
+                if (r.Ok)
+                    ConfigStore.Update(c =>
+                    {
+                        c.Integrations.Remove(i.Id);
+                        c.ForgetState(i.Id);
+                        c.Decline(i.Id); // отключил сам — автоподключение не вернёт
+                    });
                 ShowResult(i, r, registered: false);
             }
             finally
@@ -465,6 +552,66 @@ internal sealed class IntegrationsPage : PageBase
         _status.Text = text;
         if (!r.Ok) Ui.ShowError(Owner, registered ? L.F("Не удалось подключить {0}", i.DisplayName) : L.F("Не удалось отключить {0}", i.DisplayName), r.Message);
         else if (!string.IsNullOrWhiteSpace(hint)) Ui.Info(Owner, $"{r.Message}{Environment.NewLine}{Environment.NewLine}{hint}");
+    }
+
+    /// <summary>Список IDE для автоподключения: найденные на компьютере клиенты, которые можно добавить (не Claude, не WSL).</summary>
+    private void FillAutoExtra(IReadOnlyList<Row> rows)
+    {
+        var chosen = ConfigStore.Current.AutoConnectExtra.ToHashSet(StringComparer.Ordinal);
+        var candidates = rows
+            .Where(r => AutoConnectPolicy.CanOptIn(r.Integration.Id) && (r.Installed || chosen.Contains(r.Integration.Id)))
+            .OrderBy(r => Ui.Try(() => r.Integration.DisplayName, r.Integration.Id, "DisplayName"))
+            .ToList();
+        _loadingExtra = true;
+        try
+        {
+            _autoExtra.BeginUpdate();
+            _autoExtra.Items.Clear();
+            foreach (var r in candidates)
+                _autoExtra.Items.Add(new ExtraItem(r.Integration.Id, Ui.Try(() => r.Integration.DisplayName, r.Integration.Id, "DisplayName")), chosen.Contains(r.Integration.Id));
+            _autoExtra.EndUpdate();
+        }
+        finally
+        {
+            _loadingExtra = false;
+        }
+        _autoExtraCard.Visible = candidates.Count > 0;
+        _autoExtraHint.Text = candidates.Count == 0
+            ? L.T("Других поддерживаемых IDE на компьютере не найдено.")
+            : L.T("Автоподключение выбранных IDE работает, пока включено «Подключать Claude автоматически и следить за подключениями к IDE».");
+    }
+
+    private sealed record ExtraItem(string Id, string Name)
+    {
+        public override string ToString() => Name;
+    }
+
+    private void ToggleAutoExtra(ItemCheckEventArgs e)
+    {
+        if (_loadingExtra || _autoExtra.Items[e.Index] is not ExtraItem item) return;
+        var on = e.NewValue == CheckState.Checked;
+        if (!Ui.RunSafe(Owner, () => ConfigStore.Update(c =>
+            {
+                c.AutoConnectExtra.Remove(item.Id);
+                if (on)
+                {
+                    c.AutoConnectExtra.Add(item.Id);
+                    c.Undecline(item.Id); // явный выбор пользователя важнее прежнего отказа
+                }
+            }), L.T("Не удалось сохранить настройку")))
+        {
+            e.NewValue = e.CurrentValue;
+            return;
+        }
+        Log.Info("integrations", $"{item.Id}: автоподключение {(on ? "включено" : "выключено")}");
+        if (on) _ = Shell.ConnectClaudeNowAsync();
+    }
+
+    private void ShowBackups()
+    {
+        if (Selected() is not { } row) return;
+        using (var f = new BackupRestoreForm(row.Integration)) f.ShowDialog(Owner);
+        _ = RefreshAsync();
     }
 
     private void OpenConfig()
@@ -584,6 +731,7 @@ internal sealed class IntegrationsPage : PageBase
             }
         }, L.T("Не удалось проверить подключение"));
         if (IsDisposed || reports.Count == 0) return;
+        RecordChecks(reports);
         var worst = reports.Max(r => r.Worst);
         _status.ForeColor = worst switch
         {
@@ -597,6 +745,21 @@ internal sealed class IntegrationsPage : PageBase
             : L.F("Проверка завершена: {0} — без ошибок.", string.Join(", ", reports.Select(r => r.DisplayName)));
         _report.Text = FormatReports(reports);
         _report.Visible = true;
+    }
+
+    /// <summary>Запомнить итог проверки запуском по отчётам доктора (метка «проверено» в списке и в строке состояния).</summary>
+    private static void RecordChecks(IReadOnlyList<DoctorReport> reports)
+    {
+        var now = DateTime.UtcNow;
+        Ui.RunSafe(null, () => ConfigStore.Update(c =>
+        {
+            foreach (var r in reports.Where(r => r.Handshake is not null))
+            {
+                var h = r.Handshake!;
+                var v = new VerifyResult(h.Ok && r.Worst != DoctorLevel.Error, h.Kind, h.Error ?? "", h.ToolCount, h.Elapsed);
+                c.RecordCheck(r.IntegrationId, v.Ok, v.Ok ? v.Summary : (h.Error ?? FailureText.Reason(IntegrationVerifier.Classify(h))), now);
+            }
+        }), L.T("Не удалось сохранить настройку"));
     }
 
     internal static string FormatReports(IEnumerable<DoctorReport> reports)

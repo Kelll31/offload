@@ -29,6 +29,7 @@ internal sealed class IdeStep : WizardStep
     private readonly CheckBox _guidance = Kit.Check(L.T("Установить инструкции по делегированию для Claude Code"));
     private readonly CheckBox _preapprove = Kit.Check(L.T("Разрешить Claude Code вызывать инструменты чтения Offload без подтверждения"));
     private readonly CheckBox _autostart = Kit.Check(L.T("Запускать Offload вместе с Windows"));
+    private readonly CheckBox _autoConnect = Kit.Check(L.T("Подключать Claude автоматически и следить за подключениями"));
 
     private bool _loaded;
     private bool _busy;
@@ -48,6 +49,7 @@ internal sealed class IdeStep : WizardStep
         _guidance.CheckedChanged += (_, _) => State.ClaudeGuidance = _guidance.Checked;
         _preapprove.CheckedChanged += (_, _) => State.PreapproveReadTools = _preapprove.Checked;
         _autostart.CheckedChanged += (_, _) => State.Autostart = _autostart.Checked;
+        _autoConnect.CheckedChanged += (_, _) => State.AutoConnect = _autoConnect.Checked;
 
         var root = Kit.Table();
         root.AddRow(Kit.Section(L.T("IDE и агенты"), first: true));
@@ -61,6 +63,9 @@ internal sealed class IdeStep : WizardStep
         root.AddRow(Indent(Kit.Hint(L.T("Объясняет Claude, какие задачи выгодно поручать локальной модели, чтобы экономить токены."))));
         root.AddRow(_preapprove);
         root.AddRow(Indent(Kit.Hint(L.T("Только инструменты чтения (вопросы по файлам, ревью, сжатие логов). Инструменты записи можно разрешить позже на вкладке «Интеграции»."))));
+
+        root.AddRow(_autoConnect);
+        root.AddRow(Indent(Kit.Hint(L.T("Claude Code и Claude Desktop, установленные позже, подключатся сами; пропавшая запись Offload вернётся. Программы, которые вы сейчас не выберете, Offload не трогает."))));
 
         root.AddRow(Kit.Section(L.T("Автозапуск")));
         root.AddRow(_autostart);
@@ -93,7 +98,7 @@ internal sealed class IdeStep : WizardStep
         {
             var cfg = ConfigStore.Current;
             var firstRun = !cfg.SetupCompleted;
-            var spec = Ui.Try<McpServerSpec?>(() => McpServerSpec.ForCurrentExecutable(), null, "McpServerSpec");
+            var spec = Ui.Try<McpServerSpec?>(() => InstallInfo.McpSpec(), null, "McpServerSpec");
             var (found, missing, error) = await Task.Run<(List<(Item Item, bool Registered)>, List<string>, string?)>(() =>
             {
                 var f = new List<(Item Item, bool Registered)>();
@@ -126,11 +131,17 @@ internal sealed class IdeStep : WizardStep
 
             State.Ides.Clear();
             _ides.Items.Clear();
+            State.IdesFirstRun = firstRun;
+            State.IdesFound.Clear();
             foreach (var (item, registered) in found)
             {
-                // Первый запуск — все найденные; повторный — то, что уже подключено.
-                var check = firstRun || registered || cfg.Integrations.Contains(item.Id);
+                // Первый запуск — все найденные; повторный — то, что уже подключено. Отказ пользователя (снятая ранее галочка)
+                // не возвращается сам; Claude, найденный при повторном запуске, подключится и без мастера — предлагаем сразу.
+                var declined = cfg.DeclinedIntegrations.Contains(item.Id);
+                var check = registered || cfg.Integrations.Contains(item.Id)
+                            || (!declined && (firstRun || AutoConnectPolicy.Ids.Contains(item.Id)));
                 _ides.Items.Add(item, check);
+                State.IdesFound.Add(item.Id);
                 if (check) State.Ides.Add(item.Id);
             }
             _loading.Visible = found.Count == 0 || error is not null;
@@ -148,6 +159,8 @@ internal sealed class IdeStep : WizardStep
             _preapprove.Checked = _claudeFound && (firstRun || approved);
             State.ClaudeGuidance = _guidance.Checked;
             State.PreapproveReadTools = _preapprove.Checked;
+            _autoConnect.Checked = cfg.Ui.AutoRepairIntegrations;
+            State.AutoConnect = _autoConnect.Checked;
             _autostart.Checked = firstRun || Autostart.IsEnabled;
             State.Autostart = _autostart.Checked;
             if (!_claudeFound)

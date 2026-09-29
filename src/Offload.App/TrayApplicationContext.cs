@@ -9,6 +9,7 @@ using Offload.Core.Config;
 using Offload.Core.Ipc;
 using Offload.Core.Localization;
 using Offload.Core.Logging;
+using Offload.Core.Notifications;
 using Offload.Core.Usage;
 using Offload.Integrations;
 using Offload.Llama;
@@ -33,6 +34,13 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
     private readonly BackgroundJobHost _jobs;
     private readonly System.Windows.Forms.Timer _configDebounce;
     private readonly IntegrationWatcher _integrationWatcher = new();
+    private readonly ClaudeAutoConnect _claudeAutoConnect = new();
+    private readonly UsageReader _todayUsage = new();
+    private GlobalHotkey? _hotkey;
+    private string? _todaySavedText;
+    private int _todayRefreshing;
+    private readonly ToolStripMenuItem _claudeMenu;
+    private readonly ToolStripMenuItem _claudeStatus;
 
     private readonly ToolStripMenuItem _header;
     private readonly ToolStripMenuItem _open;
@@ -95,6 +103,15 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
 
         _autostart = Item("Запускать вместе с Windows", (_, _) => SetAutostart(!Autostart.IsEnabled)); // l10n-key
 
+        // Claude: состояние связи и быстрые действия.
+        _claudeMenu = Localized(new ToolStripMenuItem("Claude")); // l10n-key
+        _claudeStatus = new ToolStripMenuItem("…") { Enabled = false };
+        _claudeMenu.DropDownItems.Add(_claudeStatus);
+        _claudeMenu.DropDownItems.Add(new ToolStripSeparator());
+        _claudeMenu.DropDownItems.Add(Item("Проверить подключение", async (_, _) => await CheckConnectionsAsync())); // l10n-key
+        _claudeMenu.DropDownItems.Add(Item("Подключить Claude сейчас", async (_, _) => await ConnectClaudeNowAsync())); // l10n-key
+        _claudeMenu.DropDownItems.Add(Item("Открыть «Интеграции»", (_, _) => ShowMainWindow(Tabs.Integrations))); // l10n-key
+
         _menu.Items.AddRange(new ToolStripItem[]
         {
             _header,
@@ -108,11 +125,13 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
             _updateApp,
             _updateLlama,
             new ToolStripSeparator(),
+            _claudeMenu,
             Item("Подключение к IDE…", (_, _) => ShowMainWindow(Tabs.Integrations)), // l10n-key
             openCode,
             Item("Веб-чат llama.cpp", async (_, _) => await OpenWebChatAsync()), // l10n-key
             new ToolStripSeparator(),
             Item("Журнал…", (_, _) => ShowMainWindow(Tabs.Log)), // l10n-key
+            Item("Уведомления…", (_, _) => ShowMainWindow(Tabs.Notifications)), // l10n-key
             Item("Настройки…", (_, _) => ShowMainWindow(Tabs.Settings)), // l10n-key
             Item("Мастер настройки…", (_, _) => ShowSetupWizard()), // l10n-key
             new ToolStripSeparator(),
@@ -180,7 +199,11 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
 
     public event EventHandler<UsageRecord>? UsageRecorded;
 
-    public void ReportUsageRecorded(UsageRecord record) => PostToUi(() => UsageRecorded?.Invoke(this, record));
+    public void ReportUsageRecorded(UsageRecord record)
+    {
+        PostToUi(() => UsageRecorded?.Invoke(this, record));
+        RefreshTodaySavings();
+    }
 
     /// <summary>Пункты меню с исходным (русским) текстом — для перевода на лету при смене языка.</summary>
     private readonly List<(ToolStripItem Item, string Ru)> _menuTexts = [];
@@ -272,7 +295,7 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
         {
             try
             {
-                var updated = await IntegrationRegistry.RefreshOutdatedAsync(McpServerSpec.ForCurrentExecutable()).ConfigureAwait(false);
+                var updated = await IntegrationRegistry.RefreshOutdatedAsync(InstallInfo.McpSpec()).ConfigureAwait(false);
                 if (updated.Count > 0)
                 {
                     Log.Info("integrations", "Обновлён путь к Offload в: " + string.Join(", ", updated));
@@ -288,6 +311,9 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
 
         if (ownsSetup) SyncAutostart(cfg);
         if (ownsSetup) _integrationWatcher.Start(this);
+        if (ownsSetup) _claudeAutoConnect.Start(this);
+        PostToUi(() => SyncHotkey(ConfigStore.Current));
+        RefreshTodaySavings();
 
         PostToUi(() => Server.RefreshConfigured());
         cfg = ConfigStore.Reload();
@@ -534,6 +560,13 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
     private void OnUserPreferenceChanged(object? sender, UserPreferenceChangedEventArgs e)
     {
         if (e.Category is not (UserPreferenceCategory.General or UserPreferenceCategory.Color or UserPreferenceCategory.Accessibility)) return;
+        // Схема «Как акцент Windows»: новый цвет акцента — окно перекрашивается при любой теме.
+        if (ConfigStore.Current.Ui.ThemePreset == Theme.PresetSystemAccent && Theme.SystemAccentColor() is { } accent
+            && Theme.ReadableAccent(accent, Theme.IsDark) != Theme.Accent)
+        {
+            PostToUi(() => RefreshTheme(userInitiated: false, force: true));
+            return;
+        }
         if (ConfigStore.Current.Ui.Theme is Theme.ModeLight or Theme.ModeDark) return;
         // Включение/выключение высокой контрастности Windows меняет схему (тема «как в Windows» → «Высокий контраст»).
         var contrastChanged = Theme.SystemHighContrast() != Theme.HighContrastApplied;
@@ -586,19 +619,28 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
     }
 
     public void Notify(string title, string text, ToolTipIcon icon = ToolTipIcon.Info, bool force = false, string? tab = null) =>
-        ShowBalloon(title, text, icon, force, () => ShowMainWindow(tab));
+        ShowBalloon(title, text, icon, force, () => ShowMainWindow(tab), tab);
 
     /// <summary>Раздел для уведомлений сервера: сбои и предупреждения — «Журнал», остальное — «Состояние».</summary>
     internal static string ServerNotificationTab(ToolTipIcon icon) =>
         icon is ToolTipIcon.Error or ToolTipIcon.Warning ? Tabs.Log : Tabs.Status;
 
-    /// <summary>Показать уведомление и запомнить, что сделать по щелчку на нём.</summary>
-    private void ShowBalloon(string title, string text, ToolTipIcon icon, bool force, Action onClick)
+    /// <summary>
+    /// Показать уведомление и запомнить, что сделать по щелчку на нём. Каждое уведомление попадает в историю (центр уведомлений),
+    /// даже если всплывающее окно не показано: уведомления выключены или сейчас «тихие часы» (ответ на действие пользователя —
+    /// <paramref name="force"/> — показывается всегда).
+    /// </summary>
+    private void ShowBalloon(string title, string text, ToolTipIcon icon, bool force, Action onClick, string? tab = null)
     {
         PostToUi(() =>
         {
             if (_exiting || _disposed) return;
-            if (!force && !ConfigStore.Current.Ui.ShowNotifications) return;
+            var ui = ConfigStore.Current.Ui;
+            var quiet = ui.QuietHoursEnabled && QuietHours.IsQuiet(DateTime.Now, ui.QuietHoursFrom, ui.QuietHoursTo);
+            var show = force || (ui.ShowNotifications && !quiet);
+            var level = icon switch { ToolTipIcon.Error => NotificationLevel.Error, ToolTipIcon.Warning => NotificationLevel.Warning, _ => NotificationLevel.Info };
+            Notifications.Add(title, string.IsNullOrWhiteSpace(text) ? title : text, level, tab, show, DateTime.UtcNow);
+            if (!show) return;
             try
             {
                 _tray.ShowBalloonTip(6000, Texts.Truncate(title, 63), Texts.Truncate(string.IsNullOrWhiteSpace(text) ? title : text, 250), icon);
@@ -607,6 +649,65 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
             catch (Exception ex)
             {
                 Log.Debug("ui", $"Уведомление не показано: {ex.Message}");
+            }
+        });
+    }
+
+    public NotificationHistory Notifications { get; } = new();
+
+    public Task CheckConnectionsAsync() => _claudeAutoConnect.CheckNowAsync(this);
+
+    public Task ConnectClaudeNowAsync() => _claudeAutoConnect.ConnectNowAsync(this);
+
+    public void ShowCommandPalette()
+    {
+        ShowMainWindow();
+        _main?.ShowCommandPalette();
+    }
+
+    /// <summary>Горячая клавиша по настройке (Ctrl+Alt+O): включить, выключить или оставить как есть.</summary>
+    private void SyncHotkey(AppConfig cfg)
+    {
+        try
+        {
+            _hotkey ??= new GlobalHotkey(() => PostToUi(() => ShowMainWindow()));
+            _hotkey.Set(cfg.Ui.GlobalHotkey);
+        }
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
+        {
+            Log.Debug("ui", $"Горячая клавиша: {ex.Message}");
+        }
+    }
+
+    /// <summary>Горячая клавиша зарегистрирована (для подсказки в настройках).</summary>
+    internal bool HotkeyActive => _hotkey?.IsRegistered == true;
+
+    /// <summary>Пересчитать экономию за сегодня для подсказки значка (в фоне, инкрементальное чтение журнала).</summary>
+    private void RefreshTodaySavings()
+    {
+        if (Interlocked.Exchange(ref _todayRefreshing, 1) == 1) return;
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                _todayUsage.Refresh();
+                var today = DateTime.Now.Date;
+                var saved = _todayUsage.Records.Where(r => r.TimestampUtc.ToLocalTime().Date == today).Sum(r => Math.Max(0L, r.EstimatedSavedTokens));
+                var text = saved > 0 ? L.F("Сегодня сэкономлено: {0} ток.", Ui.Short(saved)) : null;
+                PostToUi(() =>
+                {
+                    if (_todaySavedText == text) return;
+                    _todaySavedText = text;
+                    UpdateTray();
+                });
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or System.Text.Json.JsonException)
+            {
+                Log.Debug("usage", $"Экономия для подсказки значка: {ex.Message}");
+            }
+            finally
+            {
+                Volatile.Write(ref _todayRefreshing, 0);
             }
         });
     }
@@ -633,6 +734,7 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
         Log.ApplyLevel(ConfigStore.Current.Ui.VerboseLog);
         Server.RefreshConfigured();
         _ = Autocomplete.SyncAsync();
+        if (_hotkey is not null) SyncHotkey(ConfigStore.Current);
         UpdateTray();
         _main?.NotifyConfigChanged();
     }
@@ -740,6 +842,8 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
             ServerState.NotConfigured => L.F("{0} — требуется настройка", AppInfo.DisplayName),
             _ => L.F("{0} — сервер остановлен", AppInfo.DisplayName),
         };
+        // Следующие строки: связь с Claude (по итогу последней проверки; файлы IDE здесь не читаются) и экономия за сегодня.
+        text = WithTooltipLine(WithTooltipLine(text, Texts.ClaudeLink(ConfigStore.Current)), _todaySavedText);
         try
         {
             _tray.Text = Texts.Truncate(text, MaxTooltip);
@@ -750,8 +854,13 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
         }
     }
 
+    /// <summary>Добавить строку к подсказке значка, если она есть и помещается в предел длины.</summary>
+    private static string WithTooltipLine(string text, string? line) =>
+        line is null || text.Length + line.Length + 1 > MaxTooltip ? text : text + "\n" + line;
+
     private void RefreshMenu()
     {
+        _claudeStatus.Text = Texts.ClaudeLink(ConfigStore.Current) ?? L.T("Claude: не подключён");
         var cfg = ConfigStore.Current;
         var state = Server.State;
         var model = cfg.ActiveModel();
@@ -907,6 +1016,8 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
             _jobs.Dispose();
             _configDebounce.Dispose();
             _integrationWatcher.Dispose();
+            _claudeAutoConnect.Dispose();
+            _hotkey?.Dispose();
             try { _main?.Dispose(); } catch { }
             try { _wizard?.Dispose(); } catch { }
             _tray.Visible = false;

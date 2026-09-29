@@ -16,4 +16,12 @@
 - Claude Code-дополнения (`Claude/ClaudeExtrasImpl.cs`, `ClaudeTexts.cs`) пишут в `~/.claude/` пользователя: скил `offload`,
   правило `rules/offload.md`, агент `offload-runner`, разрешения в `settings.json` — с маркером `x-offload: managed`.
   Файлы без маркера (созданные пользователем) не перезаписываем.
+- Автоподключение Claude (`AutoConnect/`: `AutoConnectPolicy` — чистое решение, `AutoConnectEngine` — прогон; в приложении его гоняет
+  `Offload.App/Services/ClaudeAutoConnect` раз в 15 минут): пишет **только** через `RegisterAsync`, только при статусе `NotRegistered`,
+  не трогает `DeclinedIntegrations` и уже отслеживаемые IDE; после записи — `IntegrationVerifier` (запуск команды из записи, ретраи
+  2/5/10 с, причина сбоя — `FailureKind` с текстом «что делать» в `FailureText`). Откат записи при неудачной проверке не делается.
+  Отказ пользователя: `cfg.Decline(id)` / `cfg.Undecline(id)`; сведения о подключении и итог проверки — `cfg.IntegrationStates`.
+  Логика автоподключения проверяется в `Offload.Integrations.Tests` (без WinForms): `AutoConnectTests`, `IntegrationVerifierTests`.
+- В IDE пишется путь установленной копии (`McpServerSpec.ForInstalledOrCurrent`, в приложении — `InstallInfo.McpSpec()`); все места
+  регистрации используют его, а не `ForCurrentExecutable`.
 - Тесты: каждый — в своём `Sandbox`; живые проверки с настоящим `claude.exe` — только `OFFLOAD_LIVE_CLI=1`.
