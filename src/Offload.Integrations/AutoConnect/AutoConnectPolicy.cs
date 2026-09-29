@@ -14,13 +14,27 @@ public static class AutoConnectPolicy
     /// </summary>
     public static readonly IReadOnlyList<string> Ids = ["claude-code", "claude-desktop"];
 
+    /// <summary>
+    /// IDE, которые можно добавить к автоподключению по выбору пользователя (<see cref="AppConfig.AutoConnectExtra"/>):
+    /// клиенты с файлом конфигурации. Не входят: WSL (запуск wsl.exe), JetBrains AI Assistant (подключается вручную).
+    /// </summary>
+    public static bool CanOptIn(string id) =>
+        !Ids.Contains(id) && !id.StartsWith("claude-code-wsl", StringComparison.Ordinal) && id != "jetbrains-ai";
+
+    /// <summary>Кого подключать автоматически: Claude Code и Claude Desktop плюс выбранные пользователем IDE.</summary>
+    public static IReadOnlyList<string> Candidates(AppConfig cfg)
+    {
+        ArgumentNullException.ThrowIfNull(cfg);
+        return [.. Ids, .. (cfg.AutoConnectExtra ?? []).Where(CanOptIn).Distinct(StringComparer.Ordinal)];
+    }
+
     /// <summary>Подключать ли клиента сейчас (чистое решение по настройкам и статусу записи).</summary>
     public static bool ShouldConnect(AppConfig cfg, string id, IntegrationStatus status)
     {
         ArgumentNullException.ThrowIfNull(cfg);
         return cfg.SetupCompleted
                && cfg.Ui.AutoRepairIntegrations               // пользователь не запретил автоматику
-               && Ids.Contains(id)
+               && Candidates(cfg).Contains(id)
                && status == IntegrationStatus.NotRegistered   // Foreign / Outdated / Error автоматически не трогаем
                && !cfg.DeclinedIntegrations.Contains(id)      // отказ пользователя важнее
                && !cfg.Integrations.Contains(id);             // уже отслеживается автовосстановлением

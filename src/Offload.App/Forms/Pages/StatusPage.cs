@@ -32,6 +32,8 @@ internal sealed class StatusPage : PageBase
     private static readonly UsageReader UsageData = new();
 
     private readonly StatusDot _dot = new(16);
+    private CardPanel? _serverCard;
+    private readonly ClaudeCard _claude;
     private readonly Label _state = Kit.Label("", Theme.Semibold(16f));
     private readonly Label _model = Kit.Label("", Theme.Regular(10.5f), Theme.TextMuted);
     private readonly Label _backend = FactValue();
@@ -97,6 +99,8 @@ internal sealed class StatusPage : PageBase
 
         var root = Kit.Table();
         root.AddRow(BuildServerCard());
+        _claude = new ClaudeCard(shell);
+        root.AddRow(_claude.Card);
         _onboarding = new OnboardingCard(shell);
         _onboarding.Card.Visible = false;
         root.AddRow(_onboarding.Card);
@@ -204,7 +208,8 @@ internal sealed class StatusPage : PageBase
 
     private CardPanel BuildServerCard()
     {
-        var card = new CardPanel { ColumnCount = 2, Margin = new Padding(0, 0, 0, 12), Padding = new Padding(20, 16, 20, 14) };
+        var card = new CardPanel { ColumnCount = 2, Margin = new Padding(0, 0, 0, 12), Padding = new Padding(24, 18, 22, 16), Hero = true };
+        _serverCard = card;
         card.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         card.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
 
@@ -243,7 +248,7 @@ internal sealed class StatusPage : PageBase
     {
         var t = Kit.Table(25, 25, 25, 25);
         _tileVram.Margin = new Padding(0, 0, 0, 12);
-        t.AddFixedRow(124, _tileToday, _tileCalls, _tileTotal, _tileVram);
+        t.AddFixedRow(136, _tileToday, _tileCalls, _tileTotal, _tileVram);
         return t;
     }
 
@@ -253,10 +258,10 @@ internal sealed class StatusPage : PageBase
     /// <summary>Карточка графика: заголовок (и справа — необязательный элемент, например выбор периода), пояснение, график.</summary>
     private static CardPanel ChartCard(string title, Label sub, Control body, int height, Control? headerRight = null)
     {
-        var card = new CardPanel { ColumnCount = 2, Margin = new Padding(0, 0, 0, 12), Padding = new Padding(20, 14, 20, 12) };
+        var card = new CardPanel { ColumnCount = 2, Margin = new Padding(0, 0, 0, 12), Padding = new Padding(22, 16, 22, 14) };
         card.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         card.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        var head = Kit.Label(title, Theme.Semibold(10.5f));
+        var head = Kit.Label(title, Theme.Semibold(11f));
         head.Margin = new Padding(0, 0, 0, 0);
         if (headerRight is not null)
         {
@@ -278,6 +283,7 @@ internal sealed class StatusPage : PageBase
     protected override void OnActivated()
     {
         UpdateState();
+        _claude.Refresh();
         _refreshTimer.Start();
         _vramTimer.Start();
         _ = RefreshDynamicAsync();
@@ -297,7 +303,11 @@ internal sealed class StatusPage : PageBase
         if (IsActive && Shell.Server.State == ServerState.Running) _ = RefreshPropsAsync();
     }
 
-    public override void OnConfigChanged() => UpdateState();
+    public override void OnConfigChanged()
+    {
+        UpdateState();
+        if (IsActive) _claude.Refresh();
+    }
 
     protected override void UpdateUiState()
     {
@@ -315,6 +325,7 @@ internal sealed class StatusPage : PageBase
         var cfg = ConfigStore.Current;
         var s = server.State;
         _dot.DotColor = Theme.StateColor(s);
+        if (_serverCard is not null) _serverCard.EdgeColor = s == ServerState.Running ? null : Theme.StateColor(s);
         _state.Text = Texts.State(s);
         _dot.AccessibleName = L.F("Состояние сервера: {0}", _state.Text);
         var ep = cfg.MainEndpoint();
@@ -410,6 +421,8 @@ internal sealed class StatusPage : PageBase
         IReadOnlyDictionary<string, int> ErrorsByTool,
         IReadOnlyList<BarChart.Bar> Daily,
         IReadOnlyList<double> CallsPerDay,
+        IReadOnlyList<double> SavedLast8,
+        IReadOnlyList<double> CallsLast8,
         IReadOnlyList<double> Cumulative,
         IReadOnlyList<UsageRecord> Recent);
 
@@ -474,10 +487,20 @@ internal sealed class StatusPage : PageBase
             cumulative.Add(acc);
         }
 
+        // Последние 8 дней (7 прошлых + сегодня) — для тренда «к среднему за неделю» независимо от выбранного периода.
+        var saved8 = new List<double>();
+        var calls8 = new List<double>();
+        for (var d = today.AddDays(-7); d <= today; d = d.AddDays(1))
+        {
+            var list = byDay.TryGetValue(d, out var l) ? l : [];
+            saved8.Add(list.Sum(r => Math.Max(0, r.EstimatedSavedTokens)));
+            calls8.Add(list.Count);
+        }
+
         var inPeriod = records.Where(r => r.TimestampUtc.ToLocalTime().Date >= start).ToList();
         var recent = records.OrderByDescending(r => r.TimestampUtc).Take(FeedSize).ToList();
         return new UsageView(UsageStats.Build(records, prices), UsageLog.Summarize(records), UsageLog.Summarize(inPeriod),
-            UsageStats.ErrorsByTool(inPeriod), daily, calls, cumulative, recent);
+            UsageStats.ErrorsByTool(inPeriod), daily, calls, saved8, calls8, cumulative, recent);
     }
 
     private void ApplyUsage(UsageView v)
@@ -490,6 +513,8 @@ internal sealed class StatusPage : PageBase
         _tileCalls.Set(Ui.N(today.Summary.Calls),
             L.F("за 7 дней: {0}", Ui.N(week.Summary.Calls)) + (week.Summary.Failed > 0 ? L.F(" · ошибок: {0}", Ui.N(week.Summary.Failed)) : ""));
         _tileCalls.SetHistory(v.CallsPerDay);
+        _tileToday.SetTrend(TrendText.Compare(v.SavedLast8[^1], TrendText.PreviousAverage(v.SavedLast8)));
+        _tileCalls.SetTrend(TrendText.Compare(v.CallsLast8[^1], TrendText.PreviousAverage(v.CallsLast8)));
         _tileTotal.Set(UsageStats.Dollars(total.Dollars), L.F("{0} токенов", Ui.Short(total.Summary.EstimatedSavedTokens)));
         _tileTotal.SetHistory(v.Cumulative);
 

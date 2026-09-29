@@ -197,6 +197,8 @@ not change when Offload updates. What Offload never does: replace someone else's
 in the wizard or clicked "Disconnect" on the Integrations tab), edit configs in developer mode or from a portable copy, or restart
 Claude for you. To turn auto-connect off: Integrations → "Connect Claude automatically and watch IDE connections".
 
+**Also in 1.0.4:** a new look (indigo gradients, Windows 11-style buttons and toggles, "Aurora", "Graphite" and "Windows accent" schemes), a Ctrl+K command palette, a global Ctrl+Alt+O hotkey and F1 shortcut help, a notification center with quiet hours, a Claude card on the Status page with a daily connection check and a Claude menu in the tray, opt-in auto-connect for other IDEs, restoring IDE configs from Offload's backups, and settings export/import without keys, paths or security settings.
+
 Requirements: Windows 10 1809+ / Windows 11 x64, preferably an NVIDIA/AMD/Intel GPU with 8+ GB VRAM (also works on CPU, but slowly), 10-30 GB of free space for the model. llama.cpp builds need the Visual C++ Redistributable — the wizard installs it itself (a UAC prompt will appear).
 
 ### Manual setup for any IDE

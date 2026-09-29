@@ -1,4 +1,5 @@
 using Offload.App.Controls;
+using Offload.App.Forms;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -39,6 +40,20 @@ internal sealed class IntegrationsPage : PageBase
     private readonly Button _check;
     private readonly Button _checkAll;
     private readonly Button _openConfig;
+    private readonly Button _backups;
+    private readonly CheckedListBox _autoExtra = new()
+    {
+        CheckOnClick = true,
+        IntegralHeight = false,
+        Dock = DockStyle.Fill,
+        BorderStyle = BorderStyle.None,
+        MultiColumn = true,
+        ColumnWidth = 220,
+        Margin = new Padding(0, 4, 0, 4),
+    };
+    private readonly Label _autoExtraHint = Kit.Hint("");
+    private readonly CardPanel _autoExtraCard = new() { Padding = new Padding(16, 10, 16, 12) };
+    private bool _loadingExtra;
     private readonly Button _refresh;
     private readonly Label _status = Kit.Wrap("");
     private readonly TextBox _report = Kit.MultiLine(170, mono: true, readOnly: true);
@@ -74,6 +89,7 @@ internal sealed class IntegrationsPage : PageBase
         });
         _checkAll = Kit.Button(L.T("Проверить все"), async (_, _) => await CheckAsync(ConnectedIntegrations()), 120);
         _openConfig = Kit.Button(L.T("Открыть файл конфигурации"), (_, _) => OpenConfig(), 170);
+        _backups = Kit.IconButton(Glyphs.History, L.T("Резервные копии…"), (_, _) => ShowBackups(), 150);
         _refresh = Kit.Button(L.T("Обновить список"), async (_, _) => await RefreshAsync());
         _wslDetect = Kit.Button(L.T("Найти в WSL"), async (_, _) => await DetectWslAsync(), 120);
         _list.SelectedIndexChanged += (_, _) =>
@@ -91,7 +107,7 @@ internal sealed class IntegrationsPage : PageBase
         root.AddRow(Kit.Hint(
             L.T("Offload подключается к IDE как MCP-сервер: IDE сама запускает «Offload.exe --mcp» и может поручать локальной модели чтение файлов, ревью изменений, сообщения коммитов и простые правки. Перед изменением файла настроек IDE делается резервная копия.")));
         root.AddFixedRow(230, _list);
-        root.AddRow(Kit.Flow(_register, _unregister, _registerAll, _check, _checkAll, _openConfig, _refresh));
+        root.AddRow(Kit.Flow(_register, _unregister, _registerAll, _check, _checkAll, _openConfig, _backups, _refresh));
         root.AddRow(_status);
         // Остановленные дистрибутивы WSL: Offload не запускает их сам (это поднимает виртуальную машину) — только по кнопке.
         _wslHint.Visible = _wslDetect.Visible = false;
@@ -103,6 +119,17 @@ internal sealed class IntegrationsPage : PageBase
         root.AddRow(Indented(Kit.Hint(DevMode.Active
             ? L.T("Если программу переместили, путь к Offload в настройках подключённых IDE обновляется сам. Если запись удалена, изменена или имя «offload» занято другим сервером, Offload ничего не меняет — только сообщает, а восстановить подключение можно здесь. В режиме разработчика не действует.")
             : L.T("Если программу переместили, путь к Offload в настройках подключённых IDE обновляется сам. Если запись удалена, изменена или имя «offload» занято другим сервером, Offload ничего не меняет — только сообщает, а восстановить подключение можно здесь."))));
+        root.AddRow(Kit.Section(L.T("Автоподключение других IDE")));
+        root.AddRow(Kit.Hint(L.T("Claude Code и Claude Desktop подключаются сами. Отметьте здесь другие IDE, которые Offload тоже должен подключать автоматически — сразу и после их переустановки или сброса настроек. Чужая запись «offload» не заменяется, отказ («Отключить») запоминается.")));
+        _autoExtra.BackColor = Theme.Card;
+        _autoExtra.ForeColor = Theme.TextPrimary;
+        _autoExtra.AccessibleName = L.T("IDE для автоподключения");
+        _autoExtra.ItemCheck += (_, e) => ToggleAutoExtra(e);
+        _autoExtraCard.AddFixedRow(96, _autoExtra);
+        root.AddRow(_autoExtraCard);
+        root.AddRow(_autoExtraHint);
+
+        root.AddRow(Kit.Section(L.T("Инструменты записи")));
         root.AddRow(_approveWrite);
         _pendingWrite.Margin = new Padding(20, 0, 0, 6);
         root.AddRow(_pendingWrite);
@@ -220,6 +247,7 @@ internal sealed class IntegrationsPage : PageBase
         _check.Enabled = !busy && row is { Installed: true };
         _checkAll.Enabled = !busy && ConnectedIntegrations().Count > 0;
         _openConfig.Enabled = row?.Integration.ConfigPath is { Length: > 0 };
+        _backups.Enabled = !busy && row?.Integration.ConfigPath is { Length: > 0 };
         _refresh.Enabled = !busy;
     }
 
@@ -285,6 +313,7 @@ internal sealed class IntegrationsPage : PageBase
                 if (r.Integration.Id == selectedId) item.Selected = true;
             }
             _list.EndUpdate();
+            FillAutoExtra(rows);
             _wslHint.Visible = _wslDetect.Visible = stoppedWsl.Count > 0;
             if (stoppedWsl.Count > 0)
                 _wslHint.Text = L.F("Дистрибутивы WSL не запущены: {0}. Offload не запускает их сам — нажмите «Найти в WSL», чтобы запустить их и проверить Claude Code внутри.", string.Join(", ", stoppedWsl));
@@ -523,6 +552,66 @@ internal sealed class IntegrationsPage : PageBase
         _status.Text = text;
         if (!r.Ok) Ui.ShowError(Owner, registered ? L.F("Не удалось подключить {0}", i.DisplayName) : L.F("Не удалось отключить {0}", i.DisplayName), r.Message);
         else if (!string.IsNullOrWhiteSpace(hint)) Ui.Info(Owner, $"{r.Message}{Environment.NewLine}{Environment.NewLine}{hint}");
+    }
+
+    /// <summary>Список IDE для автоподключения: найденные на компьютере клиенты, которые можно добавить (не Claude, не WSL).</summary>
+    private void FillAutoExtra(IReadOnlyList<Row> rows)
+    {
+        var chosen = ConfigStore.Current.AutoConnectExtra.ToHashSet(StringComparer.Ordinal);
+        var candidates = rows
+            .Where(r => AutoConnectPolicy.CanOptIn(r.Integration.Id) && (r.Installed || chosen.Contains(r.Integration.Id)))
+            .OrderBy(r => Ui.Try(() => r.Integration.DisplayName, r.Integration.Id, "DisplayName"))
+            .ToList();
+        _loadingExtra = true;
+        try
+        {
+            _autoExtra.BeginUpdate();
+            _autoExtra.Items.Clear();
+            foreach (var r in candidates)
+                _autoExtra.Items.Add(new ExtraItem(r.Integration.Id, Ui.Try(() => r.Integration.DisplayName, r.Integration.Id, "DisplayName")), chosen.Contains(r.Integration.Id));
+            _autoExtra.EndUpdate();
+        }
+        finally
+        {
+            _loadingExtra = false;
+        }
+        _autoExtraCard.Visible = candidates.Count > 0;
+        _autoExtraHint.Text = candidates.Count == 0
+            ? L.T("Других поддерживаемых IDE на компьютере не найдено.")
+            : L.T("Автоподключение выбранных IDE работает, пока включено «Подключать Claude автоматически и следить за подключениями к IDE».");
+    }
+
+    private sealed record ExtraItem(string Id, string Name)
+    {
+        public override string ToString() => Name;
+    }
+
+    private void ToggleAutoExtra(ItemCheckEventArgs e)
+    {
+        if (_loadingExtra || _autoExtra.Items[e.Index] is not ExtraItem item) return;
+        var on = e.NewValue == CheckState.Checked;
+        if (!Ui.RunSafe(Owner, () => ConfigStore.Update(c =>
+            {
+                c.AutoConnectExtra.Remove(item.Id);
+                if (on)
+                {
+                    c.AutoConnectExtra.Add(item.Id);
+                    c.Undecline(item.Id); // явный выбор пользователя важнее прежнего отказа
+                }
+            }), L.T("Не удалось сохранить настройку")))
+        {
+            e.NewValue = e.CurrentValue;
+            return;
+        }
+        Log.Info("integrations", $"{item.Id}: автоподключение {(on ? "включено" : "выключено")}");
+        if (on) _ = Shell.ConnectClaudeNowAsync();
+    }
+
+    private void ShowBackups()
+    {
+        if (Selected() is not { } row) return;
+        using (var f = new BackupRestoreForm(row.Integration)) f.ShowDialog(Owner);
+        _ = RefreshAsync();
     }
 
     private void OpenConfig()

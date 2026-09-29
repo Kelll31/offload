@@ -49,6 +49,10 @@ internal sealed class SettingsPage : PageBase
     private readonly CheckBox _minimizeToTray = Kit.Check(L.T("При закрытии окна оставлять Offload в области уведомлений"));
     private readonly CheckBox _checkAppUpdates = Kit.Check(L.T("Проверять обновления Offload при запуске"));
     private readonly CheckBox _verboseLog = Kit.Check(L.T("Подробный журнал (отладочные записи)"));
+    private readonly CheckBox _quietHours = Kit.Check(L.T("Тихие часы: не показывать всплывающие уведомления"));
+    private readonly DateTimePicker _quietFrom = TimePicker();
+    private readonly DateTimePicker _quietTo = TimePicker();
+    private readonly CheckBox _hotkey = Kit.Check(L.F("Открывать Offload сочетанием {0} из любой программы", GlobalHotkey.Display));
     private readonly Label _logLevelHint = Kit.Hint("");
 
     // Сеть
@@ -116,6 +120,19 @@ internal sealed class SettingsPage : PageBase
         root.AddRow(_notifications);
         root.AddRow(_minimizeToTray);
         root.AddRow(_checkAppUpdates);
+        root.AddRow(_hotkey);
+        root.AddRow(_quietHours);
+        var quiet = Kit.Flow(Kit.Label(L.T("с"), color: Theme.TextMuted), _quietFrom, Kit.Label(L.T("до"), color: Theme.TextMuted), _quietTo,
+            Kit.Hint(L.T("пропущенные уведомления остаются в разделе «Уведомления»"), autoWidth: true));
+        quiet.WrapContents = false;
+        quiet.Margin = new Padding(48, 0, 0, 6);
+        root.AddRow(quiet);
+
+        root.AddRow(Kit.Section(L.T("Перенос настроек")));
+        root.AddRow(Kit.Hint(L.T("Файл с внешним видом, параметрами сервера и инструментов — чтобы перенести их на другой компьютер. Ключи и токены, пути, подключения к IDE и параметры безопасности не сохраняются и при импорте не меняются.")));
+        root.AddRow(Kit.Flow(
+            Kit.IconButton(Glyphs.Save, L.T("Экспорт настроек…"), (_, _) => ExportSettings(), 170),
+            Kit.IconButton(Glyphs.OpenFile, L.T("Импорт настроек…"), (_, _) => ImportSettings(), 170)));
 
         BuildNetworkSection(root);
         _remote.AddTo(root);
@@ -152,6 +169,14 @@ internal sealed class SettingsPage : PageBase
         _notifications.CheckedChanged += (_, _) => Save(c => c.Ui.ShowNotifications = _notifications.Checked);
         _minimizeToTray.CheckedChanged += (_, _) => Save(c => c.Ui.MinimizeToTrayOnClose = _minimizeToTray.Checked);
         _checkAppUpdates.CheckedChanged += (_, _) => Save(c => c.Ui.CheckAppUpdates = _checkAppUpdates.Checked);
+        _hotkey.CheckedChanged += (_, _) => Save(c => c.Ui.GlobalHotkey = _hotkey.Checked);
+        _quietHours.CheckedChanged += (_, _) =>
+        {
+            _quietFrom.Enabled = _quietTo.Enabled = _quietHours.Checked;
+            Save(c => c.Ui.QuietHoursEnabled = _quietHours.Checked);
+        };
+        _quietFrom.ValueChanged += (_, _) => Save(c => c.Ui.QuietHoursFrom = _quietFrom.Value.ToString("HH:mm", System.Globalization.CultureInfo.InvariantCulture));
+        _quietTo.ValueChanged += (_, _) => Save(c => c.Ui.QuietHoursTo = _quietTo.Value.ToString("HH:mm", System.Globalization.CultureInfo.InvariantCulture));
         _sendTokenToMirror.CheckedChanged += (_, _) => Save(c => Net(c).SendHfTokenToMirror = _sendTokenToMirror.Checked);
         _remoteCatalog.CheckedChanged += (_, _) =>
         {
@@ -212,6 +237,11 @@ internal sealed class SettingsPage : PageBase
             _notifications.Checked = ui.ShowNotifications;
             _minimizeToTray.Checked = ui.MinimizeToTrayOnClose;
             _checkAppUpdates.Checked = ui.CheckAppUpdates;
+            _hotkey.Checked = ui.GlobalHotkey;
+            _quietHours.Checked = ui.QuietHoursEnabled;
+            _quietFrom.Value = TimeValue(ui.QuietHoursFrom, 22);
+            _quietTo.Value = TimeValue(ui.QuietHoursTo, 8);
+            _quietFrom.Enabled = _quietTo.Enabled = ui.QuietHoursEnabled;
             _verboseLog.Checked = ui.VerboseLog;
             UpdateLogHint();
             UpdatePaths();
@@ -474,6 +504,77 @@ internal sealed class SettingsPage : PageBase
         }
         if (Ui.RunSafe(Owner, () => ConfigStore.Update(mutate), L.T("Не удалось сохранить настройку")))
             Shell.PostToUi(Shell.ApplyAppearance);
+    }
+
+    private static DateTimePicker TimePicker() => new()
+    {
+        Format = DateTimePickerFormat.Custom,
+        CustomFormat = "HH:mm",
+        ShowUpDown = true,
+        Width = 80,
+        Margin = new Padding(0, 3, 8, 3),
+        Anchor = AnchorStyles.Left,
+    };
+
+    private static DateTime TimeValue(string? text, int fallbackHour) =>
+        DateTime.Today + (Offload.Core.Notifications.QuietHours.TryParse(text, out var t) ? t : TimeSpan.FromHours(fallbackHour));
+
+    /// <summary>Сохранить разрешённые настройки в файл (без ключей, путей и параметров безопасности).</summary>
+    private void ExportSettings()
+    {
+        using var dlg = new SaveFileDialog
+        {
+            Title = L.T("Экспорт настроек Offload"),
+            Filter = L.T("Настройки Offload (*.json)|*.json"),
+            FileName = $"offload-settings-{DateTime.Now:yyyy-MM-dd}.json",
+            OverwritePrompt = true,
+        };
+        if (dlg.ShowDialog(Owner) != DialogResult.OK) return;
+        if (Ui.RunSafe(Owner, () => File.WriteAllText(dlg.FileName, SettingsTransfer.Export(ConfigStore.Current, DateTime.UtcNow)),
+                L.T("Не удалось сохранить файл настроек")))
+            Shell.Notify(L.T("Настройки сохранены"), dlg.FileName, force: true);
+    }
+
+    /// <summary>Загрузить настройки из файла: показать, что изменится, и применить после подтверждения.</summary>
+    private void ImportSettings()
+    {
+        using var dlg = new OpenFileDialog
+        {
+            Title = L.T("Импорт настроек Offload"),
+            Filter = L.T("Настройки Offload (*.json)|*.json|Все файлы (*.*)|*.*"),
+        };
+        if (dlg.ShowDialog(Owner) != DialogResult.OK) return;
+        SettingsImport import;
+        try
+        {
+            var info = new FileInfo(dlg.FileName);
+            if (info.Length > 1024 * 1024) throw new SettingsTransferException(L.T("файл слишком большой для файла настроек"));
+            import = SettingsTransfer.Prepare(File.ReadAllText(dlg.FileName), ConfigStore.Current);
+        }
+        catch (Exception ex) when (ex is SettingsTransferException or IOException or UnauthorizedAccessException)
+        {
+            Ui.ShowError(Owner, L.T("Файл настроек не загружен"), ex.Message);
+            return;
+        }
+        if (import.Changes.Count == 0)
+        {
+            Ui.Info(Owner, L.T("Настройки в файле совпадают с текущими — менять нечего."));
+            return;
+        }
+        var list = string.Join(Environment.NewLine, import.Changes.Take(25).Select(c => "• " + c)) +
+                   (import.Changes.Count > 25 ? Environment.NewLine + L.F("…и ещё {0}", import.Changes.Count - 25) : "");
+        var skipped = import.Skipped.Count > 0 ? Environment.NewLine + Environment.NewLine + L.F("Не переносятся (ключи, пути, безопасность): {0}", import.Skipped.Count) : "";
+        if (!Ui.Confirm(Owner, L.F("Будут изменены настройки ({0}):{1}{2}{3}{1}{1}Применить?", import.Changes.Count, Environment.NewLine, list, skipped)))
+            return;
+        var result = import.Result;
+        var appearance = import.Changes.Any(c => c is "ui.theme" or "ui.themePreset" or "ui.accentColor" or "ui.language");
+        void Apply(AppConfig c) => SettingsTransfer.Apply(result, c);
+        if (appearance) ChangeAppearance(Apply);
+        else if (Ui.RunSafe(Owner, () => ConfigStore.Update(Apply), L.T("Не удалось сохранить настройки")))
+        {
+            Shell.ConfigChanged();
+            Shell.Notify(L.T("Настройки загружены"), L.F("Изменено параметров: {0}.", import.Changes.Count), force: true);
+        }
     }
 
     private void Save(Action<AppConfig> mutate)

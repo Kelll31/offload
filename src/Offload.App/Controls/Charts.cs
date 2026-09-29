@@ -92,31 +92,61 @@ internal sealed class StatTile : PaintedControl
         var g = e.Graphics;
         g.SmoothingMode = SmoothingMode.AntiAlias;
         var r = ClientRectangle;
-        Draw.Card(g, r, Px(8));
+        Draw.Card(g, r, Px(Theme.RadiusCard));
         var pad = Px(16);
         var accent = _accent ?? Theme.Accent;
 
-        var top = new Rectangle(r.X + pad, r.Y + Px(13), r.Width - 2 * pad, Px(20));
-        Draw.Glyph(g, _glyph, 10.5f, new Rectangle(top.X - Px(2), top.Y, Px(20), top.Height), accent);
-        Draw.Text(g, _caption, Theme.Regular(9f), new Rectangle(top.X + Px(24), top.Y, top.Width - Px(24), top.Height),
-            Theme.TextMuted, TextFormatFlags.VerticalCenter);
+        // Значок в круглой подложке оттенка акцента.
+        var chip = new Rectangle(r.X + pad, r.Y + Px(14), Px(30), Px(30));
+        Draw.Fill(g, chip, Theme.Blend(Theme.Card, accent, Theme.IsDark ? 0.22 : 0.12), chip.Height / 2);
+        Draw.Glyph(g, _glyph, 11f, chip, accent);
+        var captionRect = new Rectangle(chip.Right + Px(10), chip.Y, r.Width - pad - chip.Right - Px(10), chip.Height);
+        if (_trend is { } trend)
+        {
+            // Тренд к прошлому периоду — «таблетка» в правом верхнем углу.
+            var font = Theme.Semibold(8f);
+            var ts = TextRenderer.MeasureText(trend.Text, font, Size.Empty, TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
+            var pill = new Rectangle(r.Right - pad - ts.Width - Px(14), chip.Y + Px(5), ts.Width + Px(14), Px(20));
+            var tone = trend.Direction switch { > 0 => Theme.OkText, < 0 => Theme.ErrorText, _ => Theme.TextMuted };
+            Draw.Fill(g, pill, Theme.Blend(Theme.Card, tone, Theme.IsDark ? 0.20 : 0.12), pill.Height / 2);
+            TextRenderer.DrawText(g, trend.Text, font, pill, tone,
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding | TextFormatFlags.SingleLine);
+            captionRect.Width = Math.Max(0, pill.X - Px(6) - captionRect.X);
+        }
+        Draw.Text(g, _caption, Theme.Regular(8.5f), captionRect, Theme.TextMuted, TextFormatFlags.VerticalCenter);
 
-        var valueRect = new Rectangle(r.X + pad, top.Bottom + Px(2), r.Width - 2 * pad, Px(32));
-        Draw.Text(g, _value, Theme.Semibold(17f), valueRect, Theme.TextPrimary, TextFormatFlags.VerticalCenter);
-        var detailRect = new Rectangle(r.X + pad, valueRect.Bottom, r.Width - 2 * pad, Px(18));
+        var valueRect = new Rectangle(r.X + pad, chip.Bottom + Px(4), r.Width - 2 * pad, Px(34));
+        Draw.Text(g, _value, Theme.Semibold(18f), valueRect, Theme.TextPrimary, TextFormatFlags.VerticalCenter);
+        var detailRect = new Rectangle(r.X + pad, valueRect.Bottom - Px(2), r.Width - 2 * pad, Px(18));
         Draw.Text(g, _detail, Theme.Regular(8.5f), detailRect, Theme.TextMuted, TextFormatFlags.VerticalCenter);
 
         if (_fraction is double f)
         {
-            var bar = new Rectangle(r.X + pad, r.Bottom - Px(16), r.Width - 2 * pad, Px(6));
+            var bar = new Rectangle(r.X + pad, r.Bottom - Px(18), r.Width - 2 * pad, Px(6));
             Draw.Fill(g, bar, Theme.Track, Px(3));
             var w = (int)Math.Round(bar.Width * f);
-            if (w > 0) Draw.Fill(g, new Rectangle(bar.X, bar.Y, Math.Max(w, bar.Height), bar.Height), Theme.LoadColor(f), Px(3));
+            if (w > 0)
+            {
+                var fillRect = new Rectangle(bar.X, bar.Y, Math.Max(w, bar.Height), bar.Height);
+                if (f >= 0.85) Draw.Fill(g, fillRect, Theme.LoadColor(f), Px(3));
+                else Draw.Gradient(g, fillRect, Px(3), Theme.Fill, Theme.FillEnd, LinearGradientMode.Horizontal);
+            }
         }
         else if (_history.Count >= 2)
         {
-            DrawSpark(g, new Rectangle(r.X + pad, r.Bottom - Px(20), r.Width - 2 * pad, Px(13)), accent);
+            DrawSpark(g, new Rectangle(r.X + pad, r.Bottom - Px(22), r.Width - 2 * pad, Px(13)), accent);
         }
+    }
+
+    private Offload.Core.Usage.Trend? _trend;
+
+    /// <summary>Показать тренд в правом верхнем углу плитки (null — скрыть).</summary>
+    public void SetTrend(Offload.Core.Usage.Trend? trend)
+    {
+        if (_trend == trend) return;
+        _trend = trend;
+        AccessibleDescription = trend is { } t ? $"{_detail}. {t.Text}" : _detail;
+        Invalidate();
     }
 
     private void DrawSpark(Graphics g, Rectangle area, Color color)
@@ -229,9 +259,12 @@ internal sealed class BarChart : PaintedControl
         for (var i = 0; i < _bars.Count; i++)
         {
             var br = BarRect(i, plot, max);
-            var color = _bars[i].Highlight ? Theme.Accent : Theme.Blend(Theme.Accent, Theme.Card, 0.35);
-            if (i == _hover) color = Theme.AccentHover;
-            if (br.Height > 0) Draw.Fill(g, br, color, Px(3));
+            if (br.Height > 0)
+            {
+                var top = _bars[i].Highlight || i == _hover ? Theme.FillEnd : Theme.Blend(Theme.FillEnd, Theme.Card, 0.30);
+                var bottom = _bars[i].Highlight || i == _hover ? Theme.Fill : Theme.Blend(Theme.Fill, Theme.Card, 0.30);
+                Draw.Gradient(g, br, Px(4), top, bottom, LinearGradientMode.Vertical);
+            }
             if (i % labelEvery == 0 || i == _bars.Count - 1)
             {
                 var lr = new Rectangle((int)(plot.X + slot * i) - Px(10), plot.Bottom + Px(5), (int)slot + Px(20), Px(16));

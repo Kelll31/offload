@@ -34,6 +34,12 @@ public sealed class AppConfig
     /// </summary>
     public List<string> DeclinedIntegrations { get; set; } = [];
 
+    /// <summary>
+    /// IDE, которые пользователь разрешил подключать автоматически в дополнение к Claude Code и Claude Desktop
+    /// (например, Cursor, Windsurf): автоподключение действует для них по тем же правилам.
+    /// </summary>
+    public List<string> AutoConnectExtra { get; set; } = [];
+
     /// <summary>Сведения о подключении IDE (кто подключил и итог последней проверки) по идентификатору интеграции.</summary>
     public Dictionary<string, IntegrationState> IntegrationStates { get; set; } = new(StringComparer.Ordinal);
 
@@ -708,6 +714,18 @@ public sealed class UiSettings
     /// Не действует в режиме разработчика и в копии, запущенной не из папки установки.
     /// </summary>
     public bool AutoRepairIntegrations { get; set; } = true;
+
+    /// <summary>«Тихие часы»: в промежуток <see cref="QuietHoursFrom"/>–<see cref="QuietHoursTo"/> всплывающие уведомления не показываются.</summary>
+    public bool QuietHoursEnabled { get; set; }
+
+    /// <summary>Начало тихих часов, «ЧЧ:ММ».</summary>
+    public string QuietHoursFrom { get; set; } = "22:00";
+
+    /// <summary>Конец тихих часов, «ЧЧ:ММ» (может быть раньше начала — промежуток через полночь).</summary>
+    public string QuietHoursTo { get; set; } = "08:00";
+
+    /// <summary>Глобальная горячая клавиша Ctrl+Alt+O открывает панель управления из любой программы.</summary>
+    public bool GlobalHotkey { get; set; } = true;
 }
 
 /// <summary>

@@ -1,3 +1,4 @@
+using Offload.Core.Notifications;
 using Offload.Core.Usage;
 using Offload.Llama;
 
@@ -13,6 +14,7 @@ internal static class Tabs
     public const string OpenCode = "opencode";
     public const string Prompt = "prompt";
     public const string Log = "log";
+    public const string Notifications = "notifications";
     public const string Settings = "settings";
     public const string About = "about";
 }
@@ -75,4 +77,16 @@ internal interface IAppShell
     bool ConfirmWindowRecreate(IWin32Window? owner);
 
     Task ExitAsync();
+
+    /// <summary>История уведомлений за сеанс (центр уведомлений).</summary>
+    NotificationHistory Notifications { get; }
+
+    /// <summary>Проверить подключения Claude (и выбранных IDE) запуском сервера сейчас и сообщить итог.</summary>
+    Task CheckConnectionsAsync();
+
+    /// <summary>Подключить найденный Claude сейчас, не дожидаясь фонового прогона.</summary>
+    Task ConnectClaudeNowAsync();
+
+    /// <summary>Открыть палитру команд (Ctrl+K) над панелью управления.</summary>
+    void ShowCommandPalette();
 }

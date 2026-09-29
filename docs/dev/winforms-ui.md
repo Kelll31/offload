@@ -25,6 +25,14 @@
 
 - Раскладка — фабрики `Util/Kit.cs`; карточка — `Controls/CardPanel`; свои рисованные элементы — наследники `PaintedControl`
   (`Controls/Charts.cs`: `StatTile`, `BarChart`, `BarList`) и помощники `Controls/Draw` (скругления, карточки, текст, значки).
+- Дизайн-система (1.0.4): кнопки — `Kit.Button` / `Kit.IconButton` / `Kit.Subtle` / `Kit.Primary` (рисованные
+  `Controls/ModernButton`, основная — градиент `Theme.Fill` → `Theme.FillEnd`, текст `Theme.OnFill`); флажки — `Kit.Check`
+  возвращает `Controls/ToggleSwitch` (переключатель, остаётся `CheckBox`, промежуточное состояние поддерживается); карточки —
+  `CardPanel` (радиус `Theme.RadiusCard`, мягкая тень `Draw.Shadow`, выделенная — `Hero = true`, полоса слева — `EdgeColor`);
+  шапка страницы — `Controls/PageHeader` (значок раздела в градиентной плашке, «таблетки» состояния сервера и Claude);
+  градиенты — `Draw.Gradient`, фон под элементом — `Draw.EffectiveBack`. Цвета из палитры, без `Color.FromArgb` в страницах.
+- Палитра команд — `Forms/CommandPaletteForm` (поиск `FuzzyMatch` из Offload.Core), команды собирает `MainForm.PaletteCommands`;
+  справка по клавишам — `Forms/ShortcutsForm` (новое сочетание — добавить и туда).
 - Значки — шрифт `Theme.Icons(size)` (Segoe Fluent Icons / MDL2), коды — `Controls/Glyphs`.
 - Размеры — логические пиксели 96 DPI; в `OnPaint` — `Px(n)` (`LogicalToDeviceUnits`). Высоты рисованных элементов задавать
   строкой таблицы (`AddFixedRow`), а не вычислять в конструкторе — форма масштабирует их сама.

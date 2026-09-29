@@ -17,8 +17,7 @@ internal sealed class MainForm : Form
     private readonly IAppShell _shell;
     private readonly NavigationRail _nav;
     private readonly Panel _host;
-    private readonly Label _title;
-    private readonly Label _subtitle;
+    private readonly PageHeader _header = new();
     private readonly List<PageBase> _pages;
     private readonly System.Windows.Forms.Timer _statusTimer;
     private PageBase? _current;
@@ -52,27 +51,10 @@ internal sealed class MainForm : Form
             new OpenCodePage(shell),
             new PromptPage(shell),
             new LogPage(shell),
+            new NotificationsPage(shell),
             new SettingsPage(shell),
             new AboutPage(shell),
         ];
-
-        // Заголовок страницы.
-        _title = Kit.Label("", Theme.Semibold(19f), Theme.TextPrimary);
-        _title.Margin = new Padding(0, 0, 0, 0);
-        _subtitle = Kit.Label("", Theme.Regular(9.5f), Theme.TextMuted);
-        _subtitle.Margin = new Padding(1, 2, 0, 0);
-        var header = new TableLayoutPanel
-        {
-            Dock = DockStyle.Top,
-            AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            ColumnCount = 1,
-            Padding = new Padding(28, 18, 28, 6),
-            BackColor = Theme.Surface,
-        };
-        header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        header.AddRow(_title);
-        header.AddRow(_subtitle);
 
         _host = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Surface, Padding = new Padding(12, 0, 0, 0) };
         foreach (var page in _pages)
@@ -83,7 +65,7 @@ internal sealed class MainForm : Form
 
         var content = new Panel { Dock = DockStyle.Fill, BackColor = Theme.Surface };
         content.Controls.Add(_host);
-        content.Controls.Add(header);
+        content.Controls.Add(_header);
 
         _nav = new NavigationRail(AppIcons.Logo);
         _nav.SetItems(_pages.Select(p => new NavigationRail.Item(p.Key, p.Title, p.Glyph, GroupOf(p.Key))));
@@ -91,6 +73,7 @@ internal sealed class MainForm : Form
         _nav.SelectedChanged += (_, key) => Select(key);
         _nav.StatusClicked += (_, _) => ShowTab(Tabs.Status);
         _nav.ThemeClicked += (_, _) => RequestTheme(NextTheme(Theme.Mode));
+        shell.Notifications.Changed += OnNotificationsChanged;
         _nav.CollapsedChanged += (_, _) =>
             Ui.RunSafe(this, () => ConfigStore.Update(c => c.Ui.NavCollapsed = _nav.Collapsed), L.T("Не удалось сохранить настройку"));
 
@@ -100,6 +83,7 @@ internal sealed class MainForm : Form
         var lastTab = ConfigStore.Current.Ui.LastTab;
         Select(_pages.Any(p => p.Key == lastTab) ? lastTab! : _pages[0].Key);
         UpdateNavStatus();
+        _nav.SetBadge(Tabs.Notifications, shell.Notifications.UnreadCount);
         _statusTimer = new System.Windows.Forms.Timer { Interval = 5000 };
         _statusTimer.Tick += (_, _) => UpdateNavStatus();
 
@@ -129,6 +113,7 @@ internal sealed class MainForm : Form
     private static string GroupOf(string key) => key switch
     {
         Tabs.Status or Tabs.Models => L.T("Главное"),
+        Tabs.Log or Tabs.Notifications => L.T("Сервис"),
         Tabs.Server or Tabs.Integrations or Tabs.OpenCode or Tabs.Prompt => L.T("Настройка"),
         _ => L.T("Сервис"),
     };
@@ -186,9 +171,7 @@ internal sealed class MainForm : Form
         _host.ResumeLayout(true);
         ScrollToTop(page);
         _current = page;
-        _title.Text = page.Title;
-        _subtitle.Text = page.Subtitle ?? "";
-        _subtitle.Visible = !string.IsNullOrEmpty(page.Subtitle);
+        _header.Set(page.Title, page.Subtitle, page.Glyph);
         _nav.SelectedKey = page.Key;
         UpdateActivePage();
     }
@@ -270,11 +253,22 @@ internal sealed class MainForm : Form
             var s = _shell.Server.State;
             var model = ConfigStore.Current.ActiveModel();
             _nav.SetStatus(Theme.StateColor(s), Texts.State(s), model is null ? L.T("модель не выбрана") : Texts.ModelName(model));
+            _header.SetPills(HeaderPills(s));
         }
         catch (Exception ex)
         {
             Log.Debug("ui", $"Состояние в навигации: {ex.Message}");
         }
+    }
+
+    /// <summary>Таблетки шапки: состояние сервера и связь с Claude (видны на любой странице).</summary>
+    private static List<(string, Color)> HeaderPills(Offload.Llama.ServerState state)
+    {
+        var pills = new List<(string, Color)> { (Texts.State(state), Theme.StateColor(state)) };
+        var link = ConfigStore.Current.ClaudeLink(Offload.Integrations.AutoConnectPolicy.Ids);
+        if (link == ClaudeLink.Connected) pills.Add(("Claude", Theme.Green));
+        else if (link == ClaudeLink.NeedsAttention) pills.Add(("Claude", Theme.Amber));
+        return pills;
     }
 
     private static void SafeCall(PageBase page, Action action)
@@ -387,8 +381,85 @@ internal sealed class MainForm : Form
         UpdateActivePage();
     }
 
+    private void OnNotificationsChanged() => _shell.PostToUi(() =>
+    {
+        if (!IsDisposed) _nav.SetBadge(Tabs.Notifications, _shell.Notifications.UnreadCount);
+    });
+
+    /// <summary>Палитра команд (Ctrl+K): разделы и действия; выбранное выполняется после закрытия палитры.</summary>
+    public void ShowCommandPalette()
+    {
+        if (!Visible || IsDisposed) return;
+        var chosen = CommandPaletteForm.Pick(this, PaletteCommands());
+        if (chosen is null) return;
+        try
+        {
+            chosen.Run();
+        }
+        catch (Exception ex)
+        {
+            Log.Error("ui", $"Команда «{chosen.Title}»", ex);
+            Ui.ShowError(this, L.T("Команда не выполнена"), ex);
+        }
+    }
+
+    private List<PaletteCommand> PaletteCommands()
+    {
+        var go = L.T("Раздел");
+        var act = L.T("Действие");
+        var list = new List<PaletteCommand>();
+        for (var i = 0; i < _pages.Count; i++)
+        {
+            var p = _pages[i];
+            list.Add(new PaletteCommand(p.Title, go, p.Glyph, (p.Subtitle ?? "") + " " + p.Key, i < 9 ? $"Ctrl+{i + 1}" : null, () => Select(p.Key)));
+        }
+        list.AddRange(
+        [
+            new(L.T("Запустить сервер"), act, Glyphs.Play, "llama start server модель", null, // l10n-ignore — ключевые слова поиска
+                () => _ = Ui.RunSafeAsync(this, async () => await _shell.Server.StartAsync(), L.T("Не удалось запустить сервер"))),
+            new(L.T("Остановить сервер"), act, Glyphs.Stop, "llama stop server", null,
+                () => _ = Ui.RunSafeAsync(this, () => _shell.Server.StopAsync(), L.T("Не удалось остановить сервер"))),
+            new(L.T("Перезапустить сервер"), act, Glyphs.Refresh, "llama restart server", null,
+                () => _ = Ui.RunSafeAsync(this, async () => await _shell.Server.RestartAsync(), L.T("Не удалось перезапустить сервер"))),
+            new(L.T("Проверить подключение Claude"), act, Glyphs.Check, "claude code desktop mcp проверка verify", null, // l10n-ignore — ключевые слова поиска
+                () => _ = _shell.CheckConnectionsAsync()),
+            new(L.T("Подключить Claude сейчас"), act, Glyphs.Link, "claude code desktop mcp connect автоподключение", null, // l10n-ignore — ключевые слова поиска
+                () => _ = _shell.ConnectClaudeNowAsync()),
+            new(L.T("Переключить тему"), act, Theme.IsDark ? Glyphs.Sun : Glyphs.Moon, "theme dark light тёмная светлая", null, // l10n-ignore — ключевые слова поиска
+                () => RequestTheme(NextTheme(Theme.Mode))),
+            new(L.T("Мастер настройки"), act, Glyphs.Wand, "wizard setup установка", null, _shell.ShowSetupWizard), // l10n-ignore — ключевые слова поиска
+            new(L.T("Сочетания клавиш"), act, Glyphs.Keyboard, "hotkeys shortcuts справка help", "F1", ShowShortcuts), // l10n-ignore — ключевые слова поиска
+            new(L.T("Выход из Offload"), act, Glyphs.Power, "exit quit закрыть", null, () => _ = _shell.ExitAsync()), // l10n-ignore — ключевые слова поиска
+        ]);
+        return list;
+    }
+
+    private void ShowShortcuts()
+    {
+        using var f = new ShortcutsForm();
+        f.ShowDialog(this);
+    }
+
     protected override void OnKeyDown(KeyEventArgs e)
     {
+        if (e.Control && e.KeyCode == Keys.K)
+        {
+            e.Handled = e.SuppressKeyPress = true;
+            BeginInvoke(ShowCommandPalette);
+            return;
+        }
+        if (e.KeyCode == Keys.F1)
+        {
+            e.Handled = true;
+            BeginInvoke(ShowShortcuts);
+            return;
+        }
+        if (e.Control && e.Shift && e.KeyCode == Keys.N)
+        {
+            e.Handled = e.SuppressKeyPress = true;
+            Select(Tabs.Notifications);
+            return;
+        }
         // Ctrl+1…9 — разделы по порядку, Ctrl+Tab / Ctrl+Shift+Tab — следующий/предыдущий.
         if (e.Control && e.KeyCode is >= Keys.D1 and <= Keys.D9)
         {
@@ -439,7 +510,11 @@ internal sealed class MainForm : Form
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing) _statusTimer.Dispose();
+        if (disposing)
+        {
+            _statusTimer.Dispose();
+            _shell.Notifications.Changed -= OnNotificationsChanged;
+        }
         base.Dispose(disposing);
     }
 }

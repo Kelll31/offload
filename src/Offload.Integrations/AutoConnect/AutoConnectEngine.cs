@@ -47,6 +47,25 @@ public sealed record AutoConnectReport(IReadOnlyList<AutoConnectedIde> Connected
     }
 }
 
+/// <summary>Итог перепроверки: сломавшиеся и восстановившиеся подключения.</summary>
+public sealed record RecheckReport(IReadOnlyList<AutoConnectedIde> Broken, IReadOnlyList<AutoConnectedIde> Recovered)
+{
+    public bool IsEmpty => Broken.Count == 0 && Recovered.Count == 0;
+
+    /// <summary>Уведомление: что сломалось (причина и что делать) и что снова работает.</summary>
+    public (string Title, string Text, bool Warning) Notice()
+    {
+        var lines = new List<string>();
+        foreach (var b in Broken)
+            lines.Add(L.F("{0}: подключение перестало работать — {1}. {2}", b.Name, b.Verify.Summary, b.Verify.Hint).Trim());
+        if (Recovered.Count > 0)
+            lines.Add(L.F("Снова работает: {0}.", string.Join(", ", Recovered.Select(r => r.Name))));
+        return Broken.Count > 0
+            ? (L.T("Подключение Offload сломалось"), string.Join(" ", lines), true)
+            : (L.T("Подключение Offload восстановлено"), string.Join(" ", lines), false);
+    }
+}
+
 /// <summary>
 /// Зависимости движка автоподключения. По умолчанию — настоящие: реестр интеграций, <see cref="ConfigStore"/>,
 /// <see cref="IntegrationVerifier"/>. Тесты подставляют своё.
@@ -115,7 +134,7 @@ public sealed class AutoConnectEngine(AutoConnectHost host)
     {
         var connected = new List<AutoConnectedIde>();
         var failed = new List<AutoConnectFailure>();
-        foreach (var id in AutoConnectPolicy.Ids)
+        foreach (var id in AutoConnectPolicy.Candidates(host.GetConfig()))
         {
             ct.ThrowIfCancellationRequested();
             try
@@ -192,6 +211,53 @@ public sealed class AutoConnectEngine(AutoConnectHost host)
         host.UpdateConfig(c => c.RecordCheck(id, verify.Ok, verify.Summary, checkedAt));
         Log.Write(verify.Ok ? LogLevel.Info : LogLevel.Warn, "integrations", $"{id}: подключён автоматически, проверка: {(verify.Ok ? "успешно" : verify.Message)}");
         connected.Add(new AutoConnectedIde(id, integration.DisplayName, verify, integration.PostRegisterHint));
+    }
+
+    /// <summary>Как часто перепроверять работающие подключения Claude (запуском сервера по записи).</summary>
+    public static readonly TimeSpan RecheckInterval = TimeSpan.FromHours(24);
+
+    /// <summary>
+    /// Перепроверка подключённых клиентов из <see cref="AutoConnectPolicy.Candidates"/>: сервер запускается по записи в IDE,
+    /// итог сохраняется в <see cref="AppConfig.IntegrationStates"/>. Без <paramref name="force"/> проверяются только клиенты,
+    /// которые не проверялись дольше <see cref="RecheckInterval"/>. Возвращает клиентов, у которых подключение
+    /// сломалось (прошлая проверка была успешной или её не было, а эта — нет), — о них стоит сообщить; и тех, кто починился.
+    /// Ничего не пишет в конфиги IDE.
+    /// </summary>
+    public async Task<RecheckReport> RecheckAsync(bool force = false, CancellationToken ct = default)
+    {
+        var broken = new List<AutoConnectedIde>();
+        var recovered = new List<AutoConnectedIde>();
+        var cfg = host.GetConfig();
+        var now = host.UtcNow();
+        foreach (var id in AutoConnectPolicy.Candidates(cfg))
+        {
+            ct.ThrowIfCancellationRequested();
+            if (!cfg.Integrations.Contains(id) || host.Find(id) is not { } integration) continue;
+            var state = cfg.IntegrationStates.GetValueOrDefault(id);
+            if (!force && state?.LastCheckUtc is { } last && now - last < RecheckInterval) continue;
+            try
+            {
+                if (!integration.IsClientInstalled()) continue;
+                var spec = host.GetSpec() with { ApproveWriteTools = false };
+                var v = await host.Verify(integration, spec, ct).ConfigureAwait(false);
+                if (v.Kind == FailureKind.NotVerifiable) continue;
+                var wasOk = state?.LastCheckUtc is null || state.LastCheckOk;
+                host.UpdateConfig(c => c.RecordCheck(id, v.Ok, v.Summary, now));
+                var item = new AutoConnectedIde(id, integration.DisplayName, v, integration.PostRegisterHint);
+                if (!v.Ok && wasOk) broken.Add(item);
+                else if (v.Ok && !wasOk) recovered.Add(item);
+                Log.Write(v.Ok ? LogLevel.Info : LogLevel.Warn, "integrations", $"{id}: перепроверка подключения — {(v.Ok ? "успешно" : v.Message)}");
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                Log.Warn("integrations", $"{id}: перепроверка подключения: {ex.Message}");
+            }
+        }
+        return new RecheckReport(broken, recovered);
     }
 
     private void Fail(string id, string name, string message, List<AutoConnectFailure> failed)

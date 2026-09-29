@@ -80,9 +80,7 @@ public static class FileUtil
         {
             if (!File.Exists(path)) return null;
             Directory.CreateDirectory(AppPaths.BackupsDir);
-            safeName = path.Replace(':', '_').Replace('\\', '_').Replace('/', '_');
-            // Длинный путь обрезается с начала; хеш полного пути не даёт двум файлам с общим хвостом делить одну квоту копий.
-            if (safeName.Length > 150) safeName = ShortHash(path) + "~" + safeName[^140..];
+            safeName = SafeBackupName(path);
             var stamp = DateTime.Now.ToString(BackupStampFormat, CultureInfo.InvariantCulture);
             dest = CopyToUnique(path, AppPaths.BackupsDir, stamp, safeName);
         }
@@ -92,6 +90,48 @@ public static class FileUtil
         }
         PruneBackups(AppPaths.BackupsDir, safeName, keep: dest);
         return dest;
+    }
+
+    /// <summary>Часть имени копии после метки времени: путь исходного файла без разделителей.</summary>
+    private static string SafeBackupName(string path)
+    {
+        var safeName = path.Replace(':', '_').Replace('\\', '_').Replace('/', '_');
+        // Длинный путь обрезается с начала; хеш полного пути не даёт двум файлам с общим хвостом делить одну квоту копий.
+        return safeName.Length > 150 ? ShortHash(path) + "~" + safeName[^140..] : safeName;
+    }
+
+    /// <summary>Резервная копия файла в папке backups: путь и время создания (местное).</summary>
+    public sealed record BackupInfo(string Path, DateTime Created, long Size);
+
+    /// <summary>
+    /// Резервные копии файла <paramref name="path"/>, сделанные <see cref="Backup"/> (новые сверху). Копии других файлов
+    /// с похожим именем не попадают: сравнивается полное преобразованное имя.
+    /// </summary>
+    public static IReadOnlyList<BackupInfo> BackupsOf(string path)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(path);
+        var safeName = SafeBackupName(path);
+        var result = new List<(BackupInfo Info, int N)>();
+        try
+        {
+            if (!Directory.Exists(AppPaths.BackupsDir)) return [];
+            foreach (var file in Directory.EnumerateFiles(AppPaths.BackupsDir))
+            {
+                var m = BackupName.Match(System.IO.Path.GetFileName(file));
+                if (!m.Success || !string.Equals(m.Groups["name"].Value, safeName, StringComparison.OrdinalIgnoreCase)) continue;
+                var st = m.Groups["stamp"].Value;
+                if (!DateTime.TryParseExact(st, st.Length > 15 ? BackupStampFormat : "yyyyMMdd-HHmmss",
+                        CultureInfo.InvariantCulture, DateTimeStyles.None, out var stamp))
+                    continue;
+                var n = m.Groups["n"].Success && int.TryParse(m.Groups["n"].Value, out var parsed) ? parsed : 0;
+                result.Add((new BackupInfo(file, stamp, new FileInfo(file).Length), n));
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return [];
+        }
+        return result.OrderByDescending(x => x.Info.Created).ThenByDescending(x => x.N).Select(x => x.Info).ToList();
     }
 
     /// <summary>Копирование без перезаписи: если имя занято (в т.ч. другим процессом в ту же миллисекунду), добавляется счётчик.</summary>
