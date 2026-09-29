@@ -1,5 +1,13 @@
 **Offload** — приложение для Windows, которое запускает бесплатную локальную модель для программирования и подключает её к Claude Code, Cursor, VS Code, Codex и другим IDE как MCP-сервер. Облачный агент отдаёт ей рутину: чтение больших файлов и логов, тесты, шаблонный код, механические правки. Облачных токенов уходит меньше.
 
+## Что нового в 1.0.4
+
+- **Поставил Offload — и он сам подключился к Claude.** Claude Code и Claude Desktop (в том числе из Microsoft Store), установленные до или после Offload, подключаются без единого клика; про «позже» Offload узнаёт сам — проверяет раз в 15 минут.
+- **Подключение проверяется, а не предполагается.** Offload запускает `Offload.exe --mcp` так же, как это сделает Claude, и показывает итог: «проверено, 25 инструментов, 1,2 с» либо причину (антивирус, занятый или повреждённый файл настроек, посторонний текст в stdout) и что делать.
+- **Ваш отказ важнее автоматики.** Сняли галочку в мастере или нажали «Отключить» — автоподключение это не вернёт. Чужая запись `offload` не заменяется, Claude сам не перезапускается.
+- **Обновление не ломает подключение:** в Claude прописывается путь установленной копии Offload, он не меняется при обновлении.
+- Выключается одной настройкой: «Интеграции» → «Подключать Claude автоматически и следить за подключениями к IDE».
+
 ## Что нового в 1.0.3
 
 - **Автоподбор параметров под вашу видеокарту.** Одна кнопка на странице «Сервер»: Offload перебирает настройки llama-server, замеряет скорость и запоминает самый быстрый набор для этой модели и этого компьютера. Контекст не уменьшается; при отмене всё возвращается как было.
@@ -71,6 +79,8 @@
 - **`Offload-Setup-<version>.exe`** — installer for most users (per-user, no admin rights; the language follows Windows). Silent install: `/VERYSILENT`.
 - **`Offload.exe`** — portable single file.
 - **`SHA256SUMS.txt`** — checksums. Verify provenance with `gh attestation verify <file> --repo Kelll31/offload`.
+
+**New in 1.0.4:** Offload connects itself to Claude — Claude Code and Claude Desktop (including the Microsoft Store build), installed before or after Offload, are connected without a click (checked every 15 minutes); the connection is verified by launching `Offload.exe --mcp` like Claude does, with the result or the reason and what to do; your refusals are remembered and someone else's `offload` entry is never replaced; the path written into Claude is the installed copy's, so updates don't break it. One switch turns it off: Integrations → "Connect Claude automatically and watch IDE connections".
 
 **New in 1.0.3:** one-click auto-tuning of llama-server for your GPU (the fastest set is saved per model and PC); automatic model split across several GPUs; remote server mode — a laptop can use the model running on a powerful PC with Offload (trusted network or VPN, plain HTTP); IDE autocomplete via a small FIM coder model for llama.vscode and Continue; search and install any GGUF model from Hugging Face with a fit estimate; new tools local_pr_ready (pre-PR check in one call) and local_debug (from reproduction to a verified fix); agent race (race=2…4 on local_agent_task and local_solve); a result cache for unchanged code and automatic project memory; local_impact also suggests tests related to the change by meaning (with an embedding model; marked semantic and never run by run_tests); the installer is now built with a pinned Inno Setup version locally and in CI.
 

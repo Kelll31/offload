@@ -2,6 +2,7 @@ using System.Diagnostics;
 using Microsoft.Win32;
 using Offload.Core;
 using Offload.Core.Logging;
+using Offload.Integrations;
 
 namespace Offload.App.Services;
 
@@ -25,6 +26,12 @@ internal static class InstallInfo
     /// Такая копия не должна сама перенастраивать подключения IDE и автозапуск на себя.
     /// </summary>
     public static InstalledCopy? Foreign => Installed is { IsCurrentProcess: false } c ? c : null;
+
+    /// <summary>
+    /// Что прописывать в IDE: установленная копия (стабильный путь, переживает обновление) либо запущенный exe
+    /// (портативная копия, dev-сборка). См. <see cref="McpServerSpec.ForInstalledOrCurrent(string?, string?)"/>.
+    /// </summary>
+    public static McpServerSpec McpSpec() => McpServerSpec.ForInstalledOrCurrent(Installed?.ExePath, Installed?.Version);
 
     public static InstalledCopy? Find()
     {

@@ -33,6 +33,7 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
     private readonly BackgroundJobHost _jobs;
     private readonly System.Windows.Forms.Timer _configDebounce;
     private readonly IntegrationWatcher _integrationWatcher = new();
+    private readonly ClaudeAutoConnect _claudeAutoConnect = new();
 
     private readonly ToolStripMenuItem _header;
     private readonly ToolStripMenuItem _open;
@@ -272,7 +273,7 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
         {
             try
             {
-                var updated = await IntegrationRegistry.RefreshOutdatedAsync(McpServerSpec.ForCurrentExecutable()).ConfigureAwait(false);
+                var updated = await IntegrationRegistry.RefreshOutdatedAsync(InstallInfo.McpSpec()).ConfigureAwait(false);
                 if (updated.Count > 0)
                 {
                     Log.Info("integrations", "Обновлён путь к Offload в: " + string.Join(", ", updated));
@@ -288,6 +289,7 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
 
         if (ownsSetup) SyncAutostart(cfg);
         if (ownsSetup) _integrationWatcher.Start(this);
+        if (ownsSetup) _claudeAutoConnect.Start(this);
 
         PostToUi(() => Server.RefreshConfigured());
         cfg = ConfigStore.Reload();
@@ -740,6 +742,9 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
             ServerState.NotConfigured => L.F("{0} — требуется настройка", AppInfo.DisplayName),
             _ => L.F("{0} — сервер остановлен", AppInfo.DisplayName),
         };
+        // Вторая строка: связь с Claude (по итогу последней проверки подключения; файлы IDE здесь не читаются).
+        var claude = Texts.ClaudeLink(ConfigStore.Current);
+        if (claude is not null) text = Texts.Truncate(text, MaxTooltip - claude.Length - 1) + "\n" + claude;
         try
         {
             _tray.Text = Texts.Truncate(text, MaxTooltip);
@@ -907,6 +912,7 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
             _jobs.Dispose();
             _configDebounce.Dispose();
             _integrationWatcher.Dispose();
+            _claudeAutoConnect.Dispose();
             try { _main?.Dispose(); } catch { }
             try { _wizard?.Dispose(); } catch { }
             _tray.Visible = false;

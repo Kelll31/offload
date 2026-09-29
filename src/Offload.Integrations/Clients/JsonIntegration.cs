@@ -145,7 +145,7 @@ internal class JsonIntegration(string id, string displayName, string? hint) : In
         }
         catch (Exception ex) when (DescribeFailure(path, ex) is { } msg)
         {
-            return new FileProbe(path, ProbeState.Error, Error: msg);
+            return new FileProbe(path, ProbeState.Error, Error: msg, ErrorKind: KindOf(ex));
         }
     }
 

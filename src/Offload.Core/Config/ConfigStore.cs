@@ -431,6 +431,7 @@ public static class ConfigStore
         cfg.Remote ??= new();
         cfg.Integrations ??= [];
         cfg.DeclinedIntegrations ??= [];
+        cfg.IntegrationStates ??= new(StringComparer.Ordinal);
         cfg.Autocomplete ??= new();
 
         // Старая версия схемы (в том числе файл без поля) поднимается; метку более новой версии меняет только запись (WriteLocked).

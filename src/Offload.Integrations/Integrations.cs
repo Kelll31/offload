@@ -34,6 +34,33 @@ public sealed record McpServerSpec(
             [AppInfo.McpArg],
             new Dictionary<string, string>());
     }
+
+    /// <summary>
+    /// Стабильный путь для IDE: если Offload установлен установщиком (<paramref name="installedExe"/> — Offload.exe из папки
+    /// установки), то прописывается он, а не путь запущенного процесса: обновление перезаписывает файл на месте, и запись в
+    /// IDE не устаревает. Установленная копия годится, только если файл существует (локальный путь, не сетевой) и её версия
+    /// не старше запущенной (<paramref name="installedVersion"/> неизвестна — не годится). Иначе — как
+    /// <see cref="ForCurrentExecutable"/> (портативная копия пишет свой путь).
+    /// </summary>
+    public static McpServerSpec ForInstalledOrCurrent(string? installedExe, string? installedVersion) =>
+        ForInstalledOrCurrent(installedExe, installedVersion, ForCurrentExecutable(), AppInfo.Version, File.Exists);
+
+    internal static McpServerSpec ForInstalledOrCurrent(
+        string? installedExe, string? installedVersion, McpServerSpec current, string currentVersion, Func<string, bool> exists)
+    {
+        if (string.IsNullOrWhiteSpace(installedExe) || string.IsNullOrWhiteSpace(installedVersion)) return current;
+        if (Editing.CommandPath.IsUnc(installedExe) || !Path.IsPathFullyQualified(installedExe)) return current;
+        if (Offload.Core.Update.AppReleases.CompareVersions(installedVersion, currentVersion) < 0) return current;
+        try
+        {
+            if (!exists(installedExe)) return current;
+            return current with { Command = Path.GetFullPath(installedExe) };
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            return current;
+        }
+    }
 }
 
 public enum IntegrationStatus

@@ -110,4 +110,34 @@ public class LiveClaudeCliTests
         Assert.Equal(IntegrationStatus.NotRegistered, cc.GetStatus(moved));
         Assert.Empty(RealProfileGuard.Violations());
     }
+
+    /// <summary>Автоподключение глазами настоящего claude: после записи «claude mcp list» видит сервер offload.</summary>
+    [Fact]
+    [Trait("Category", "Live")]
+    public async Task RealClaudeCli_McpList_SeesAutoConnectedEntry_InSandbox()
+    {
+        if (Environment.GetEnvironmentVariable("OFFLOAD_LIVE_CLI") != "1")
+            Assert.Skip("Живая проверка: задайте OFFLOAD_LIVE_CLI=1");
+        var claude = ClaudeCli.FindInExtensions(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+        if (claude is null) Assert.Skip("claude.exe в расширениях VS Code не найден");
+
+        using var sb = new Sandbox(allowCli: true, claudeCli: claude);
+        Directory.CreateDirectory(IntegrationEnvironment.GetVariable("CLAUDE_CONFIG_DIR")!);
+        var cfg = new Offload.Core.Config.AppConfig { SetupCompleted = true };
+        var engine = new AutoConnectEngine(new AutoConnectHost
+        {
+            GetConfig = () => cfg,
+            UpdateConfig = a => a(cfg),
+            GetSpec = () => new McpServerSpec("offload", @"C:\fake PcTestSandbox\Offload.exe", ["--mcp"], new Dictionary<string, string>()),
+            Verify = (_, _, _) => Task.FromResult(new VerifyResult(true, FailureKind.None, "", 1, TimeSpan.Zero, 1)),
+            InstallClaudeCodeExtras = () => { },
+        });
+
+        var report = await engine.RunOnceAsync();
+
+        Assert.Contains(report.Connected, c => c.Id == "claude-code");
+        var list = await ClaudeCli.RunAsync(claude, ["mcp", "list"], CancellationToken.None);
+        Assert.Contains("offload", list.StdOut + list.StdErr, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(RealProfileGuard.Violations());
+    }
 }

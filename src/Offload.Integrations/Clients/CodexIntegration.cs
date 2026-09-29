@@ -40,7 +40,7 @@ internal sealed class CodexIntegration : IntegrationBase
         }
         catch (Exception ex) when (DescribeFailure(path, ex) is { } msg)
         {
-            return new FileProbe(path, ProbeState.Error, Error: msg);
+            return new FileProbe(path, ProbeState.Error, Error: msg, ErrorKind: KindOf(ex));
         }
     }
 

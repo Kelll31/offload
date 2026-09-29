@@ -2,9 +2,18 @@
 ; Ставится в профиль пользователя — права администратора не нужны.
 ; На компьютере может быть только одна установка: установщик находит прежнюю (в том числе старую «для всех
 ; пользователей») и предлагает обновить, переустановить или удалить её.
+;
+; Расположение: {localappdata}\Programs\Offload — для текущего пользователя (не «Program Files»), путь фиксированный
+; (UsePreviousAppDir): обновление перезаписывает Offload.exe на месте, поэтому путь в настройках IDE (Claude Code, Claude
+; Desktop…) переживает обновление. Перед заменой файлов PrepareToInstall завершает MCP-серверы «Offload.exe --mcp», которые
+; держат exe (StopProcessesIn).
+; Установщик НЕ пишет в конфиги IDE: подключение к Claude и другим IDE целиком делает программа при первом запуске
+; (мастер) и в фоне (автоподключение, проверка запуском), чтобы путь кода был один.
 
+; Значение по умолчанию совпадает с <Version> в Directory.Build.props (тест InstallerTests.AppVersionDefault_MatchesBuildProps);
+; сборка выпуска передаёт версию явно: /DAppVersion=... (scripts/build.ps1, CI).
 #ifndef AppVersion
-  #define AppVersion "1.0.0"
+  #define AppVersion "1.0.3"
 #endif
 #ifndef PublishDir
   #define PublishDir "..\publish"
@@ -146,6 +155,10 @@ Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: 
 
 [Run]
 Filename: "{app}\{#AppExe}"; Description: "{cm:RunApp,{#AppName}}"; Flags: nowait postinstall skipifsilent
+; Тихая установка или обновление (/VERYSILENT, winget): без вопроса запускаем трей в фоне — как автозапуск. Если настройка
+; уже завершена, программа сама подключит Claude, установленный до или после Offload, и проверит подключение; для нового
+; пользователя мастер откроется по значку в трее. Без этого после тихого обновления трея не было бы до следующего входа в Windows.
+Filename: "{app}\{#AppExe}"; Parameters: "--background"; Flags: nowait runasoriginaluser; Check: WizardSilent
 
 [UninstallRun]
 ; Отключение MCP-сервера из всех IDE и остановка llama-server

@@ -53,4 +53,34 @@ public class InstallerTests
         Assert.DoesNotContain("PrivilegesRequiredOverridesAllowed", iss);
         Assert.Contains("PrivilegesRequired=lowest", iss);
     }
+
+    /// <summary>Версия по умолчанию в .iss — та же, что в Directory.Build.props (выпуск передаёт её явно через /DAppVersion).</summary>
+    [Fact]
+    public void AppVersionDefault_MatchesBuildProps()
+    {
+        var iss = File.ReadAllText(RepoFile("installer", "Offload.iss"));
+        var props = File.ReadAllText(RepoFile("Directory.Build.props"));
+        var fromProps = System.Text.RegularExpressions.Regex.Match(props, "<Version>([0-9.]+)</Version>");
+        var fromIss = System.Text.RegularExpressions.Regex.Match(iss, "#ifndef AppVersion\\s+#define AppVersion \"([0-9.]+)\"");
+        Assert.True(fromProps.Success, "в Directory.Build.props нет <Version>");
+        Assert.True(fromIss.Success, "в Offload.iss нет значения AppVersion по умолчанию");
+        Assert.Equal(fromProps.Groups[1].Value, fromIss.Groups[1].Value);
+    }
+
+    /// <summary>
+    /// Подключение к IDE — только в программе (один путь кода: ConfigFile.Edit, бэкап, проверка запуском). Установщик конфиги IDE
+    /// не пишет, а фиксированную папку установки и тихий запуск трея сохраняет: без них путь в IDE устаревал бы после обновления.
+    /// </summary>
+    [Fact]
+    public void Installer_DoesNotWriteIdeConfigs_ButKeepsStablePathAndSilentStart()
+    {
+        var iss = File.ReadAllText(RepoFile("installer", "Offload.iss"));
+        var code = string.Join('\n', iss.Split('\n').Where(l => !l.TrimStart().StartsWith(';')));
+        foreach (var forbidden in new[] { ".claude", "claude_desktop_config", "mcp.json", "mcpServers" })
+            Assert.DoesNotContain(forbidden, code, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("DefaultDirName={localappdata}\\Programs\\{#AppName}", iss);
+        Assert.Contains("UsePreviousAppDir=yes", iss);
+        Assert.Contains("Parameters: \"--background\"; Flags: nowait runasoriginaluser; Check: WizardSilent", iss);
+        Assert.Contains("StopProcessesIn(ExpandConstant('{app}'))", iss);
+    }
 }

@@ -23,7 +23,9 @@ internal sealed class IntegrationsPage : PageBase
     /// <param name="LastCallUtc">Последнее обращение из IDE.</param>
     /// <param name="Need">Что не так с записью (для текста статуса и кнопки).</param>
     /// <param name="Tracked">Offload подключал эту IDE (она в cfg.Integrations): пропавшая запись — «удалена», а не «не подключена».</param>
-    private sealed record Row(IIdeIntegration Integration, IntegrationStatus Status, bool Installed, DateTime? LastCallUtc, RepairNeed Need, bool Tracked)
+    /// <param name="State">Как подключена (автоматически или вручную) и итог последней проверки запуском.</param>
+    private sealed record Row(IIdeIntegration Integration, IntegrationStatus Status, bool Installed, DateTime? LastCallUtc, RepairNeed Need, bool Tracked,
+        IntegrationState? State = null)
     {
         /// <summary>Запись Offload пропала из настроек IDE, которую Offload подключал.</summary>
         public bool Removed => Tracked && Status == IntegrationStatus.NotRegistered;
@@ -40,7 +42,7 @@ internal sealed class IntegrationsPage : PageBase
     private readonly Button _refresh;
     private readonly Label _status = Kit.Wrap("");
     private readonly TextBox _report = Kit.MultiLine(170, mono: true, readOnly: true);
-    private readonly CheckBox _autoRepair = Kit.Check(L.T("Следить за подключениями к IDE"));
+    private readonly CheckBox _autoRepair = Kit.Check(L.T("Подключать Claude автоматически и следить за подключениями к IDE"));
     private readonly Label _wslHint = Kit.Hint("");
     private readonly Button _wslDetect;
 
@@ -74,7 +76,11 @@ internal sealed class IntegrationsPage : PageBase
         _openConfig = Kit.Button(L.T("Открыть файл конфигурации"), (_, _) => OpenConfig(), 170);
         _refresh = Kit.Button(L.T("Обновить список"), async (_, _) => await RefreshAsync());
         _wslDetect = Kit.Button(L.T("Найти в WSL"), async (_, _) => await DetectWslAsync(), 120);
-        _list.SelectedIndexChanged += (_, _) => UpdateUiState();
+        _list.SelectedIndexChanged += (_, _) =>
+        {
+            UpdateUiState();
+            ShowLastCheck();
+        };
         _list.DoubleClick += async (_, _) =>
         {
             if (Selected() is { Installed: true, Status: not IntegrationStatus.Registered }) await RegisterSelectedAsync();
@@ -189,7 +195,7 @@ internal sealed class IntegrationsPage : PageBase
     }
 
     private static McpServerSpec Spec() =>
-        Ui.Try(McpServerSpec.ForCurrentExecutable,
+        Ui.Try(InstallInfo.McpSpec,
             new McpServerSpec(AppInfo.McpServerId, AppPaths.ExecutablePath, [AppInfo.McpArg], new Dictionary<string, string>()),
             "McpServerSpec");
 
@@ -226,6 +232,7 @@ internal sealed class IntegrationsPage : PageBase
         {
             var spec = Spec();
             var tracked = ConfigStore.Current.Integrations.ToHashSet(StringComparer.Ordinal);
+            var states = ConfigStore.Current.IntegrationStates.ToDictionary(kv => kv.Key, kv => kv.Value, StringComparer.Ordinal);
             IReadOnlyList<string> stoppedWsl = [];
             var (rows, error) = await Task.Run<(List<Row>, string?)>(() =>
             {
@@ -242,7 +249,8 @@ internal sealed class IntegrationsPage : PageBase
                         if (!installed && status is IntegrationStatus.NotRegistered) status = IntegrationStatus.ClientNotFound;
                         var need = installed ? Ui.Try(() => IntegrationRegistry.Assess(i, spec), RepairNeed.None, $"{i.Id}.Assess") : RepairNeed.None;
                         return new Row(i, status, installed || status is IntegrationStatus.Registered or IntegrationStatus.Outdated,
-                            lastCalls.TryGetValue(i.Id, out var t) ? t : null, need, tracked.Contains(i.Id));
+                            lastCalls.TryGetValue(i.Id, out var t) ? t : null, need, tracked.Contains(i.Id),
+                            states.GetValueOrDefault(i.Id));
                     }).ToList();
                     return (list, null);
                 }
@@ -316,8 +324,36 @@ internal sealed class IntegrationsPage : PageBase
         { Status: IntegrationStatus.Outdated, Need: RepairNeed.StaleSettings } => L.T("Устарели настройки записи"),
         { Status: IntegrationStatus.Outdated, Need: RepairNeed.OtherCopy } => L.T("Указывает на другую копию Offload"),
         { Status: IntegrationStatus.Outdated, Need: RepairNeed.Missing } => L.T("Подключена не во всех файлах"),
+        { Status: IntegrationStatus.Registered, State.AutoConnected: true } => L.T("Подключена автоматически"),
         _ => Texts.Integration(r.Status),
     };
+
+    /// <summary>Итог последней проверки запуском для выбранной IDE (дата и результат) — в строке состояния.</summary>
+    private void ShowLastCheck()
+    {
+        if (Selected() is not { State: { LastCheckUtc: { } at } state } row || IsBusy) return;
+        _status.ForeColor = state.LastCheckOk ? Theme.OkText : Theme.WarnText;
+        _status.Text = L.F("{0}: последняя проверка {1} — {2}", Ui.Try(() => row.Integration.DisplayName, row.Integration.Id, "DisplayName"),
+            at.ToLocalTime().ToString("g", L.Culture), state.LastCheckText ?? "—");
+    }
+
+    /// <summary>Проверить подключение запуском сервера и запомнить итог (для метки в списке). Не бросает исключений.</summary>
+    private static async Task<VerifyResult> VerifyAsync(IIdeIntegration integration, McpServerSpec spec)
+    {
+        VerifyResult v;
+        try
+        {
+            var installed = InstallInfo.Installed?.ExePath is { } exe ? new[] { exe } : [];
+            v = await Task.Run(() => IntegrationVerifier.VerifyAsync(integration, spec, installed));
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            v = new VerifyResult(false, FailureKind.StartFailed, ex.Message, 0, TimeSpan.Zero);
+        }
+        if (v.Kind != FailureKind.NotVerifiable)
+            ConfigStore.Update(c => c.RecordCheck(integration.Id, v.Ok, v.Summary, DateTime.UtcNow));
+        return v;
+    }
 
     private async Task<IntegrationResult?> RegisterAsync(IIdeIntegration integration)
     {
@@ -336,10 +372,21 @@ internal sealed class IntegrationsPage : PageBase
         Log.Info("integrations", $"{integration.Id}: {(result.Ok ? "подключено" : "ошибка")} — {result.Message}");
         if (result.Ok)
         {
+            // Явное действие пользователя важнее списка отказов; подключение считается ручным.
             ConfigStore.Update(c =>
             {
                 if (!c.Integrations.Contains(integration.Id)) c.Integrations.Add(integration.Id);
+                c.Undecline(integration.Id);
+                c.MarkConnected(integration.Id, auto: false);
             });
+            _status.ForeColor = Theme.TextMuted;
+            _status.Text = L.F("Проверка: {0}…", integration.DisplayName);
+            var v = await VerifyAsync(integration, spec);
+            if (v.Kind != FailureKind.NotVerifiable)
+            {
+                var line = v.Ok ? L.F("Проверка: {0}.", v.Summary) : L.F("Проверка не прошла: {0}. {1}", v.Summary, v.Hint).Trim();
+                result = result with { Message = result.Message + Environment.NewLine + line };
+            }
         }
         return result;
     }
@@ -373,7 +420,12 @@ internal sealed class IntegrationsPage : PageBase
         {
             // Нашей записи в файле нет — только перестаём следить за IDE и напоминать о ней.
             if (!Ui.Confirm(Owner, L.F("Записи Offload в настройках «{0}» нет. Больше не следить за этой IDE?", i.DisplayName))) return;
-            if (!Ui.RunSafe(Owner, () => ConfigStore.Update(c => c.Integrations.Remove(i.Id)), L.T("Не удалось сохранить настройку"))) return;
+            if (!Ui.RunSafe(Owner, () => ConfigStore.Update(c =>
+                {
+                    c.Integrations.Remove(i.Id);
+                    c.ForgetState(i.Id);
+                    c.Decline(i.Id);
+                }), L.T("Не удалось сохранить настройку"))) return;
             Log.Info("integrations", $"{i.Id}: больше не отслеживается (записи Offload нет)");
             _status.ForeColor = Theme.OkText;
             _status.Text = L.F("{0}: Offload больше не следит за этой IDE. Файл настроек не изменялся.", i.DisplayName);
@@ -391,7 +443,13 @@ internal sealed class IntegrationsPage : PageBase
             {
                 var r = await i.UnregisterAsync();
                 Log.Info("integrations", $"{i.Id}: отключение — {r.Message}");
-                if (r.Ok) ConfigStore.Update(c => c.Integrations.Remove(i.Id));
+                if (r.Ok)
+                    ConfigStore.Update(c =>
+                    {
+                        c.Integrations.Remove(i.Id);
+                        c.ForgetState(i.Id);
+                        c.Decline(i.Id); // отключил сам — автоподключение не вернёт
+                    });
                 ShowResult(i, r, registered: false);
             }
             finally
@@ -584,6 +642,7 @@ internal sealed class IntegrationsPage : PageBase
             }
         }, L.T("Не удалось проверить подключение"));
         if (IsDisposed || reports.Count == 0) return;
+        RecordChecks(reports);
         var worst = reports.Max(r => r.Worst);
         _status.ForeColor = worst switch
         {
@@ -597,6 +656,21 @@ internal sealed class IntegrationsPage : PageBase
             : L.F("Проверка завершена: {0} — без ошибок.", string.Join(", ", reports.Select(r => r.DisplayName)));
         _report.Text = FormatReports(reports);
         _report.Visible = true;
+    }
+
+    /// <summary>Запомнить итог проверки запуском по отчётам доктора (метка «проверено» в списке и в строке состояния).</summary>
+    private static void RecordChecks(IReadOnlyList<DoctorReport> reports)
+    {
+        var now = DateTime.UtcNow;
+        Ui.RunSafe(null, () => ConfigStore.Update(c =>
+        {
+            foreach (var r in reports.Where(r => r.Handshake is not null))
+            {
+                var h = r.Handshake!;
+                var v = new VerifyResult(h.Ok && r.Worst != DoctorLevel.Error, h.Kind, h.Error ?? "", h.ToolCount, h.Elapsed);
+                c.RecordCheck(r.IntegrationId, v.Ok, v.Ok ? v.Summary : (h.Error ?? FailureText.Reason(IntegrationVerifier.Classify(h))), now);
+            }
+        }), L.T("Не удалось сохранить настройку"));
     }
 
     internal static string FormatReports(IEnumerable<DoctorReport> reports)

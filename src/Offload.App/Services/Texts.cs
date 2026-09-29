@@ -120,6 +120,14 @@ internal static class Texts
     public static string Truncate(string text, int max) =>
         text.Length <= max ? text : text[..Math.Max(0, max - 1)] + "…";
 
+    /// <summary>Строка подсказки значка: «Claude: подключён» / «Claude: требует внимания»; null — Claude не подключён.</summary>
+    public static string? ClaudeLink(AppConfig cfg) => cfg.ClaudeLink(AutoConnectPolicy.Ids) switch
+    {
+        Offload.Core.Config.ClaudeLink.Connected => L.T("Claude: подключён"),
+        Offload.Core.Config.ClaudeLink.NeedsAttention => L.T("Claude: требует внимания"),
+        _ => null,
+    };
+
     public static string ModelName(InstalledModel? m) => m is null ? L.T("модель не выбрана") : Offload.Models.ModelCatalog.NameOf(m);
 
     /// <summary>Название MCP-инструмента для статистики: «Вопрос по файлам (local_ask_files)».</summary>
