@@ -299,10 +299,7 @@ public class IntegrationVerifierTests
     [Fact]
     public void FailureText_HasReasonForEveryFailure()
     {
-        foreach (var kind in Enum.GetValues<FailureKind>())
-        {
-            if (kind == FailureKind.None) continue;
+        foreach (var kind in Enum.GetValues<FailureKind>().Where(k => k != FailureKind.None))
             Assert.NotEqual("", FailureText.Reason(kind));
-        }
     }
 }

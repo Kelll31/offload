@@ -60,12 +60,13 @@ public static class SettingsTransfer
             ["appVersion"] = AppInfo.Version,
             ["exportedUtc"] = utcNow.ToString("O", System.Globalization.CultureInfo.InvariantCulture),
         };
-        foreach (var (section, keys) in Allowed)
+        foreach (var (section, keys, src) in Allowed
+                     .Select(kv => (kv.Key, kv.Value, Src: full[kv.Key] as JsonObject))
+                     .Where(x => x.Src is not null))
         {
-            if (full[section] is not JsonObject src) continue;
             var dst = new JsonObject();
-            foreach (var k in keys)
-                if (src[k] is { } v) dst[k] = v.DeepClone();
+            foreach (var (k, v) in keys.Select(k => (k, src![k])).Where(x => x.Item2 is not null))
+                dst[k] = v!.DeepClone();
             if (dst.Count > 0) root[section] = dst;
         }
         return root.ToJsonString(Json.Options);

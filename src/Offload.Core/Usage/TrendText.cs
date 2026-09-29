@@ -14,7 +14,7 @@ public static class TrendText
     public static Trend? Compare(double current, double baseline)
     {
         if (double.IsNaN(current) || double.IsNaN(baseline) || baseline < 0 || current < 0) return null;
-        if (baseline == 0) return current > 0 ? new Trend(L.T("новое"), 1) : null;
+        if (baseline <= 0) return current > 0 ? new Trend(L.T("новое"), 1) : null;
         var change = (current - baseline) / baseline;
         if (Math.Abs(change) < FlatBand) return new Trend(L.T("как обычно"), 0);
         var pct = Math.Round(change * 100);

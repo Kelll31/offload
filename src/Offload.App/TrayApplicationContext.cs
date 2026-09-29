@@ -39,8 +39,8 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
     private GlobalHotkey? _hotkey;
     private string? _todaySavedText;
     private int _todayRefreshing;
-    private ToolStripMenuItem _claudeMenu = null!;
-    private ToolStripMenuItem _claudeStatus = null!;
+    private readonly ToolStripMenuItem _claudeMenu;
+    private readonly ToolStripMenuItem _claudeStatus;
 
     private readonly ToolStripMenuItem _header;
     private readonly ToolStripMenuItem _open;
@@ -673,7 +673,7 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
             _hotkey ??= new GlobalHotkey(() => PostToUi(() => ShowMainWindow()));
             _hotkey.Set(cfg.Ui.GlobalHotkey);
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException)
         {
             Log.Debug("ui", $"Горячая клавиша: {ex.Message}");
         }
@@ -701,7 +701,7 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
                     UpdateTray();
                 });
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or System.Text.Json.JsonException)
             {
                 Log.Debug("usage", $"Экономия для подсказки значка: {ex.Message}");
             }
@@ -843,11 +843,7 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
             _ => L.F("{0} — сервер остановлен", AppInfo.DisplayName),
         };
         // Следующие строки: связь с Claude (по итогу последней проверки; файлы IDE здесь не читаются) и экономия за сегодня.
-        foreach (var extra in new[] { Texts.ClaudeLink(ConfigStore.Current), _todaySavedText })
-        {
-            if (extra is null || text.Length + extra.Length + 1 > MaxTooltip) continue;
-            text += "\n" + extra;
-        }
+        text = WithTooltipLine(WithTooltipLine(text, Texts.ClaudeLink(ConfigStore.Current)), _todaySavedText);
         try
         {
             _tray.Text = Texts.Truncate(text, MaxTooltip);
@@ -857,6 +853,10 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
             _tray.Text = AppInfo.DisplayName;
         }
     }
+
+    /// <summary>Добавить строку к подсказке значка, если она есть и помещается в предел длины.</summary>
+    private static string WithTooltipLine(string text, string? line) =>
+        line is null || text.Length + line.Length + 1 > MaxTooltip ? text : text + "\n" + line;
 
     private void RefreshMenu()
     {

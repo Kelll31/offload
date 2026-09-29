@@ -340,8 +340,10 @@ public class AutoConnectEngineTests
     {
         var data = new TheoryData<string, string>();
         foreach (var target in new[] { "msix", "classic", "claude-json" })
-        foreach (var variant in new[] { "plain", "bom", "crlf", "comments", "empty", "missing-container" })
-            data.Add(target, variant);
+        {
+            foreach (var variant in new[] { "plain", "bom", "crlf", "comments", "empty", "missing-container" })
+                data.Add(target, variant);
+        }
         return data;
     }
 

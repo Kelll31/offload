@@ -200,8 +200,8 @@ public class SettingsTransferTests
         foreach (var (section, node) in root)
         {
             if (node is not JsonObject obj) continue;
-            Assert.True(SettingsTransfer.Allowed.ContainsKey(section), section);
-            foreach (var (key, _) in obj) Assert.Contains(key, SettingsTransfer.Allowed[section]);
+            Assert.True(SettingsTransfer.Allowed.TryGetValue(section, out var allowed), section);
+            foreach (var (key, _) in obj) Assert.Contains(key, allowed!);
         }
     }
 
@@ -308,8 +308,8 @@ public class BackupCatalogTests
     public void BackupsOf_ListsOnlyThisFile_NewestFirst()
     {
         using var home = new TempHome();
-        var file = Path.Combine(home.Path, "ide", "mcp.json");
-        var other = Path.Combine(home.Path, "ide", "mcp.json.bak");
+        var file = Path.Join(home.Path, "ide", "mcp.json");
+        var other = Path.Join(home.Path, "ide", "mcp.json.bak");
         Directory.CreateDirectory(Path.GetDirectoryName(file)!);
         File.WriteAllText(file, "v1");
         File.WriteAllText(other, "x");
@@ -324,6 +324,6 @@ public class BackupCatalogTests
         Assert.Equal([b2, b1], list.Select(b => b.Path));
         Assert.Equal("v2", File.ReadAllText(list[0].Path));
         Assert.Equal(2, list[0].Size);
-        Assert.Empty(FileUtil.BackupsOf(Path.Combine(home.Path, "nothing.json")));
+        Assert.Empty(FileUtil.BackupsOf(Path.Join(home.Path, "nothing.json")));
     }
 }

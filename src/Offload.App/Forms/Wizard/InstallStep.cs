@@ -616,7 +616,7 @@ internal sealed class InstallStep : WizardStep
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or System.ComponentModel.Win32Exception)
         {
             Log.Warn("wizard", $"Проверка {integration.Id}: {ex.Message}");
             v = new VerifyResult(false, FailureKind.StartFailed, ex.Message, 0, TimeSpan.Zero);

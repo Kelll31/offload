@@ -69,8 +69,9 @@ internal sealed class ClaudeAutoConnect : IDisposable
         {
             return null;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
+            // Прогон идёт по таймеру: необработанное исключение потерялось бы в брошенной задаче — пишем в журнал.
             Log.Error("integrations", "Автоподключение Claude", ex);
             return null;
         }
@@ -182,7 +183,14 @@ internal sealed class ClaudeAutoConnect : IDisposable
             _timer?.Dispose();
             _timer = null;
         }
-        try { _cts.Cancel(); } catch (ObjectDisposedException) { }
+        try
+        {
+            _cts.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // Уже освобождён — отменять нечего.
+        }
         _cts.Dispose();
     }
 }

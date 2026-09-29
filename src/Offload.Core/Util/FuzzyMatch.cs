@@ -54,9 +54,10 @@ public static class FuzzyMatch
         var score = 0;
         var ti = 0;
         var prev = -2;
-        foreach (var ch in w)
+        // Поиск продолжается с позиции прошлого совпадения — состояние между шагами, поэтому цикл, а не Select.
+        for (var k = 0; k < w.Length; k++)
         {
-            var found = t.IndexOf(ch, ti);
+            var found = t.IndexOf(w[k], ti);
             if (found < 0) return null;
             score += 5;
             if (found == prev + 1) score += 8;

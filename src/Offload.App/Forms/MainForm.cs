@@ -391,16 +391,8 @@ internal sealed class MainForm : Form
     {
         if (!Visible || IsDisposed) return;
         var chosen = CommandPaletteForm.Pick(this, PaletteCommands());
-        if (chosen is null) return;
-        try
-        {
-            chosen.Run();
-        }
-        catch (Exception ex)
-        {
-            Log.Error("ui", $"Команда «{chosen.Title}»", ex);
-            Ui.ShowError(this, L.T("Команда не выполнена"), ex);
-        }
+        // Сбой команды ловит общий обработчик Application.ThreadException (журнал и сообщение пользователю).
+        chosen?.Run();
     }
 
     private List<PaletteCommand> PaletteCommands()

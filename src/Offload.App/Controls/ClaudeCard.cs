@@ -63,7 +63,7 @@ internal sealed class ClaudeCard
         {
             await action();
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException)
         {
             Log.Warn("ui", $"Карточка Claude: {ex.Message}");
         }
@@ -86,7 +86,7 @@ internal sealed class ClaudeCard
                 var rows = ClaudeOverview.Build(cfg, InstallInfo.McpSpec());
                 _shell.PostToUi(() => Apply(rows));
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException)
             {
                 Log.Debug("ui", $"Карточка Claude: {ex.Message}");
             }

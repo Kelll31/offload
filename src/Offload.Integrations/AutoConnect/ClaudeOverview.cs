@@ -29,9 +29,8 @@ public static class ClaudeOverview
         ArgumentNullException.ThrowIfNull(spec);
         find ??= IntegrationRegistry.Find;
         var rows = new List<ClaudeRow>();
-        foreach (var id in AutoConnectPolicy.Ids)
+        foreach (var i in AutoConnectPolicy.Ids.Select(find).OfType<IIdeIntegration>())
         {
-            if (find(id) is not { } i) continue;
             bool installed;
             IntegrationStatus status;
             try
@@ -44,8 +43,8 @@ public static class ClaudeOverview
                 installed = true;
                 status = IntegrationStatus.Error;
             }
-            rows.Add(new ClaudeRow(id, i.DisplayName, installed, status, cfg.IntegrationStates.GetValueOrDefault(id),
-                cfg.DeclinedIntegrations.Contains(id)));
+            rows.Add(new ClaudeRow(i.Id, i.DisplayName, installed, status, cfg.IntegrationStates.GetValueOrDefault(i.Id),
+                cfg.DeclinedIntegrations.Contains(i.Id)));
         }
         return rows;
     }

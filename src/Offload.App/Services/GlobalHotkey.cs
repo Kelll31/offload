@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using Offload.App.Util;
 using Offload.Core.Logging;
 
 namespace Offload.App.Services;
@@ -34,13 +35,13 @@ internal sealed class GlobalHotkey : NativeWindow, IDisposable
         if (enabled == IsRegistered || Handle == IntPtr.Zero) return;
         if (enabled)
         {
-            IsRegistered = RegisterHotKey(Handle, HotkeyId, ModControl | ModAlt | ModNoRepeat, (uint)Keys.O);
+            IsRegistered = NativeMethods.RegisterHotKey(Handle, HotkeyId, ModControl | ModAlt | ModNoRepeat, (uint)Keys.O);
             if (!IsRegistered) Log.Warn("ui", $"Горячая клавиша {Display} не зарегистрирована (занята другой программой?): код {Marshal.GetLastWin32Error()}");
             else Log.Debug("ui", $"Горячая клавиша {Display} зарегистрирована");
         }
         else
         {
-            UnregisterHotKey(Handle, HotkeyId);
+            NativeMethods.UnregisterHotKey(Handle, HotkeyId);
             IsRegistered = false;
         }
     }
@@ -53,8 +54,9 @@ internal sealed class GlobalHotkey : NativeWindow, IDisposable
             {
                 _pressed();
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is not OperationCanceledException)
             {
+                // Исключение из обработчика сообщений окна не должно ронять цикл сообщений трея.
                 Log.Error("ui", "Горячая клавиша", ex);
             }
             return;
@@ -67,10 +69,4 @@ internal sealed class GlobalHotkey : NativeWindow, IDisposable
         Set(false);
         DestroyHandle();
     }
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern bool RegisterHotKey(IntPtr hWnd, int id, uint fsModifiers, uint vk);
-
-    [DllImport("user32.dll", SetLastError = true)]
-    private static extern bool UnregisterHotKey(IntPtr hWnd, int id);
 }

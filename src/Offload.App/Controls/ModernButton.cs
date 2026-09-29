@@ -12,7 +12,7 @@ internal enum ButtonKind { Standard, Primary, Subtle }
 /// и необязательным значком слева. Основная кнопка залита градиентом акцента (<see cref="Theme.Fill"/> → <see cref="Theme.FillEnd"/>).
 /// Остаётся обычной <see cref="Button"/>: доступность, AcceptButton, клавиатура и DialogResult работают как прежде.
 /// </summary>
-internal class ModernButton : Button
+internal sealed class ModernButton : Button
 {
     private bool _hover;
     private bool _pressed;

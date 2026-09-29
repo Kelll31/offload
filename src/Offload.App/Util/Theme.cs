@@ -192,7 +192,7 @@ internal static class Theme
             using var dwm = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\DWM");
             if (dwm?.GetValue("AccentColor") is int dwmAbgr) return FromAbgr(dwmAbgr);
         }
-        catch
+        catch (Exception ex) when (ex is System.Security.SecurityException or IOException or UnauthorizedAccessException)
         {
             // Нет доступа к реестру — схема по умолчанию.
         }

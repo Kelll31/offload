@@ -145,7 +145,7 @@ public sealed class AutoConnectEngine(AutoConnectHost host)
             {
                 throw;
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException or NotSupportedException)
             {
                 Log.Error("integrations", $"{id}: автоподключение", ex);
                 Fail(id, id, ex.Message, failed);
@@ -202,7 +202,7 @@ public sealed class AutoConnectEngine(AutoConnectHost host)
         {
             throw;
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or System.ComponentModel.Win32Exception)
         {
             Log.Warn("integrations", $"{id}: проверка подключения: {ex.Message}");
             verify = new VerifyResult(false, FailureKind.StartFailed, ex.Message, 0, TimeSpan.Zero);
@@ -252,7 +252,7 @@ public sealed class AutoConnectEngine(AutoConnectHost host)
             {
                 throw;
             }
-            catch (Exception ex)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or InvalidOperationException or ArgumentException or System.ComponentModel.Win32Exception)
             {
                 Log.Warn("integrations", $"{id}: перепроверка подключения: {ex.Message}");
             }

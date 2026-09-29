@@ -201,9 +201,9 @@ internal static class Kit
         return b;
     }
 
-    public static AccentButton Primary(string text, EventHandler? onClick = null, int minWidth = 110)
+    public static ModernButton Primary(string text, EventHandler? onClick = null, int minWidth = 110)
     {
-        var b = new AccentButton
+        var b = new ModernButton(ButtonKind.Primary)
         {
             Text = text,
             AutoSize = true,

@@ -70,7 +70,7 @@ internal static class Draw
     /// <summary>Фактический цвет фона под элементом (первый непрозрачный предок).</summary>
     public static Color EffectiveBack(Control c)
     {
-        for (var p = (Control?)c; p is not null; p = p.Parent)
+        for (Control? p = c; p is not null; p = p.Parent)
             if (p.BackColor.A == 255) return p.BackColor;
         return Theme.Surface;
     }
