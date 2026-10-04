@@ -36,6 +36,8 @@ internal static class PathGuard
     [
         ".git", ".claude", ".cursor", ".vscode", ".codex", ".gemini", ".opencode", ".windsurf", ".husky", ".github/workflows",
         ".github/actions", ".devcontainer", ".idea",
+        // Роли локальной модели — инструкции для неё: менять их можно только через local_roles (там свои проверки).
+        ".offload/roles",
     ];
 
     private static readonly HashSet<string> ProtectedWriteFiles = new(StringComparer.OrdinalIgnoreCase)

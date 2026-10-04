@@ -356,6 +356,7 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
         }
 
         ShowWhatsNewIfUpdated(cfg, ownsSetup);
+        await CheckHardwareAdviceAsync(cfg, ownsSetup).ConfigureAwait(false);
         await CheckAppUpdateAsync(cfg).ConfigureAwait(false);
 
         // Удалённый каталог моделей: подпись Ed25519, не чаще раза в сутки; без сети остаётся прежний каталог.
@@ -392,6 +393,32 @@ internal sealed class TrayApplicationContext : ApplicationContext, IAppShell
         Notify(L.F("Offload обновлён до {0}", current),
             L.T("Что нового — в разделе «О программе». Перезапустите IDE, чтобы их MCP-серверы Offload работали на новой версии."),
             tab: Tabs.About);
+    }
+
+    /// <summary>
+    /// Автоподбор под оборудование: при первом запуске с этой функцией и при смене видеокарты/ОЗУ пересчитать лучшую модель и параметры
+    /// и сообщить один раз — только если подобранное заметно лучше текущего. Ничего не скачивается и не переключается само.
+    /// Отпечаток запоминает только «своя» копия (как версия запуска).
+    /// </summary>
+    private async Task CheckHardwareAdviceAsync(AppConfig cfg, bool ownsSetup)
+    {
+        if (!ownsSetup || !cfg.SetupCompleted || !cfg.Models.WatchHardware) return;
+        try
+        {
+            var hw = await Hardware.GetAsync().ConfigureAwait(false);
+            var advice = ModelAdvisorService.Compute(hw, cfg);
+            var previous = cfg.Models.AdvisorFingerprint;
+            if (string.Equals(previous, advice.Fingerprint, StringComparison.Ordinal)) return;
+            ConfigStore.Update(c => c.Models.AdvisorFingerprint = advice.Fingerprint);
+            Log.Info("models", $"Оборудование для подбора: {advice.Fingerprint}; лучшая модель: {advice.Best?.Model.Id} {advice.Best?.Quant}");
+            if (ModelAdvisorService.Describe(advice, hw, ConfigStore.Current) is not { ModelDiffers: true } text) return;
+            var (title, body) = ModelAdvisorService.Notice(text, advice, hardwareChanged: previous is not null);
+            PostToUi(() => Notify(title, body, tab: Tabs.Models));
+        }
+        catch (Exception ex)
+        {
+            Log.Debug("models", $"Автоподбор под оборудование: {ex.Message}");
+        }
     }
 
     /// <summary>Проверка обновления Offload при запуске (не чаще раза в 12 ч; в режиме разработчика — никогда).</summary>

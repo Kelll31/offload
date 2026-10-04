@@ -18,6 +18,21 @@ public sealed class OffloadTools(SessionState state)
     // ───────────────────────── описания (читает модель) ─────────────────────────
 
     /// <summary>Параметр записывающих инструментов при включённом Mcp.ProtectBuildFiles.</summary>
+    internal const string RoleParamDescription =
+        "Optional role the local model plays (see local_roles action=list), e.g. reviewer, tester, security-auditor, csharp-reviewer.";
+
+    internal const string RolesDescription =
+        "Manage ROLES of the local model: action=list (built-in, user and project roles with inheritance), show (effective prompt of a role), " +
+        "define (create/replace a project role in .offload/roles: name, prompt, optional extends=<parent role> and presets=[language rule sets]), delete. " +
+        "Roles inherit: a child gets the parent's prompt first, then its own. Pass role=<name> to local_ask_files, local_review_diff, " +
+        "local_agent_task, local_solve, or use local_team to run several roles at once.";
+
+    internal const string TeamDescription =
+        "Run a TEAM of local roles over the same files and get one combined report. roles=[\"reviewer\", \"security-auditor=focus on auth\", \"tester\"] " +
+        "(1-6, optional '=extra focus'); mode=parallel (default, roles work side by side) or pipeline (each role sees earlier reports); " +
+        "synthesize=true adds a lead summary: agreed points, conflicts, next steps. You stay in charge: read the report, decide, then act. " +
+        "Cheaper than several separate calls; define custom roles with local_roles.";
+
     internal const string AllowBuildFilesDescription =
         "Only if Offload refused a build file (csproj/props/targets, package.json, Makefile, conftest.py…): pass true after reviewing that the change is intended.";
 
@@ -247,9 +262,10 @@ public sealed class OffloadTools(SessionState state)
         [Description("brief | detailed | bullets | json")] string answer_format = "brief",
         [Description("Answer length limit, 64-4096 tokens.")] int max_answer_tokens = 800,
         [Description("true = ignore the result cache and ask the model again.")] bool fresh = false,
+        [Description(RoleParamDescription)] string? role = null,
         CancellationToken cancellationToken = default) =>
         ToolRunner.RunAsync(McpToolNames.AskFiles, state, context,
-            SecretRedactor.RedactingOutput(ctx => AskFilesTool.RunAsync(ctx, paths, question, answer_format, max_answer_tokens, fresh)), cancellationToken);
+            SecretRedactor.RedactingOutput(ctx => AskFilesTool.RunAsync(ctx, paths, question, answer_format, max_answer_tokens, fresh, ToolHelpers.ResolveRole(ctx, role))), cancellationToken);
 
     [McpServerTool(Name = McpToolNames.FindContext, Title = "Offload: контекст под задачу",
         ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
@@ -338,9 +354,10 @@ public sealed class OffloadTools(SessionState state)
         [Description("Optional review focus, e.g. \"error handling\" or \"thread safety\".")] string? focus = null,
         [Description("Answer length limit, 64-4096 tokens.")] int max_answer_tokens = 1200,
         [Description("true = ignore the result cache and review again.")] bool fresh = false,
+        [Description(RoleParamDescription)] string? role = null,
         CancellationToken cancellationToken = default) =>
         ToolRunner.RunAsync(McpToolNames.ReviewDiff, state, context,
-            ctx => ReviewDiffTool.RunAsync(ctx, working_directory, target, focus, max_answer_tokens, fresh), cancellationToken);
+            ctx => ReviewDiffTool.RunAsync(ctx, working_directory, target, focus, max_answer_tokens, fresh, ToolHelpers.ResolveRole(ctx, role)), cancellationToken);
 
     [McpServerTool(Name = McpToolNames.CommitMessage, Title = "Offload: коммит / описание PR",
         ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
@@ -607,11 +624,13 @@ public sealed class OffloadTools(SessionState state)
         [Description("Review the change with the local model before merging; critical/high findings block the auto-merge.")] bool review = false,
         [Description(AllowBuildFilesDescription)] bool allow_build_files = false,
         [Description(RaceParamDescription)] int race = 1,
+        [Description(RoleParamDescription)] string? role = null,
         CancellationToken cancellationToken = default) =>
         ToolRunner.RunAsync(McpToolNames.AgentTask, state, context,
             PathGuard.WithBuildFilePolicy(allow_build_files, ctx => AgentTaskTool.RunAsync(ctx, new AgentTaskRequest
             {
-                Task = task,
+                Task = ToolHelpers.RequireText(task, "task", 16000),
+                Role = ToolHelpers.RoleBrief(ctx, role),
                 VerifyCommand = verify_command,
                 ContextPaths = context_paths,
                 Merge = merge,
@@ -643,11 +662,45 @@ public sealed class OffloadTools(SessionState state)
         [Description("Review the change with the local model before merging.")] bool review = true,
         [Description(AllowBuildFilesDescription)] bool allow_build_files = false,
         [Description(RaceParamDescription)] int race = 1,
+        [Description(RoleParamDescription)] string? role = null,
         CancellationToken cancellationToken = default) =>
         ToolRunner.RunAsync(McpToolNames.Solve, state, context,
             PathGuard.WithBuildFilePolicy(allow_build_files,
-                ctx => SolveTool.RunAsync(ctx, task, kind, verify_command, allowed_paths, context_paths, merge, max_files, max_minutes, background, review, race)),
+                ctx => SolveTool.RunAsync(ctx, task, kind, verify_command, allowed_paths, context_paths, merge, max_files, max_minutes, background, review, race, ToolHelpers.RoleBrief(ctx, role))),
             cancellationToken);
+
+    [McpServerTool(Name = McpToolNames.Roles, Title = "Offload: роли модели",
+        ReadOnly = false, Destructive = true, Idempotent = false, OpenWorld = false)]
+    [McpMeta("anthropic/searchHint", "roles personas reviewer tester inherit define custom role multi agent team")]
+    [Description(RolesDescription)]
+    public Task<CallToolResult> LocalRoles(
+        RequestContext<CallToolRequestParams> context,
+        [Description("list | show | define | delete")] string action = "list",
+        [Description("show/define/delete: role name, lowercase letters, digits and '-' (e.g. \"api-reviewer\").")] string? name = null,
+        [Description("define: one-line description (up to 200 chars).")] string? description = null,
+        [Description("define: parent role to inherit from (its prompt comes first).")] string? extends = null,
+        [Description("define: language rule sets added to the prompt, e.g. [\"csharp-dotnet\"]; ids are listed by action=list.")] string[]? presets = null,
+        [Description("define: the role's instructions (up to 4000 chars): mission, output format, what not to do.")] string? prompt = null,
+        [Description("define: replace an existing project role of the same name (default false: refuse). Built-in and user roles cannot be replaced.")] bool overwrite = false,
+        CancellationToken cancellationToken = default) =>
+        ToolRunner.RunAsync(McpToolNames.Roles, state, context,
+            SecretRedactor.RedactingOutput(ctx => RolesTool.RunAsync(ctx, action, name, description, extends, presets, prompt, overwrite)), cancellationToken);
+
+    [McpServerTool(Name = McpToolNames.Team, Title = "Offload: команда ролей",
+        ReadOnly = true, Destructive = false, Idempotent = true, OpenWorld = false)]
+    [McpMeta("anthropic/searchHint", "team of roles multi agent parallel review security tests lead synthesis orchestrate")]
+    [Description(TeamDescription)]
+    public Task<CallToolResult> LocalTeam(
+        [Description("Files, directories or globs the whole team reads (like local_ask_files). 1-64 entries.")] string[] paths,
+        [Description("The common task or question for the team (up to 2000 chars).")] string task,
+        [Description("Roles of the team, 1-6: \"reviewer\", \"security-auditor=focus on auth\" (see local_roles).")] string[] roles,
+        RequestContext<CallToolRequestParams> context,
+        [Description("parallel | pipeline")] string mode = "parallel",
+        [Description("Add a lead summary: agreed points, conflicts, next steps (needs 2+ roles).")] bool synthesize = true,
+        [Description("Answer limit per role, 128-2048 tokens.")] int max_answer_tokens = 600,
+        CancellationToken cancellationToken = default) =>
+        ToolRunner.RunAsync(McpToolNames.Team, state, context,
+            SecretRedactor.RedactingOutput(ctx => TeamTool.RunAsync(ctx, paths, task, roles, mode, synthesize, max_answer_tokens)), cancellationToken);
 
     [McpServerTool(Name = McpToolNames.Memory, Title = "Offload: память проекта",
         ReadOnly = false, Destructive = false, Idempotent = false, OpenWorld = false)]

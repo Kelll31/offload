@@ -32,6 +32,12 @@ internal sealed record AgentTaskRequest
     /// <summary>Инструмент-владелец задачи (для job.json и статистики).</summary>
     public string Tool { get; init; } = McpToolNames.AgentTask;
 
+    /// <summary>
+    /// Роль агента (<c>ROLE: имя …</c> и промпт роли) — только в промпт агента; тема коммита, название задачи, память и поиск
+    /// контекста берутся из <see cref="Task"/>, который остаётся чистым.
+    /// </summary>
+    public string? Role { get; init; }
+
     /// <summary>Дополнительный текст для итогового отчёта (например, найденный контекст local_solve).</summary>
     public string? Preamble { get; init; }
 
@@ -126,6 +132,7 @@ internal static class AgentTaskTool
             TimeoutMinutes = Math.Clamp(req.TimeoutMinutes <= 0 ? 20 : req.TimeoutMinutes, 2, 90),
             MaxFiles = Math.Max(0, req.MaxFiles),
             Preamble = req.Preamble is { Length: > MaxPreambleChars } p ? p[..MaxPreambleChars] : req.Preamble,
+            Role = req.Role is { Length: > ToolHelpers.RoleBriefMaxChars } r0 ? r0[..ToolHelpers.RoleBriefMaxChars] : req.Role,
         };
         return (r, hints, allowed);
     }
@@ -528,6 +535,7 @@ internal static class AgentTaskTool
         TaskDeadline deadline, List<string> summary, List<string> notes, CancellationToken ct, RaceRunOptions? race = null)
     {
         var prompt = new StringBuilder();
+        if (!string.IsNullOrWhiteSpace(r.Role)) prompt.Append(r.Role.Trim()).Append("\n\n");
         prompt.Append("TASK:\n").Append(r.Task).Append("\n\n");
         if (race is not null) prompt.Append(race.Brief).Append("\n\n");
         prompt.Append("You work in an isolated copy (git worktree) of the project; the working directory is the project root. ");

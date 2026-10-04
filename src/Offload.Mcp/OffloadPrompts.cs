@@ -19,8 +19,17 @@ public sealed class OffloadPrompts
     internal const string Solve = "solve";
     internal const string Context = "context";
     internal const string Security = "security";
+    internal const string Team = "team";
+    internal const string DefineRole = "define_role";
+    internal const string Docs = "docs";
+    internal const string Migrate = "migrate";
+    internal const string Perf = "perf";
+    internal const string ReleaseNotes = "release_notes";
+    internal const string Debug = "debug";
+    internal const string Pr = "pr";
 
-    internal static readonly IReadOnlyList<string> All = [Delegate, Review, Tests, FixBuild, Explain, Solve, Context, Security];
+    internal static readonly IReadOnlyList<string> All =
+        [Delegate, Review, Tests, FixBuild, Explain, Solve, Context, Security, Team, DefineRole, Docs, Migrate, Perf, ReleaseNotes, Debug, Pr];
 
     [McpServerPrompt(Name = Solve, Title = "Offload: solve a task end-to-end locally")]
     [Description("Let the local agent do the whole loop (context, code, tests, review) in a git sandbox and check its proof.")]
@@ -144,4 +153,121 @@ public sealed class OffloadPrompts
             Then relay the answer concisely. Verify any claim you are going to act on by reading only the cited lines.
             """;
     }
+
+    [McpServerPrompt(Name = Team, Title = "Offload: a team of roles on the same files")]
+    [Description("Run several local roles (reviewer, security-auditor, tester...) over the same files and get one merged report; you decide what to act on.")]
+    public static string TeamPrompt(
+        [Description("Files, folders or globs, comma-separated.")] string paths,
+        [Description("The common task or question for the team.")] string task,
+        [Description("Roles, comma-separated; default: reviewer, security-auditor, tester.")] string? roles = null)
+    {
+        var list = string.Join(", ", paths.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Select(p => $"\"{p}\""));
+        var team = string.Join(", ", (string.IsNullOrWhiteSpace(roles) ? "reviewer, security-auditor, tester" : roles)
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).Select(r => $"\"{r}\""));
+        return $"""
+            Get several expert viewpoints from the local Offload team and stay the decision maker:
+
+            {task.Trim()}
+
+            1. Call {McpToolNames.ClaudeCodeName(McpToolNames.Roles)} action=list if you are unsure which roles exist; define a missing one with action=define
+               (name, prompt, extends=<similar role>, presets=[language rule sets]).
+            2. Call {McpToolNames.ClaudeCodeName(McpToolNames.Team)} paths=[{list}] roles=[{team}] mode="parallel" synthesize=true
+               (mode="pipeline" if later roles should build on earlier reports; add "=focus" to a role name to narrow it).
+            3. The reports come from a smaller model: verify every finding you will act on by reading only the cited lines. Where roles disagree, decide yourself.
+            4. Report agreed points first, then conflicts and your decision, then the next steps.
+            """;
+    }
+
+    [McpServerPrompt(Name = DefineRole, Title = "Offload: define a custom role")]
+    [Description("Create a project role for the local model, optionally inheriting another role and language rules.")]
+    public static string DefineRolePrompt(
+        [Description("What the role should do, in a sentence.")] string purpose,
+        [Description("Role name (lowercase, digits, '-').")] string? name = null,
+        [Description("Parent role to inherit from, e.g. reviewer or engineer.")] string? extends = null) =>
+        $"""
+        Create a role for the local Offload model: {purpose.Trim()}
+
+        1. Call {McpToolNames.ClaudeCodeName(McpToolNames.Roles)} action=list to see existing roles and presets; prefer inheriting (extends) over starting from scratch.
+        2. Write a tight prompt (under 1200 characters): the mission, the exact output format, what the role must NOT do, and when to say it found nothing.
+        3. Call {McpToolNames.ClaudeCodeName(McpToolNames.Roles)} action=define name="{(string.IsNullOrWhiteSpace(name) ? "<short-kebab-name>" : name.Trim())}"{(string.IsNullOrWhiteSpace(extends) ? "" : $" extends=\"{extends.Trim()}\"")} prompt="..." (add presets=[...] for language rules).
+        4. Try it once with {McpToolNames.ClaudeCodeName(McpToolNames.AskFiles)} role="<name>" on a small file and tune the prompt if the output format is off.
+        """;
+
+    [McpServerPrompt(Name = Docs, Title = "Offload: document code with the local model")]
+    [Description("Have the local documenter write doc comments or a README section from the real code.")]
+    public static string DocsPrompt(
+        [Description("File, folder or glob to document.")] string path,
+        [Description("What to write: doc comments, README section, usage examples. Default: doc comments for public API.")] string? what = null) =>
+        $"""
+        Document {path.Trim()} with the local model, then check it.
+        1. Call {McpToolNames.ClaudeCodeName(McpToolNames.AskFiles)} paths=["{path.Trim()}"] role="documenter" answer_format="detailed" and question:
+           "{(string.IsNullOrWhiteSpace(what) ? "Write doc comments for the public API in the comment style used in the code." : what.Trim())} Mark anything unverifiable as TODO."
+        2. Compare the text with the code for the signatures, parameters and errors it claims; fix inaccuracies and remove marketing language.
+        3. Apply it with {McpToolNames.ClaudeCodeName(McpToolNames.EditFiles)} (listed files only) or your own edit.
+        """;
+
+    [McpServerPrompt(Name = Migrate, Title = "Offload: mechanical migration")]
+    [Description("Migrate many occurrences to a new API, version or framework with the local agent and verify with the build.")]
+    public static string MigratePrompt(
+        [Description("What changes: from -> to, with an example of one converted occurrence.")] string change,
+        [Description("Allowlisted check, e.g. \"dotnet build\".")] string? verify_command = null) =>
+        $"""
+        Migrate with the local agent, keeping judgement yourself:
+
+        {change.Trim()}
+
+        1. Find the occurrences cheaply: {McpToolNames.ClaudeCodeName(McpToolNames.SearchCode)} and {McpToolNames.ClaudeCodeName(McpToolNames.Impact)} (do not read the files). Convert ONE occurrence yourself as the reference pattern.
+        2. Call {McpToolNames.ClaudeCodeName(McpToolNames.AgentTask)} role="migrator" with the pattern in the brief, allowed_paths limited to the affected folders,
+           verify_command={(string.IsNullOrWhiteSpace(verify_command) ? "the project's build command from the allowlist" : $"\"{verify_command.Trim()}\"")} and background=true for large sets.
+        3. Review the leftovers the agent lists as not fitting the pattern and handle them yourself; run the tests with {McpToolNames.ClaudeCodeName(McpToolNames.Impact)} run_tests=true.
+        """;
+
+    [McpServerPrompt(Name = Perf, Title = "Offload: performance review")]
+    [Description("Have the local performance analyst find measurable hot spots; you verify before changing anything.")]
+    public static string PerfPrompt(
+        [Description("Files, folders or globs, comma-separated.")] string paths) =>
+        $"""
+        Look for performance problems in {paths.Trim()} without reading the files yourself.
+        1. Call {McpToolNames.ClaudeCodeName(McpToolNames.AskFiles)} with the paths, role="perf-analyst", answer_format="bullets".
+        2. Verify each finding in the cited lines; keep only those with a real cost (complexity, repeated work, N+1, blocking calls). Ask the user to measure when the impact depends on data size.
+        3. Fix the confirmed ones minimally (or delegate with {McpToolNames.ClaudeCodeName(McpToolNames.AgentTask)} and a verify command) and re-run the tests.
+        """;
+
+    [McpServerPrompt(Name = ReleaseNotes, Title = "Offload: release notes from git history")]
+    [Description("Draft user-facing release notes for a git range with the local model.")]
+    public static string ReleaseNotesPrompt(
+        [Description("Git range, default: last tag..HEAD.")] string? range = null,
+        [Description("Language of the notes, e.g. en or ru.")] string? language = null) =>
+        $"""
+        Prepare release notes.
+        1. Call {McpToolNames.ClaudeCodeName(McpToolNames.GitHistory)} action="changelog" use_model=true{(string.IsNullOrWhiteSpace(range) ? "" : $" range=\"{range.Trim()}\"")}{(string.IsNullOrWhiteSpace(language) ? "" : $" language=\"{language.Trim()}\"")}.
+        2. Check the draft against the real changes: drop internal refactors, merge duplicates, put breaking changes first. Do not invent features.
+        3. Show the final text; do not commit, tag or publish anything.
+        """;
+
+    [McpServerPrompt(Name = Debug, Title = "Offload: debug a failure")]
+    [Description("Reproduce a failing command, find the root cause and (optionally) fix it in a sandbox.")]
+    public static string DebugPrompt(
+        [Description("The symptom: error text, failing test name, stack trace.")] string problem,
+        [Description("Allowlisted command that reproduces it, e.g. \"dotnet test --filter FooTests\".")] string? command = null) =>
+        $"""
+        Debug with the local pipeline, keeping the diagnosis under your control:
+
+        {problem.Trim()}
+
+        1. Call {McpToolNames.ClaudeCodeName(McpToolNames.Debug)} problem="<the symptom>"{(string.IsNullOrWhiteSpace(command) ? "" : $" command=\"{command.Trim()}\"")} fix=false first to get the reproduction, root cause and suspect commit.
+        2. Check the root cause against the cited lines; if it is wrong or only a symptom, say so and refine the problem text.
+        3. When the cause is right, call it again with fix=true (or fix it yourself if the change is tiny and risky) and review the proof.
+        """;
+
+    [McpServerPrompt(Name = Pr, Title = "Offload: is my branch ready for a PR?")]
+    [Description("One-call readiness check of the branch: conflicts, tests, secrets, review, PR draft.")]
+    public static string PrPrompt(
+        [Description("Base branch, default: origin/HEAD, main or master.")] string? @base = null) =>
+        $"""
+        Check whether this branch can go to review.
+        1. Call {McpToolNames.ClaudeCodeName(McpToolNames.PrReady)}{(string.IsNullOrWhiteSpace(@base) ? "" : $" base=\"{@base.Trim()}\"")} and read the verdict and blockers first.
+        2. Fix the blockers (or delegate the mechanical ones), then call it again until the verdict is ready.
+        3. Show the PR title and body it drafted, corrected by you. Do not push or open the PR yourself.
+        """;
 }

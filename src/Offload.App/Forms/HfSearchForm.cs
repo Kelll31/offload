@@ -47,13 +47,15 @@ internal sealed class HfSearchForm : Form
     private int _detailsVersion;
     private Loaded? _current;
     private bool _searching;
+    private string? _wantedQuant;
 
     /// <summary>Выбранная модель: квант по умолчанию (первый) — выбранный пользователем.</summary>
     public CatalogModel? Chosen { get; private set; }
 
     public string? ChosenQuant { get; private set; }
 
-    public HfSearchForm(HardwareInfo? hw, ServerSettings server)
+    /// <param name="initialQuery">Начальный запрос: название, ссылка на страницу модели или «owner/name[:квант]».</param>
+    public HfSearchForm(HardwareInfo? hw, ServerSettings server, string? initialQuery = null)
     {
         ArgumentNullException.ThrowIfNull(server);
         _hw = hw;
@@ -69,7 +71,8 @@ internal sealed class HfSearchForm : Form
         ShowInTaskbar = false;
         MinimizeBox = false;
 
-        _query.PlaceholderText = L.T("Название модели, например qwen coder");
+        _query.PlaceholderText = L.T("Название, ссылка или owner/name, например qwen coder");
+        if (!string.IsNullOrWhiteSpace(initialQuery)) _query.Text = initialQuery.Trim();
         _sort.Items.AddRange([L.T("Популярные сейчас"), L.T("По загрузкам"), L.T("Недавно обновлённые"), L.T("По отметкам «нравится»")]);
         _sort.SelectedIndex = 0;
         _sort.SelectedIndexChanged += async (_, _) => await SearchAsync();
@@ -163,9 +166,11 @@ internal sealed class HfSearchForm : Form
         UpdateButtons();
         try
         {
-            var found = await HfClient.SearchAsync(_query.Text, SelectedSort, SearchLimit, cts.Token);
+            _wantedQuant = null;
+            var found = await FindReferenceAsync(cts.Token) ?? await HfQuery.SearchAsync(_query.Text, SelectedSort, SearchLimit, cts.Token);
             if (IsDisposed || cts.IsCancellationRequested) return;
             FillResults(found);
+            if (_wantedQuant is not null && _results.Items.Count == 1) _results.Items[0].Selected = true; // ссылка на модель — сразу к вариантам
             _status.Text = found.Count == 0
                 ? L.T("Ничего не найдено. Попробуйте другое название (например, без номера версии).")
                 : L.F("Найдено: {0}. Выберите репозиторий, чтобы увидеть варианты квантизации.", Ui.N(found.Count));
@@ -189,6 +194,30 @@ internal sealed class HfSearchForm : Form
                 _searching = false;
             }
             if (!IsDisposed) UpdateButtons();
+        }
+    }
+
+    /// <summary>
+    /// Если введена ссылка или «owner/name» — репозиторий напрямую (с запомненным квантом); не найден или не ссылка — null
+    /// (тогда обычный поиск по названию).
+    /// </summary>
+    private async Task<IReadOnlyList<HfRepoInfo>?> FindReferenceAsync(CancellationToken ct)
+    {
+        if (HfQuery.ParseReference(_query.Text) is not { } reference) return null;
+        try
+        {
+            var info = await HfClient.GetRepoInfoAsync(reference.Repo, ct);
+            _wantedQuant = reference.Quant ?? "";
+            return [info];
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            Log.Debug("hf", $"Ссылка {reference.Repo} не открылась, обычный поиск: {ex.Message}");
+            return null;
         }
     }
 
@@ -334,7 +363,11 @@ internal sealed class HfSearchForm : Form
                 item.ToolTipText = f.Fit?.Explanation ?? f.Quant;
                 _quants.Items.Add(item);
             }
+            var wanted = _wantedQuant;
+            _wantedQuant = null;
             var select = _quants.Items.Cast<ListViewItem>()
+                             .FirstOrDefault(i => !string.IsNullOrEmpty(wanted) && string.Equals(((HubQuantFit)i.Tag!).Quant, wanted, StringComparison.OrdinalIgnoreCase))
+                         ?? _quants.Items.Cast<ListViewItem>()
                              .FirstOrDefault(i => string.Equals(((HubQuantFit)i.Tag!).Quant, e.DefaultQuant, StringComparison.OrdinalIgnoreCase))
                          ?? (_quants.Items.Count > 0 ? _quants.Items[0] : null);
             if (select is not null)

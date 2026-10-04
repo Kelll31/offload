@@ -83,16 +83,22 @@ public static class McpToolNames
     /// <summary>Отладка: воспроизведение → диагностика → история → исправление в песочнице → проверка и ревью.</summary>
     public const string Debug = "local_debug";
 
+    /// <summary>Роли локальной модели: список, просмотр, создание и удаление (с наследованием) — для оркестрирующего агента.</summary>
+    public const string Roles = "local_roles";
+
+    /// <summary>Команда ролей: несколько ролей одновременно или цепочкой разбирают одни и те же файлы, ведущая роль сводит итог.</summary>
+    public const string Team = "local_team";
+
     /// <summary>Инструменты только для чтения (безопасно разрешать без подтверждения).</summary>
     public static readonly IReadOnlyList<string> ReadOnly =
     [
-        Status, AskFiles, SummarizeLog, ReviewDiff, CommitMessage, FindContext, SearchCode, Symbols, ProjectMap, CodeScan, SecurityReview, GitHistory,
+        Status, AskFiles, SummarizeLog, ReviewDiff, CommitMessage, FindContext, SearchCode, Symbols, ProjectMap, CodeScan, SecurityReview, GitHistory, Team,
     ];
 
     /// <summary>Инструменты, изменяющие файлы (или запускающие команды проекта, как local_verify).</summary>
     public static readonly IReadOnlyList<string> Writing =
     [
-        WriteFile, EditFiles, AgentTask, Solve, ApplyPatch, Refactor, Verify, Diagnostics, Impact, Dependencies, Memory, Job, PrReady, Debug,
+        WriteFile, EditFiles, AgentTask, Solve, ApplyPatch, Refactor, Verify, Diagnostics, Impact, Dependencies, Memory, Job, PrReady, Debug, Roles,
     ];
 
     public static readonly IReadOnlyList<string> All = [.. ReadOnly, .. Writing];

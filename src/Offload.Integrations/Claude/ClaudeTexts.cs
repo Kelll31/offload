@@ -78,6 +78,8 @@ internal static class ClaudeTexts
         | New file from a spec (tests, DTOs, fixtures, docs) | {{McpToolNames.WriteFile}}(path, task, context_paths, verify_command) |
         | Mechanical edit of listed files | {{McpToolNames.EditFiles}}(task, files, verify_command) |
         | Jobs: list, background status, diff, merge/discard a sandbox, undo | {{McpToolNames.Job}}(action, job_id) |
+        | Several viewpoints on the same files (review + security + tests), merged into one report | {{McpToolNames.Team}}(paths, task, roles, mode) |
+        | See, define or inherit roles of the local model (role=<name> works on ask_files, review_diff, agent_task, solve) | {{McpToolNames.Roles}}(action, name, extends, presets, prompt) |
         | Commit message, PR description, commit split | {{McpToolNames.CommitMessage}}(kind) |
         | Is the local model up, how fast is it? | {{McpToolNames.Status}}() |
 

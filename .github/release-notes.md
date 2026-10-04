@@ -1,5 +1,14 @@
 **Offload** — приложение для Windows, которое запускает бесплатную локальную модель для программирования и подключает её к Claude Code, Cursor, VS Code, Codex и другим IDE как MCP-сервер. Облачный агент отдаёт ей рутину: чтение больших файлов и логов, тесты, шаблонный код, механические правки. Облачных токенов уходит меньше.
 
+## Что нового в 1.0.5
+
+- **Модель с Hugging Face — прямо из строки поиска.** Начните вводить название на вкладке «Модели» — под списком появятся лучшие репозитории GGUF с хаба. Работают несколько слов («qwen coder»), ссылка на страницу, `owner/name` и `hf.co/owner/name:Q4_K_M`: Offload сразу откроет нужный квант.
+- **Offload сам подбирает лучшую модель и параметры под ваш компьютер.** Карточка «Подобрано для вашего компьютера»: модель и квант, запасные варианты, быстрая модель для коротких задач, число слотов и тип KV-кэша — по расчёту памяти, скорости и качества, а не по зашитому списку. Сменили видеокарту или добавили ОЗУ — Offload пересчитает и подскажет. Сам ничего не скачивает и не переключает.
+- **Роли и команда ролей.** Локальная модель может быть ревьюером, тестировщиком, отладчиком, аудитором безопасности, документатором, мигратором… 20 встроенных ролей с наследованием; облачный агент создаёт свои (`local_roles`), назначает роль (`role=`) и запускает команду ролей над одними файлами (`local_team`) — с общим отчётом и итогом.
+- **18 пресетов правил для языков:** C#, Python, TypeScript, React, Go, Rust, Java, Kotlin, C++, C, PHP, Swift, Ruby, SQL, Shell, Unity, Godot, Delphi.
+- **Восемь новых слэш-команд:** `team`, `define_role`, `docs`, `migrate`, `perf`, `release_notes`, `debug`, `pr`.
+- **Инструкции по делегированию для OpenCode, Windsurf, Cline и Roo Code** — как уже было для Codex и Gemini CLI.
+
 ## Что нового в 1.0.4
 
 - **Поставил Offload — и он сам подключился к Claude.** Claude Code и Claude Desktop (в том числе из Microsoft Store), установленные до или после Offload, подключаются без единого клика; про «позже» Offload узнаёт сам — проверяет раз в 15 минут.
@@ -87,6 +96,8 @@
 - **`Offload-Setup-<version>.exe`** — installer for most users (per-user, no admin rights; the language follows Windows). Silent install: `/VERYSILENT`.
 - **`Offload.exe`** — portable single file.
 - **`SHA256SUMS.txt`** — checksums. Verify provenance with `gh attestation verify <file> --repo Kelll31/offload`.
+
+**New in 1.0.5:** search Hugging Face right from the model search box on the Models tab (several words, links, `owner/name`, `hf.co/owner/name:Q4_K_M`); Offload picks the best model and server settings for your computer by itself (a "Picked for your computer" card, re-run when the hardware changes, it never downloads or switches anything on its own); roles for the local model with inheritance — 20 built-in roles, `local_roles` to manage them, `role=` on `local_ask_files`, `local_review_diff`, `local_agent_task` and `local_solve`, and `local_team` to run several roles over the same files with a lead summary; 18 language rule presets; eight new slash commands (`team`, `define_role`, `docs`, `migrate`, `perf`, `release_notes`, `debug`, `pr`); delegation instructions for OpenCode, Windsurf, Cline and Roo Code.
 
 **New in 1.0.4:** Offload connects itself to Claude — Claude Code and Claude Desktop (including the Microsoft Store build), installed before or after Offload, are connected without a click (checked every 15 minutes); the connection is verified by launching `Offload.exe --mcp` like Claude does, with the result or the reason and what to do; your refusals are remembered and someone else's `offload` entry is never replaced; the path written into Claude is the installed copy's, so updates don't break it. One switch turns it off: Integrations → "Connect Claude automatically and watch IDE connections". Plus a new look (indigo gradients, Windows 11-style rounded buttons and toggles, soft-shadow cards, a page header with server and Claude status, new "Aurora", "Graphite" and "Windows accent" schemes), a Ctrl+K command palette, a global Ctrl+Alt+O hotkey and F1 shortcut help, a notification center with quiet hours, a Claude card on the Status page with a daily connection check and a Claude menu in the tray, opt-in auto-connect for Cursor, Windsurf, VS Code and other IDEs, restoring IDE configs from Offload's backups, trends against last week and today's savings in the tray tooltip, and settings export/import without keys, paths or security settings.
 

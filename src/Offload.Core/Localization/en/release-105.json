@@ -1,0 +1,11 @@
+{
+  "Название, ссылка или owner/name, например qwen coder": "Name, link or owner/name, e.g. qwen coder",
+  "На Hugging Face": "On Hugging Face",
+  "Ссылка на модель — Enter или двойной щелчок покажут варианты квантизации.": "Model link — press Enter or double-click to see the quantization options.",
+  "Ссылка на модель, квант {0} — Enter или двойной щелчок откроют её.": "Model link, quantization {0} — press Enter or double-click to open it.",
+  "На Hugging Face нет других подходящих репозиториев GGUF. Enter — полный поиск.": "No other matching GGUF repositories on Hugging Face. Press Enter for the full search.",
+  "Найдено на Hugging Face: {0}. Двойной щелчок — варианты квантизации, Enter в поиске — полный список.": "Found on Hugging Face: {0}. Double-click for the quantization options, press Enter in the search box for the full list.",
+  "Hugging Face недоступен — показаны только модели из списка.": "Hugging Face is unavailable — only the models in the list are shown.",
+  "Роли": "Roles",
+  "Команда ролей": "Role team"
+}

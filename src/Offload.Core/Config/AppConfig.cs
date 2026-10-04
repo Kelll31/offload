@@ -326,6 +326,15 @@ public sealed class ModelSettings
     /// <summary>Идентификатор активной модели (из каталога или пользовательской).</summary>
     public string? ActiveModelId { get; set; }
 
+    /// <summary>
+    /// Следить за оборудованием: при первом запуске после обновления и при смене видеокарты/ОЗУ Offload сам пересчитывает
+    /// лучшую модель и параметры (<c>HardwareAdvisor</c>) и сообщает, если есть что улучшить. Ничего не скачивает и не меняет сам.
+    /// </summary>
+    public bool WatchHardware { get; set; } = true;
+
+    /// <summary>Отпечаток оборудования, для которого последний раз подбирались модель и параметры (null — ещё не подбиралось).</summary>
+    public string? AdvisorFingerprint { get; set; }
+
     public List<InstalledModel> Installed { get; set; } = [];
 
     /// <summary>
@@ -708,6 +717,12 @@ public sealed class UiSettings
 
     /// <summary>Версия Offload при прошлом запуске трея: запуск более новой версии — «Что нового» (раз на версию).</summary>
     public string? LastRunVersion { get; set; }
+
+    /// <summary>
+    /// Искать на Hugging Face по мере набора названия на вкладке «Модели» (после паузы; набранный текст уходит на хаб
+    /// или его зеркало). Выключено — только по Enter и кнопке «Найти на Hugging Face…».
+    /// </summary>
+    public bool LiveHubSearch { get; set; } = true;
 
     /// <summary>
     /// Следить за конфигами подключённых IDE и возвращать запись Offload, если IDE её сбросила (с уведомлением).

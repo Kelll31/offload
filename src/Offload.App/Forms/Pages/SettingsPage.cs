@@ -49,6 +49,8 @@ internal sealed class SettingsPage : PageBase
     private readonly CheckBox _minimizeToTray = Kit.Check(L.T("При закрытии окна оставлять Offload в области уведомлений"));
     private readonly CheckBox _checkAppUpdates = Kit.Check(L.T("Проверять обновления Offload при запуске"));
     private readonly CheckBox _verboseLog = Kit.Check(L.T("Подробный журнал (отладочные записи)"));
+    private readonly CheckBox _liveHubSearch = Kit.Check(L.T("Искать на Hugging Face по мере набора названия (текст запроса уходит на huggingface.co)"));
+    private readonly CheckBox _watchHardware = Kit.Check(L.T("Следить за оборудованием и подбирать лучшую модель и параметры"));
     private readonly CheckBox _quietHours = Kit.Check(L.T("Тихие часы: не показывать всплывающие уведомления"));
     private readonly DateTimePicker _quietFrom = TimePicker();
     private readonly DateTimePicker _quietTo = TimePicker();
@@ -114,6 +116,9 @@ internal sealed class SettingsPage : PageBase
             }, 110),
             Kit.Button(L.T("Открыть папку"), (_, _) => Ui.OpenFolder(ModelsFolder.Current()), 120)));
         root.AddRow(Kit.Hint(L.T("Уже скачанные модели при смене папки не перемещаются и продолжают работать.")));
+        root.AddRow(_liveHubSearch);
+        root.AddRow(_watchHardware);
+        root.AddRow(Kit.Hint(L.T("Подбор ничего не скачивает и не меняет сам: Offload только сообщает, что подойдёт лучше, а решаете вы на вкладке «Модели».")));
 
         root.AddRow(Kit.Section(L.T("Запуск и уведомления")));
         root.AddRow(_startWithWindows);
@@ -169,6 +174,8 @@ internal sealed class SettingsPage : PageBase
         _notifications.CheckedChanged += (_, _) => Save(c => c.Ui.ShowNotifications = _notifications.Checked);
         _minimizeToTray.CheckedChanged += (_, _) => Save(c => c.Ui.MinimizeToTrayOnClose = _minimizeToTray.Checked);
         _checkAppUpdates.CheckedChanged += (_, _) => Save(c => c.Ui.CheckAppUpdates = _checkAppUpdates.Checked);
+        _liveHubSearch.CheckedChanged += (_, _) => Save(c => c.Ui.LiveHubSearch = _liveHubSearch.Checked);
+        _watchHardware.CheckedChanged += (_, _) => Save(c => c.Models.WatchHardware = _watchHardware.Checked);
         _hotkey.CheckedChanged += (_, _) => Save(c => c.Ui.GlobalHotkey = _hotkey.Checked);
         _quietHours.CheckedChanged += (_, _) =>
         {
@@ -237,6 +244,8 @@ internal sealed class SettingsPage : PageBase
             _notifications.Checked = ui.ShowNotifications;
             _minimizeToTray.Checked = ui.MinimizeToTrayOnClose;
             _checkAppUpdates.Checked = ui.CheckAppUpdates;
+            _liveHubSearch.Checked = ui.LiveHubSearch;
+            _watchHardware.Checked = ConfigStore.Current.Models.WatchHardware;
             _hotkey.Checked = ui.GlobalHotkey;
             _quietHours.Checked = ui.QuietHoursEnabled;
             _quietFrom.Value = TimeValue(ui.QuietHoursFrom, 22);

@@ -84,6 +84,8 @@ public class PathGuardTests
         // Остальные точки исполнения: CI, git-хуки менеджеров, dev-контейнер, конфигурации запуска IDE.
         foreach (var rel in new[] { ".gitlab-ci.yml", ".pre-commit-config.yaml", "lefthook.yml", ".github/actions/setup/action.yml", ".devcontainer/devcontainer.json", ".idea/runConfigurations/x.xml", ".github/copilot-instructions.md" })
             Assert.Throws<ToolException>(() => PathGuard.CheckWrite(Path.Combine(env.Workspace, rel.Replace('/', '\\')), roots, true, Secrets, rel));
+        // Роли локальной модели — её инструкции: писать их можно только через local_roles.
+        Assert.Throws<ToolException>(() => PathGuard.CheckWrite(Path.Combine(env.Workspace, ".offload", "roles", "x.md"), roots, true, Secrets, "x"));
         Assert.Throws<ToolException>(() => PathGuard.CheckWrite(Path.Combine(env.Workspace, "config", ".env"), roots, true, Secrets, "x"));
         Assert.Throws<ToolException>(() => PathGuard.CheckWrite(env.Workspace, roots, true, Secrets, "."));
         // Без ограничения рабочей папкой запись снаружи разрешена (но секреты — нет).

@@ -5,6 +5,24 @@ namespace Offload.Mcp.Tools;
 
 internal static class ToolHelpers
 {
+    /// <summary>Наибольшая длина текста роли в промпте агента (промпт роли ≤ 7000 символов плюс шапка).</summary>
+    public const int RoleBriefMaxChars = 7600;
+
+    /// <summary>Роль по параметру <c>role</c> (null/пусто — без роли); неизвестная роль — <see cref="ToolException"/> со списком доступных.</summary>
+    public static Offload.Core.Roles.ResolvedRole? ResolveRole(ToolContext ctx, string? role) =>
+        string.IsNullOrWhiteSpace(role) ? null : RolesTool.Resolve(RolesTool.ReadRoot(ctx.Roots), role);
+
+    /// <summary>Текст роли для промпта агента (<c>ROLE: имя - описание</c> и инструкции) или null, если роль не задана.</summary>
+    public static string? RoleBrief(ToolContext ctx, string? role)
+    {
+        var r = ResolveRole(ctx, role);
+        return r is null ? null : $"ROLE: {r.Name}" + (r.Description.Length > 0 ? $" - {r.Description}" : "") + $"\n{r.Prompt}";
+    }
+
+    /// <summary>Короткий стабильный отпечаток роли для ключа кэша результатов (смена промпта роли — новый ответ).</summary>
+    public static string RoleStamp(Offload.Core.Roles.ResolvedRole? role) =>
+        role is null ? "" : role.Name + "/" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(Encoding.UTF8.GetBytes(role.Prompt)))[..12];
+
     public static string RequireText(string? value, string name, int maxChars)
     {
         var v = (value ?? "").Trim();

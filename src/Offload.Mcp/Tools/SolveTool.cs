@@ -13,7 +13,7 @@ namespace Offload.Mcp.Tools;
 internal static class SolveTool
 {
     public static async Task<string> RunAsync(ToolContext ctx, string? task, string? kind, string? verifyCommand, string[]? allowedPaths, string[]? contextPaths,
-        string? merge, int maxFiles, int maxMinutes, bool background, bool review, int race = 1)
+        string? merge, int maxFiles, int maxMinutes, bool background, bool review, int race = 1, string? roleBrief = null)
     {
         var t = ToolHelpers.RequireText(task, "task", 8000);
         var k = (kind ?? "feature").Trim().ToLowerInvariant();
@@ -90,6 +90,7 @@ internal static class SolveTool
             Review = review,
             Tool = McpToolNames.Solve,
             Preamble = preamble.ToString(),
+            Role = roleBrief,
             Race = race,
         }).ConfigureAwait(false);
     }

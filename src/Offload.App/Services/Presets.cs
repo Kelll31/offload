@@ -15,6 +15,23 @@ internal static class Presets
     private static readonly Dictionary<string, string> KnownTitles = new(StringComparer.OrdinalIgnoreCase)
     {
         ["delphi-vcl"] = "Delphi VCL",
+        ["csharp-dotnet"] = "C# / .NET",
+        ["python"] = "Python",
+        ["typescript-node"] = "TypeScript / Node.js",
+        ["react-frontend"] = "React / frontend",
+        ["go"] = "Go",
+        ["rust"] = "Rust",
+        ["java-spring"] = "Java / Spring",
+        ["kotlin-android"] = "Kotlin / Android",
+        ["cpp-modern"] = "C++ (modern)",
+        ["c-embedded"] = "C (embedded)",
+        ["php-laravel"] = "PHP / Laravel",
+        ["swift-ios"] = "Swift / iOS",
+        ["ruby-rails"] = "Ruby / Rails",
+        ["sql-postgres"] = "SQL / PostgreSQL",
+        ["shell-powershell"] = "Shell (PowerShell / bash)",
+        ["unity-csharp"] = "Unity (C#)",
+        ["godot-gdscript"] = "Godot 4 (GDScript)",
     };
 
     public static IReadOnlyList<Preset> All()

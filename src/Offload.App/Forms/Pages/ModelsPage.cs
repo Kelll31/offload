@@ -15,6 +15,16 @@ namespace Offload.App.Forms.Pages;
 internal sealed class ModelsPage : PageBase
 {
     private readonly Label _hardware = Kit.Hint(L.T("Определение оборудования…"));
+    private readonly CardPanel _adviceCard = new() { ColumnCount = 1, Visible = false };
+    private readonly Label _adviceHead = Kit.Wrap("");
+    private readonly Label _adviceParams = Kit.Wrap("");
+    private readonly Label _adviceMore = Kit.Wrap("");
+    private Button _adviceUse = null!;
+    private Button _adviceApply = null!;
+    private LinkLabel _adviceToggle = null!;
+    private bool _adviceExpanded;
+    private bool _adviceHasMore;
+    private HardwareAdvice? _advice;
     private readonly ListView _list = ModelListBinder.Create(full: true);
     private readonly Label _name = Kit.Label(L.T("Выберите модель в списке"), Theme.Semibold(11f));
     private readonly Label _description = Kit.Wrap("");
@@ -41,6 +51,16 @@ internal sealed class ModelsPage : PageBase
     };
     private readonly ComboBox _filter = Kit.Combo(230);
     private readonly Label _shown = Kit.Label("", Theme.Regular(8.5f), Theme.TextMuted);
+
+    // Поиск на Hugging Face «на ходу»: то, что набрано в строке поиска, после паузы ищется и на хабе.
+    private const int HubSuggestLimit = 6;
+    // Пауза после последнего символа: не засыпать хаб запросами на каждое слово, пока человек печатает.
+    private const int HubSuggestDelayMs = 3000;
+    private readonly ListView _hubResults = Kit.List(
+        (L.T("На Hugging Face"), 48), (L.T("Загрузки"), 12), (L.T("Нравится"), 12), (L.T("Лицензия"), 28));
+    private readonly Label _hubStatus = Kit.Hint("");
+    private readonly System.Windows.Forms.Timer _hubTimer = new() { Interval = HubSuggestDelayMs };
+    private CancellationTokenSource? _hubCts;
 
     // Роли моделей (ROADMAP §5.2): основная — активная модель, остальные — вспомогательные серверы.
     private readonly Label _qualityModel = Kit.Label("");
@@ -75,6 +95,8 @@ internal sealed class ModelsPage : PageBase
         _addCustom = Kit.Button(L.T("Добавить свой GGUF…"), async (_, _) => await AddCustomAsync(), 150);
         _findHub = Kit.Button(L.T("Найти на Hugging Face…"), async (_, _) => await FindOnHubAsync(), 170);
         _changeFolder = Kit.Button(L.T("Изменить папку…"), (_, _) => ChangeFolder(), 120);
+        _adviceUse = Kit.Primary(L.T("Выбрать лучшую"), async (_, _) => await UseAdvisedModelAsync(), 150);
+        _adviceApply = Kit.Button(L.T("Применить параметры"), async (_, _) => await ApplyAdvisedParamsAsync(), 170);
 
         _list.SelectedIndexChanged += (_, _) => ShowDetails();
         _list.DoubleClick += async (_, _) =>
@@ -86,14 +108,62 @@ internal sealed class ModelsPage : PageBase
         _filter.Items.AddRange([L.T("Все модели"), L.T("Помещаются в видеопамять"), L.T("Скачанные"), L.T("Для агента (вызов инструментов)")]);
         _filter.SelectedIndex = 0;
         _filter.SelectedIndexChanged += (_, _) => Reload();
-        _search.TextChanged += (_, _) => Reload();
+        _search.TextChanged += (_, _) =>
+        {
+            Reload();
+            ScheduleHubSearch();
+        };
+        _hubTimer.Tick += async (_, _) =>
+        {
+            _hubTimer.Stop();
+            await RunHubSearchAsync();
+        };
+        _hubResults.Height = 150;
+        _hubResults.Visible = false;
+        _hubStatus.Visible = false;
+        _hubResults.DoubleClick += async (_, _) => await OpenHubSuggestionAsync();
+        _hubResults.KeyDown += async (_, e) =>
+        {
+            if (e.KeyCode != Keys.Enter) return;
+            e.Handled = e.SuppressKeyPress = true;
+            await OpenHubSuggestionAsync();
+        };
+        _search.KeyDown += async (_, e) =>
+        {
+            // Enter в строке поиска: ссылка или «owner/name» — сразу к вариантам; обычное слово — полное окно поиска.
+            if (e.KeyCode != Keys.Enter || _search.Text.Trim().Length == 0) return;
+            e.Handled = e.SuppressKeyPress = true;
+            await FindOnHubAsync(_search.Text.Trim());
+        };
+        Disposed += (_, _) =>
+        {
+            _hubTimer.Dispose();
+            _hubCts?.Cancel();
+        };
 
         var root = Kit.FillTable();
         root.Padding = new Padding(16, 4, 28, 12);
         root.AddRow(_hardware);
+        _adviceCard.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        _adviceCard.Margin = new Padding(0, 2, 0, 6);
+        _adviceCard.AddRow(Kit.Label(L.T("Подобрано для вашего компьютера"), Theme.Semibold(10f)));
+        _adviceCard.AddRow(_adviceHead);
+        _adviceCard.AddRow(_adviceParams);
+        _adviceCard.AddRow(_adviceMore);
+        _adviceMore.Visible = false;
+        _adviceToggle = Kit.ActionLink(L.T("Быстрая модель и запасные варианты"), () =>
+        {
+            _adviceExpanded = !_adviceExpanded;
+            _adviceMore.Visible = _adviceExpanded && _adviceHasMore;
+        });
+        _adviceToggle.Margin = new Padding(8, 8, 0, 0);
+        _adviceCard.AddRow(Kit.Flow(_adviceUse, _adviceApply, _adviceToggle));
+        root.AddRow(_adviceCard);
         var filters = Kit.Flow(_search, _filter, _findHub, _shown);
         _shown.Margin = new Padding(4, 7, 0, 0);
         root.AddRow(filters);
+        root.AddRow(_hubStatus);
+        root.AddRow(_hubResults);
         root.AddFillRow(_list);
 
         var card = new CardPanel { ColumnCount = 1 };
@@ -123,10 +193,17 @@ internal sealed class ModelsPage : PageBase
         folderRow.AddRow(_folder, folderButtons);
         root.AddRow(folderRow);
 
-        Controls.Add(root);
+        // Список растягивается на свободную высоту; в невысоком окне страница прокручивается, а не сжимает список в ноль.
+        var host = new Panel { Dock = DockStyle.Fill, AutoScroll = true, Margin = Padding.Empty, BackColor = Theme.Surface };
+        host.Controls.Add(root);
+        Controls.Add(host);
+        HandleCreated += (_, _) => host.AutoScrollMinSize = new Size(0, LogicalToDeviceUnits(MinContentHeight));
         UpdateFolder();
         ShowDetails();
     }
+
+    /// <summary>Наименьшая высота содержимого страницы (логические пиксели): с ней список моделей остаётся читаемым.</summary>
+    private const int MinContentHeight = 960;
 
     /// <summary>Карточка «Роли моделей»: основная (активная), быстрая, эмбеддинги, реранк; состояние серверов и бюджет видеопамяти.</summary>
     private CardPanel BuildRolesCard()
@@ -181,6 +258,7 @@ internal sealed class ModelsPage : PageBase
             }
             if (IsDisposed) return;
             Reload();
+            RefreshAdvice();
             if (_hw is null) _hardware.Text = L.T("Не удалось определить оборудование — оценка видеопамяти недоступна.");
         }
         catch (Exception ex)
@@ -191,7 +269,11 @@ internal sealed class ModelsPage : PageBase
 
     public override void OnConfigChanged()
     {
-        if (IsActive) Reload();
+        if (IsActive)
+        {
+            Reload();
+            RefreshAdvice();
+        }
         else UpdateFolder();
     }
 
@@ -746,12 +828,14 @@ internal sealed class ModelsPage : PageBase
     /// Поиск модели на Hugging Face: выбранный репозиторий и квант сохраняются в списке моделей (с закреплённой ревизией,
     /// размерами и SHA-256) и скачиваются обычной загрузкой — с докачкой, проверкой и ролями, как модели каталога.
     /// </summary>
-    private async Task FindOnHubAsync()
+    private async Task FindOnHubAsync(string? query = null)
     {
         if (_downloadCts is not null) return;
+        _hubTimer.Stop();
+        _hubCts?.Cancel();
         CatalogModel entry;
         string? quant;
-        using (var dlg = new HfSearchForm(_hw, ConfigStore.Current.Server))
+        using (var dlg = new HfSearchForm(_hw, ConfigStore.Current.Server, query))
         {
             if (dlg.ShowDialog(Owner) != DialogResult.OK || dlg.Chosen is null) return;
             entry = dlg.Chosen;
@@ -762,6 +846,7 @@ internal sealed class ModelsPage : PageBase
         // Новая строка должна быть видна: сбрасываем поиск и фильтр списка.
         _search.Text = "";
         _filter.SelectedIndex = 0;
+        HideHubSuggestions();
         Reload();
         var item = _list.Items.Cast<ListViewItem>().FirstOrDefault(i => string.Equals(((ModelRow)i.Tag!).Id, entry.Id, StringComparison.OrdinalIgnoreCase));
         if (item is null) return;
@@ -772,6 +857,203 @@ internal sealed class ModelsPage : PageBase
         var index = _quantItems.ToList().FindIndex(q => string.Equals(q.Quant, quant, StringComparison.OrdinalIgnoreCase));
         if (index >= 0) _quant.SelectedIndex = index;
         await DownloadAsync();
+    }
+
+    /// <summary>Перезапустить отсчёт паузы перед поиском на хабе; короткий запрос и пустая строка прячут подсказки.</summary>
+    private void ScheduleHubSearch()
+    {
+        _hubTimer.Stop();
+        _hubCts?.Cancel();
+        var q = _search.Text.Trim();
+        if (!ConfigStore.Current.Ui.LiveHubSearch || q.Length < 2)
+        {
+            HideHubSuggestions();
+            return;
+        }
+        _hubStatus.ForeColor = Theme.TextMuted;
+        _hubStatus.Text = L.T("Поиск на Hugging Face начнётся через пару секунд после паузы в наборе…");
+        _hubStatus.Visible = true;
+        _hubTimer.Start();
+    }
+
+    private void HideHubSuggestions()
+    {
+        _hubTimer.Stop();
+        _hubCts?.Cancel();
+        _hubResults.Items.Clear();
+        _hubResults.Visible = false;
+        _hubStatus.Visible = false;
+    }
+
+    /// <summary>
+    /// Поиск на хабе по набранному: ссылка или «owner/name» — одна строка «открыть», иначе несколько лучших репозиториев
+    /// с GGUF (уже известные каталогу не повторяются). Ошибки сети — тихой строкой: пользователь просто печатает.
+    /// </summary>
+    private async Task RunHubSearchAsync()
+    {
+        var query = _search.Text.Trim();
+        if (query.Length < 2 || IsDisposed) return;
+        _hubCts?.Cancel();
+        using var cts = new CancellationTokenSource();
+        _hubCts = cts;
+        _hubStatus.ForeColor = Theme.TextMuted;
+        _hubStatus.Text = L.T("Поиск на Hugging Face…");
+        try
+        {
+            if (HfQuery.ParseReference(query) is { } reference)
+            {
+                FillHubResults([new HfRepoInfo(reference.Repo, null, 0, 0, null, null, HfGate.None, null)], reference.Quant is null
+                    ? L.T("Ссылка на модель — Enter или двойной щелчок покажут варианты квантизации.")
+                    : L.F("Ссылка на модель, квант {0} — Enter или двойной щелчок откроют её.", reference.Quant));
+                return;
+            }
+            var found = await HfQuery.SearchAsync(query, HfSort.Downloads, HubSuggestLimit * 3, cts.Token);
+            if (IsDisposed || cts.IsCancellationRequested) return;
+            var known = KnownRepos();
+            var fresh = found.Where(r => !known.Contains(r.Repo)).Take(HubSuggestLimit).ToList();
+            FillHubResults(fresh, fresh.Count == 0
+                ? L.T("На Hugging Face нет других подходящих репозиториев GGUF. Enter — полный поиск.")
+                : L.F("Найдено на Hugging Face: {0}. Двойной щелчок — варианты квантизации, Enter в поиске — полный список.", Ui.N(fresh.Count)));
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        {
+            // Набран другой текст.
+        }
+        catch (Exception ex) when (!cts.IsCancellationRequested)
+        {
+            if (IsDisposed) return;
+            Log.Debug("hf", $"Подсказки поиска: {ex.Message}");
+            _hubResults.Items.Clear();
+            _hubResults.Visible = false;
+            _hubStatus.ForeColor = Theme.TextMuted;
+            _hubStatus.Text = L.T("Hugging Face недоступен — показаны только модели из списка.");
+        }
+        finally
+        {
+            if (ReferenceEquals(_hubCts, cts)) _hubCts = null;
+        }
+    }
+
+    private void FillHubResults(List<HfRepoInfo> repos, string status)
+    {
+        _hubResults.BeginUpdate();
+        try
+        {
+            _hubResults.Items.Clear();
+            foreach (var r in repos)
+            {
+                var license = r.License ?? "—";
+                if (r.IsGated) license = L.F("{0} · закрытый", license);
+                var item = new ListViewItem([r.Repo, r.Downloads > 0 ? Ui.Short(r.Downloads) : "—", r.Likes > 0 ? Ui.Short(r.Likes) : "—", license]) { Tag = r };
+                _hubResults.Items.Add(item);
+            }
+        }
+        finally
+        {
+            _hubResults.EndUpdate();
+        }
+        _hubResults.Visible = repos.Count > 0;
+        _hubStatus.ForeColor = Theme.TextMuted;
+        _hubStatus.Text = status;
+        _hubStatus.Visible = true;
+    }
+
+    /// <summary>Репозитории проверенного каталога: их предлагаем скачать оттуда, а не искать на хабе.</summary>
+    private static HashSet<string> KnownRepos() =>
+        ModelCatalog.All.Select(m => m.Repo).Where(r => !string.IsNullOrWhiteSpace(r)).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    private async Task OpenHubSuggestionAsync()
+    {
+        if (_hubResults.SelectedItems.Count == 0 || _hubResults.SelectedItems[0].Tag is not HfRepoInfo repo) return;
+        // Квант из введённой ссылки сохраняется: передаём исходную строку, если это ссылка на этот же репозиторий.
+        var typed = _search.Text.Trim();
+        var query = HfQuery.ParseReference(typed)?.Repo.Equals(repo.Repo, StringComparison.OrdinalIgnoreCase) == true ? typed : repo.Repo;
+        await FindOnHubAsync(query);
+    }
+
+    /// <summary>Пересчитать «лучшую модель и параметры» для этого компьютера (миллисекунды, на данных каталога) и показать карточку.</summary>
+    private void RefreshAdvice()
+    {
+        _advice = null;
+        if (_hw is null || IsDisposed)
+        {
+            _adviceCard.Visible = false;
+            return;
+        }
+        try
+        {
+            var cfg = ConfigStore.Current;
+            var advice = ModelAdvisorService.Compute(_hw, cfg);
+            if (ModelAdvisorService.Describe(advice, _hw, cfg) is not { } text)
+            {
+                _adviceCard.Visible = false;
+                return;
+            }
+            _advice = advice;
+            _adviceHead.Text = text.Headline;
+            _adviceParams.Text = text.Params;
+            var more = new List<string>();
+            if (text.Fast is not null) more.Add(text.Fast);
+            if (text.Alternatives is not null) more.Add(text.Alternatives);
+            _adviceMore.Text = string.Join(Environment.NewLine, more);
+            _adviceHasMore = more.Count > 0;
+            _adviceMore.Visible = _adviceExpanded && _adviceHasMore;
+            _adviceToggle.Visible = _adviceHasMore;
+            _adviceUse.Text = text.BestIsActive ? L.T("Уже выбрана") : text.BestInstalled ? L.T("Сделать активной") : L.T("Скачать и выбрать");
+            _adviceUse.Enabled = !text.BestIsActive && !IsBusy;
+            _adviceApply.Enabled = text.ParamsDiffer && !IsBusy;
+            _adviceCard.Visible = true;
+        }
+        catch (Exception ex)
+        {
+            Log.Debug("models", $"Подбор для карточки: {ex.Message}");
+            _adviceCard.Visible = false;
+        }
+    }
+
+    /// <summary>Лучшая модель: скачана — сделать активной; нет — выбрать её строку и квант в списке и скачать обычной загрузкой.</summary>
+    private async Task UseAdvisedModelAsync()
+    {
+        if (_advice?.Best is not { } best || _downloadCts is not null) return;
+        var cfg = ConfigStore.Current;
+        if (cfg.Models.Installed.Any(m => string.Equals(m.Id, best.Model.Id, StringComparison.OrdinalIgnoreCase)))
+        {
+            await RunBusyAsync(() => Shell.SwitchModelAsync(best.Model.Id, Owner), L.T("Не удалось сменить модель"), _adviceApply, _adviceUse);
+            Reload();
+            RefreshAdvice();
+            return;
+        }
+        _search.Text = "";
+        _filter.SelectedIndex = 0;
+        HideHubSuggestions();
+        Reload();
+        var item = _list.Items.Cast<ListViewItem>().FirstOrDefault(i => string.Equals(((ModelRow)i.Tag!).Id, best.Model.Id, StringComparison.OrdinalIgnoreCase));
+        if (item is null) return;
+        _list.SelectedItems.Clear();
+        item.Selected = true;
+        item.Focused = true;
+        item.EnsureVisible();
+        var index = _quantItems.ToList().FindIndex(q => string.Equals(q.Quant, best.Quant, StringComparison.OrdinalIgnoreCase));
+        if (index >= 0) _quant.SelectedIndex = index;
+        await DownloadAsync();
+        RefreshAdvice();
+    }
+
+    /// <summary>Применить подобранные число слотов и тип KV-кэша (контекст остаётся в режиме «Авто»); при работающем сервере — предложить перезапуск.</summary>
+    private async Task ApplyAdvisedParamsAsync()
+    {
+        if (_advice?.Params is not { } p) return;
+        if (!await RunBusyAsync(() => Task.Run(() => ConfigStore.Update(c =>
+        {
+            c.Server.Parallel = Math.Clamp(p.Parallel, 1, ServerSettings.MaxParallel);
+            c.Server.CacheType = p.CacheType;
+        })), L.T("Не удалось сохранить параметры"), _adviceApply, _adviceUse)) return;
+        Shell.ConfigChanged();
+        Log.Info("models", $"Применены подобранные параметры: слотов {p.Parallel}, KV-кэш {p.CacheType}");
+        if (Shell.Server.State is ServerState.Running or ServerState.Starting &&
+            Ui.Confirm(Owner, L.T("Параметры сохранены. Перезапустить сервер, чтобы они начали действовать?")))
+            await RunBusyAsync(async () => { await Shell.Server.RestartAsync(); }, L.T("Не удалось перезапустить сервер"));
+        RefreshAdvice();
     }
 
     private static void OpenModelsFolder() => Ui.OpenFolder(ModelsDir());

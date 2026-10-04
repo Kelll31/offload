@@ -13,7 +13,8 @@ internal static class AskFilesTool
     /// <summary>Версия шаблона промпта для ключа кэша результатов (менять при правке промптов ниже).</summary>
     private const string CacheOp = "ask_files/1";
 
-    public static async Task<string> RunAsync(ToolContext ctx, string[]? paths, string? question, string? answerFormat, int maxAnswerTokens, bool fresh = false)
+    public static async Task<string> RunAsync(ToolContext ctx, string[]? paths, string? question, string? answerFormat, int maxAnswerTokens, bool fresh = false,
+        Offload.Core.Roles.ResolvedRole? role = null)
     {
         var specs = ToolHelpers.RequireList(paths, "paths", 64);
         var q = ToolHelpers.RequireText(question, "question", 4000);
@@ -28,12 +29,12 @@ internal static class AskFilesTool
             throw new ToolException("No readable files for the given paths. " + gathered.CoverageLine());
 
         // Тот же вопрос по неизменённым файлам — готовый ответ без запуска модели.
-        var cacheKey = new WorkCacheKey(CacheOp).Arg("format", format).Arg("max", maxAnswer).Files(gathered).Ask(q);
+        var cacheKey = new WorkCacheKey(CacheOp).Arg("format", format).Arg("max", maxAnswer).Arg("role", ToolHelpers.RoleStamp(role)).Files(gathered).Ask(q);
         if (await WorkCache.TryGetAsync(ctx, cacheKey, fresh).ConfigureAwait(false) is { } cached) return cached;
 
         var model = await ctx.GetModelAsync().ConfigureAwait(false);
         var system = model.SystemPrompt(FormatRules(format) +
-            "\nThe material is numbered as '<line>| <code>'. Cite locations as path:line (for example src/app.cs:42).");
+            "\nThe material is numbered as '<line>| <code>'. Cite locations as path:line (for example src/app.cs:42).", role);
         var questionBlock = "QUESTION:\n" + q;
 
         await using var slot = await GpuQueue.AcquireAsync(ctx, ctx.Ct).ConfigureAwait(false);

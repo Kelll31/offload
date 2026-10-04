@@ -48,6 +48,12 @@ internal static class IntegrationEnvironment
     public static string UserProfile =>
         Current?.UserProfile ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
+    /// <summary>Папка «Документы» (может быть перенесена OneDrive); в песочнице — «Documents» профиля песочницы.</summary>
+    public static string Documents =>
+        Current is { } sandbox
+            ? System.IO.Path.Combine(sandbox.UserProfile, "Documents")
+            : Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments);
+
     public static string AppData =>
         Current?.AppData ?? Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
 

@@ -52,6 +52,9 @@ internal sealed record BackgroundJobSpec
     public int MaxFiles { get; init; }
     public bool Review { get; init; }
     public string? Preamble { get; init; }
+
+    /// <summary>Роль агента (текст для промпта); null — без роли. Старые описания без поля читаются как «без роли».</summary>
+    public string? Role { get; init; }
     public string? ToolUseId { get; init; }
 
     /// <summary>Гонка агентов: число кандидатов (1 — один агент; в описаниях до версии 3 поля нет — тоже 1).</summary>
@@ -82,6 +85,7 @@ internal sealed record BackgroundJobSpec
         MaxFiles = r.MaxFiles,
         Review = r.Review,
         Preamble = r.Preamble,
+        Role = r.Role,
         ToolUseId = job.ToolUseId,
         Race = r.Race,
         Environment = CallerEnvironment.Capture(),
@@ -101,6 +105,7 @@ internal sealed record BackgroundJobSpec
         Review = Review,
         Tool = Tool,
         Preamble = Preamble,
+        Role = Role,
         Race = Race,
     };
 

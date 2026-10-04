@@ -13,7 +13,8 @@ internal static class ReviewDiffTool
     /// <summary>Версия шаблона промпта для ключа кэша результатов (менять при правке промптов ниже).</summary>
     private const string CacheOp = "review_diff/1";
 
-    public static async Task<string> RunAsync(ToolContext ctx, string? workingDirectory, string? target, string? focus, int maxAnswerTokens, bool fresh = false)
+    public static async Task<string> RunAsync(ToolContext ctx, string? workingDirectory, string? target, string? focus, int maxAnswerTokens, bool fresh = false,
+        Offload.Core.Roles.ResolvedRole? role = null)
     {
         var maxAnswer = Math.Clamp(maxAnswerTokens <= 0 ? 1200 : maxAnswerTokens, 64, 4096);
         var repo = GitDiffs.ResolveRepo(ctx, workingDirectory);
@@ -28,7 +29,7 @@ internal static class ReviewDiffTool
         }
 
         // Тот же diff (по содержимому) с тем же фокусом — готовое ревью без запуска модели.
-        var cacheKey = new WorkCacheKey(CacheOp, McpToolNames.ReviewDiff).Arg("focus", focus?.Trim() ?? "").Arg("max", maxAnswer).Diff(set);
+        var cacheKey = new WorkCacheKey(CacheOp, McpToolNames.ReviewDiff).Arg("focus", focus?.Trim() ?? "").Arg("max", maxAnswer).Arg("role", ToolHelpers.RoleStamp(role)).Diff(set);
         if (await WorkCache.TryGetAsync(ctx, cacheKey, fresh).ConfigureAwait(false) is { } cached) return cached;
 
         var model = await ctx.GetModelAsync().ConfigureAwait(false);
@@ -39,7 +40,7 @@ internal static class ReviewDiffTool
             "Output one finding per line, most severe first, in exactly this format:\n" +
             "[critical|high|medium|low] path:line - issue - suggestion\n" +
             "Line numbers are the new-file numbers at the start of each diff line ('  42|+ code'). Lines marked '|-' were removed.\n" +
-            $"If there are no significant issues, output exactly: {NoIssues}." + focusText);
+            $"If there are no significant issues, output exactly: {NoIssues}." + focusText, role);
 
         var budget = model.MaterialBudget(maxAnswer, system, "DIFF:\n");
         if (budget < 400) throw new ToolException($"The local model context ({model.ContextPerSlot} tok) is too small; lower max_answer_tokens.");

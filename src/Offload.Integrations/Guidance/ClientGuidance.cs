@@ -114,7 +114,10 @@ public sealed class GuidanceFile
     }
 }
 
-/// <summary>Инструкции по делегированию для Codex и Gemini CLI.</summary>
+/// <summary>
+/// Инструкции по делегированию в глобальных файлах правил агентов: Codex, Gemini CLI (общий файл с Antigravity), OpenCode,
+/// Windsurf, Cline, Roo Code. Cursor не поддерживается: глобальных правил в файле у него нет (только в настройках).
+/// </summary>
 public static class ClientGuidance
 {
     public static IReadOnlyList<GuidanceFile> All { get; } =
@@ -123,7 +126,26 @@ public static class ClientGuidance
             () => Directory.Exists(ClientLocations.CodexHome)),
         new("gemini-cli", "Gemini CLI", () => System.IO.Path.Combine(IntegrationEnvironment.UserProfile, ".gemini", "GEMINI.md"),
             () => Directory.Exists(System.IO.Path.Combine(IntegrationEnvironment.UserProfile, ".gemini"))),
+        new("opencode", "OpenCode", () => System.IO.Path.Combine(OpenCodeHome, "AGENTS.md"),
+            () => Directory.Exists(OpenCodeHome)),
+        // Windsurf читает не больше 6000 символов global_rules.md — секция Offload компактна.
+        new("windsurf", "Windsurf", () => System.IO.Path.Combine(WindsurfHome, "memories", "global_rules.md"),
+            () => Directory.Exists(WindsurfHome)),
+        // Cline и Roo Code читают все файлы каталога правил — у Offload свой файл, чужие правила не затрагиваются.
+        new("cline", "Cline", () => System.IO.Path.Combine(ClineHome, "Rules", "offload.md"),
+            () => Directory.Exists(ClineHome)),
+        new("roo-code", "Roo Code", () => System.IO.Path.Combine(RooHome, "rules", "offload.md"),
+            () => Directory.Exists(RooHome)),
     ];
+
+    // Как у остальных правок конфига OpenCode: учитывает XDG_CONFIG_HOME.
+    private static string OpenCodeHome => ClientLocations.OpenCodeGlobalDir;
+
+    private static string WindsurfHome => System.IO.Path.Combine(IntegrationEnvironment.UserProfile, ".codeium", "windsurf");
+
+    private static string ClineHome => System.IO.Path.Combine(IntegrationEnvironment.Documents, "Cline");
+
+    private static string RooHome => System.IO.Path.Combine(IntegrationEnvironment.UserProfile, ".roo");
 
     public static GuidanceFile? Find(string id) => All.FirstOrDefault(g => g.Id == id);
 

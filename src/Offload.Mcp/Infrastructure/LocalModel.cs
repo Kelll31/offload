@@ -1,3 +1,4 @@
+using Offload.Core.Roles;
 using System.Diagnostics;
 using System.Text.Json;
 using Offload.Core.Config;
@@ -181,12 +182,15 @@ internal sealed class LocalModel(LlamaClient client, AppConfig cfg, ProgressRepo
         return Math.Max(0, budget);
     }
 
-    /// <summary>Системный промпт: общая роль + правила задачи + «Project rules» из настроек.</summary>
-    public string SystemPrompt(string taskRules)
+    /// <summary>Системный промпт: общая роль + (роль агента) + правила задачи + «Project rules» из настроек.</summary>
+    /// <param name="role">Роль, назначенная оркестрирующим агентом (<c>role=…</c>); её промпт идёт перед правилами задачи.</param>
+    public string SystemPrompt(string taskRules, ResolvedRole? role = null)
     {
         var s = "You are Offload, a local coding model doing a delegated sub-task for another AI coding agent. " +
                 "Be precise and literal. Use ONLY the material in the prompt; never invent code, APIs, file names or line numbers. " +
-                "If the material does not contain something, say so briefly. No preamble, no apologies, no restating the task.\n\n" + taskRules;
+                "If the material does not contain something, say so briefly. No preamble, no apologies, no restating the task.\n\n";
+        if (role is not null) s += $"Your role: {role.Name}" + (string.IsNullOrWhiteSpace(role.Description) ? "" : $" - {role.Description}") + "\n" + role.Prompt.Trim() + "\n\n";
+        s += taskRules;
         var extra = cfg.Mcp.ExtraSystemPrompt;
         if (!string.IsNullOrWhiteSpace(extra)) s += "\n\nProject rules:\n" + extra.Trim();
         return s;

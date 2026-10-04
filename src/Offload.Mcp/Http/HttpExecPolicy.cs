@@ -32,6 +32,7 @@ internal static class HttpExecPolicy
             _ when AlwaysBlocked.Contains(tool) => "it runs project code or writes files",
             McpToolNames.Diagnostics when HasText(args, "command") || !HasText(args, "log_path") =>
                 "without log_path it runs a build command; pass log_path of an existing log",
+            McpToolNames.Roles when Text(args, "action") is "define" or "delete" => "define/delete write role files",
             McpToolNames.Impact when IsTrue(args, "run_tests") => "run_tests=true runs the project's tests",
             McpToolNames.Job when Text(args, "action") is "merge" or "retry" or "revert" => "merge/retry/revert write files or rerun an agent",
             McpToolNames.Dependencies when Text(args, "action") is "outdated" or "vulnerable" =>
