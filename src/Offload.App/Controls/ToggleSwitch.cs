@@ -58,6 +58,7 @@ internal sealed class ToggleSwitch : CheckBox
     {
         var g = pevent.Graphics;
         OnPaintBackground(pevent);
+        if (Px(TrackWidth) <= 0 || Px(TrackHeight) <= 0) return;
         g.SmoothingMode = SmoothingMode.AntiAlias;
         var track = new Rectangle(Padding.Left + Px(1), (Height - Px(TrackHeight)) / 2, Px(TrackWidth), Px(TrackHeight));
         var radius = track.Height / 2;
