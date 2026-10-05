@@ -13,7 +13,7 @@
 ; Значение по умолчанию совпадает с <Version> в Directory.Build.props (тест InstallerTests.AppVersionDefault_MatchesBuildProps);
 ; сборка выпуска передаёт версию явно: /DAppVersion=... (scripts/build.ps1, CI).
 #ifndef AppVersion
-  #define AppVersion "1.0.5"
+  #define AppVersion "1.0.5.1"
 #endif
 #ifndef PublishDir
   #define PublishDir "..\publish"

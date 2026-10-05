@@ -53,6 +53,7 @@ internal sealed class CardPanel : TableLayoutPanel
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
+        if (Body.Width <= 0 || Body.Height <= 0) return;
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
         using var path = Draw.Rounded(Body, LogicalToDeviceUnits(Theme.RadiusCard));
         using var pen = new Pen(_hero ? Theme.Blend(Theme.Border, Theme.Accent, 0.35) : Theme.Border, 1f);
@@ -66,6 +67,8 @@ internal sealed class CardPanel : TableLayoutPanel
         using (var b = new SolidBrush(parentColor)) e.Graphics.FillRectangle(b, ClientRectangle);
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
         var body = Body;
+        // Нулевой размер (свёрнутая/ещё не раскладанная карточка): LinearGradientBrush бросает исключение.
+        if (body.Width <= 0 || body.Height <= 0) return;
         var radius = LogicalToDeviceUnits(Theme.RadiusCard);
         Draw.Shadow(e.Graphics, body, radius);
         using var path = Draw.Rounded(body, radius);
